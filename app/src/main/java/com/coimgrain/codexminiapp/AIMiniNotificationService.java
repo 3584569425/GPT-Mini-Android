@@ -34,8 +34,6 @@ import java.util.concurrent.Executors;
 public final class AIMiniNotificationService extends Service {
     private static final String TAG = "GPTMiniTaskMonitor";
     static final String ACTION_SYNC = "app.gptmini.action.SYNC_TASK_MONITOR";
-    static final String ACTION_UPDATE = "app.gptmini.action.UPDATE_PERSISTENT_NOTIFICATION";
-    static final String ACTION_STOP = "app.gptmini.action.STOP_PERSISTENT_NOTIFICATION";
     static final String ACTION_WAKE_POLL = "app.gptmini.action.WAKE_TASK_MONITOR";
     static final String EXTRA_RUNNING_COUNT = "running_count";
 
@@ -74,31 +72,20 @@ public final class AIMiniNotificationService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            TaskMonitorJobService.cancel(this);
-            stopForegroundNotification();
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         boolean alarmWake = intent != null && ACTION_WAKE_POLL.equals(intent.getAction());
 
-        boolean persistent = isPersistentMode();
         List<MonitoredTask> tasks = readTasks();
         // SharedPreferences is the monitor's source of truth. Activity state can
         // remain stale while Gecko is frozen in the background, so an intent extra
         // must never resurrect an already completed task in the foreground notice.
         int runningCount = tasks.size();
-        if (persistent) {
-            startForeground(
-                    MainActivity.PERSISTENT_NOTIFICATION_ID,
-                    buildPersistentNotification(runningCount)
-            );
-        } else {
-            stopForegroundNotification();
-        }
+        startForeground(
+                MainActivity.PERSISTENT_NOTIFICATION_ID,
+                buildPersistentNotification(runningCount)
+        );
 
         schedulePolling(tasks, alarmWake);
-        return persistent || !tasks.isEmpty() ? START_STICKY : START_NOT_STICKY;
+        return START_STICKY;
     }
 
     @Override
@@ -124,7 +111,7 @@ public final class AIMiniNotificationService extends Service {
         if (tasks == null || tasks.isEmpty()) {
             TaskMonitorJobService.cancel(this);
             releaseTaskWakeLock();
-            if (!isPersistentMode()) stopSelf();
+            refreshPersistentNotification(0);
             return;
         }
         TaskMonitorJobService.ensureScheduled(this);
@@ -145,8 +132,7 @@ public final class AIMiniNotificationService extends Service {
         if (snapshot.isEmpty()) {
             TaskMonitorJobService.cancel(this);
             releaseTaskWakeLock();
-            if (isPersistentMode()) refreshPersistentNotification(0);
-            else stopSelf();
+            refreshPersistentNotification(0);
             return;
         }
 
@@ -191,12 +177,11 @@ public final class AIMiniNotificationService extends Service {
                     );
                 }
                 List<MonitoredTask> remaining = readTasks();
-                if (isPersistentMode()) refreshPersistentNotification(remaining.size());
+                refreshPersistentNotification(remaining.size());
                 handler.removeCallbacks(poller);
                 if (remaining.isEmpty()) {
                     TaskMonitorJobService.cancel(this);
                     releaseTaskWakeLock();
-                    if (!isPersistentMode()) stopSelf();
                 } else {
                     acquireTaskWakeLock();
                     handler.postDelayed(poller, POLL_INTERVAL_MS);
@@ -262,7 +247,7 @@ public final class AIMiniNotificationService extends Service {
         return tasks;
     }
 
-    private boolean isPersistentMode() {
+    private boolean isRealtimeMode() {
         return MainActivity.NOTIFICATION_MODE_PERSISTENT.equals(
                 preferences.getString(
                         MainActivity.KEY_NOTIFICATION_MODE,
@@ -272,7 +257,6 @@ public final class AIMiniNotificationService extends Service {
     }
 
     private void refreshPersistentNotification(int runningCount) {
-        if (!isPersistentMode()) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.notify(
@@ -295,15 +279,21 @@ public final class AIMiniNotificationService extends Service {
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, MainActivity.NOTIFICATION_STATUS_CHANNEL_ID)
                 : new Notification.Builder(this);
-        String content = runningCount > 0
-                ? getResources().getQuantityString(
-                        R.plurals.task_running_summary,
-                        runningCount,
-                        runningCount
-                )
-                : getString(R.string.task_idle_text);
+        boolean realtime = isRealtimeMode();
+        String title = realtime
+                ? getString(R.string.task_connected_title)
+                : getString(R.string.background_service_title);
+        String content = realtime
+                ? runningCount > 0
+                    ? getResources().getQuantityString(
+                            R.plurals.task_running_summary,
+                            runningCount,
+                            runningCount
+                    )
+                    : getString(R.string.task_idle_text)
+                : getString(R.string.background_service_text);
         builder.setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(getString(R.string.task_connected_title))
+                .setContentTitle(title)
                 .setContentText(content)
                 .setStyle(new Notification.BigTextStyle().bigText(content))
                 .setContentIntent(pendingIntent)

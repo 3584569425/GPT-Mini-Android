@@ -87,12 +87,14 @@
     <string name="float_liquid_glass_on">已开启</string>
     <string name="float_liquid_glass_off">已关闭</string>
     <string name="notification_mode_value">当前：%1$s</string>
-    <string name="notification_mode_end">任务结束通知</string>
-    <string name="notification_mode_persistent">常驻通知</string>
-    <string name="notification_channel_tasks">GPT Mini 任务状态</string>
+    <string name="notification_mode_end">任务完成时通知</string>
+    <string name="notification_mode_persistent">实时通知</string>
+    <string name="notification_channel_tasks">GPT Mini 后台服务与任务状态</string>
     <string name="notification_channel_alerts">GPT Mini 任务结束提醒</string>
     <string name="notification_channel_alerts_description">任务完成、失败或异常时在屏幕顶部显示提醒</string>
     <string name="task_connected_title">GPT Mini 已连接</string>
+    <string name="background_service_title">GPT Mini 后台服务</string>
+    <string name="background_service_text">后台服务运行中，仅在任务结束时提醒</string>
     <string name="task_idle_text">空闲中</string>
     <string name="task_running_title">GPT Mini 任务运行中</string>
     <plurals name="task_running_summary">

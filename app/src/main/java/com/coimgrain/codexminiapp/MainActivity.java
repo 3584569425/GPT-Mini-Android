@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
     private static final String KEY_FLOAT_ALPHA = "float_alpha";
     private static final String KEY_FLOAT_Y = "float_y";
     private static final String KEY_TOP_INSET_DP = "top_inset_dp";
-    private static final String KEY_TOP_INSET_V116_MIGRATED = "top_inset_v116_migrated";
+    private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
     static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
     static final String NOTIFICATION_MODE_END = "end";
@@ -140,7 +140,7 @@ public class MainActivity extends Activity {
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
-    private static final int DEFAULT_TOP_INSET_DP = 20;
+    private static final int DEFAULT_TOP_INSET_DP = 0;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
 
@@ -297,6 +297,11 @@ public class MainActivity extends Activity {
         registerNetworkRouteWatcher();
         requestLegacyStoragePermissionIfNeeded();
         requestNotificationPermissionIfNeeded();
+        // Once the user has opened GPT Mini, keep one foreground-service
+        // notification alive in either task-notification mode. This is the
+        // lowest-permission Android mechanism available for improving background
+        // task monitoring reliability.
+        syncNotificationMonitorService();
 
         if (savedInstanceState != null) {
             showApp();
@@ -1199,11 +1204,14 @@ public class MainActivity extends Activity {
     }
 
     private void migrateTopInsetDefault() {
-        if (preferences.getBoolean(KEY_TOP_INSET_V116_MIGRATED, false)) return;
+        if (preferences.getBoolean(KEY_TOP_INSET_V118_MIGRATED, false)) return;
         SharedPreferences.Editor editor = preferences.edit()
-                .putBoolean(KEY_TOP_INSET_V116_MIGRATED, true);
+                .putBoolean(KEY_TOP_INSET_V118_MIGRATED, true);
+        // 28dp and 20dp were defaults in older builds. Move those defaults to a
+        // fully filled layout while retaining every other user-selected height.
         if (!preferences.contains(KEY_TOP_INSET_DP)
-                || preferences.getInt(KEY_TOP_INSET_DP, 28) == 28) {
+                || preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP) == 28
+                || preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP) == 20) {
             editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
         }
         editor.apply();
@@ -1265,24 +1273,16 @@ public class MainActivity extends Activity {
         String mode = NOTIFICATION_MODE_PERSISTENT.equals(requestedMode)
                 ? NOTIFICATION_MODE_PERSISTENT
                 : NOTIFICATION_MODE_END;
-        // commit() makes the mode visible to every lifecycle/status callback before
-        // this click handler returns, which prevents a stale callback from restoring
-        // the foreground notification immediately after the user disables it.
+        // commit() makes the mode visible to the foreground service before the
+        // immediate refresh below. Both modes keep the base service notification;
+        // only task-status presentation changes.
         preferences.edit().putString(KEY_NOTIFICATION_MODE, mode).commit();
         requestNotificationPermissionIfNeeded();
         if (NOTIFICATION_MODE_END.equals(mode)) {
-            // Remove the visible foreground notification synchronously. The monitor
-            // service remains alive as an ordinary background service while a task is
-            // running, so switching modes takes effect immediately without losing the
-            // pending completion notification.
-            NotificationManager manager =
-                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (manager != null) manager.cancel(PERSISTENT_NOTIFICATION_ID);
             runningNotificationTasks.clear();
-            syncNotificationMonitorService();
-            return;
+        } else {
+            runningNotificationTasks.addAll(monitoredTaskStatusUrls.keySet());
         }
-        showPersistentConnectedNotificationIfNeeded();
         syncNotificationMonitorService();
         requestImmediateTaskStatusRefresh();
     }
@@ -2408,26 +2408,20 @@ public class MainActivity extends Activity {
 
     private void syncNotificationMonitorService() {
         if (preferences == null) return;
-        boolean persistent = NOTIFICATION_MODE_PERSISTENT.equals(notificationMode());
-        boolean hasTasks = !monitoredTaskStatusUrls.isEmpty();
-        Intent intent = new Intent(this, AIMiniNotificationService.class);
-        if (!persistent && !hasTasks) {
-            intent.setAction(AIMiniNotificationService.ACTION_STOP);
-        } else {
-            intent.setAction(AIMiniNotificationService.ACTION_SYNC)
-                    .putExtra(
-                            AIMiniNotificationService.EXTRA_RUNNING_COUNT,
-                            monitoredTaskStatusUrls.size()
-                    );
-        }
+        Intent intent = new Intent(this, AIMiniNotificationService.class)
+                .setAction(AIMiniNotificationService.ACTION_SYNC)
+                .putExtra(
+                        AIMiniNotificationService.EXTRA_RUNNING_COUNT,
+                        monitoredTaskStatusUrls.size()
+                );
         try {
-            if (persistent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent);
             } else {
                 startService(intent);
             }
         } catch (Exception ignored) {
-            if (persistent) showPersistentNotificationFallback();
+            showPersistentNotificationFallback();
         }
     }
 
@@ -2810,18 +2804,10 @@ public class MainActivity extends Activity {
     }
 
     private void showPersistentConnectedNotificationIfNeeded() {
-        if (!NOTIFICATION_MODE_PERSISTENT.equals(notificationMode())) return;
-        if (appRoot == null || appRoot.getVisibility() != View.VISIBLE) return;
-        String url = webView == null ? "" : webView.getUrl();
-        if (url == null || url.trim().isEmpty()) {
-            url = preferences.getString(KEY_LAST_URL, "");
-        }
-        if (url == null || url.trim().isEmpty()) return;
         updatePersistentNotificationService();
     }
 
     private void updatePersistentNotificationService() {
-        if (!NOTIFICATION_MODE_PERSISTENT.equals(notificationMode())) return;
         Intent intent = new Intent(this, AIMiniNotificationService.class)
                 .setAction(AIMiniNotificationService.ACTION_SYNC)
                 .putExtra(
@@ -2857,15 +2843,25 @@ public class MainActivity extends Activity {
                 launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
-        int count = runningNotificationTasks.size();
-        String content = count > 0
-                ? getResources().getQuantityString(R.plurals.task_running_summary, count, count)
-                : getString(R.string.task_idle_text);
+        boolean realtime = NOTIFICATION_MODE_PERSISTENT.equals(notificationMode());
+        int count = realtime ? monitoredTaskStatusUrls.size() : 0;
+        String title = realtime
+                ? getString(R.string.task_connected_title)
+                : getString(R.string.background_service_title);
+        String content = realtime
+                ? count > 0
+                    ? getResources().getQuantityString(
+                            R.plurals.task_running_summary,
+                            count,
+                            count
+                    )
+                    : getString(R.string.task_idle_text)
+                : getString(R.string.background_service_text);
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, NOTIFICATION_STATUS_CHANNEL_ID)
                 : new Notification.Builder(this);
         builder.setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(getString(R.string.task_connected_title))
+                .setContentTitle(title)
                 .setContentText(content)
                 .setStyle(new Notification.BigTextStyle().bigText(content))
                 .setContentIntent(pendingIntent)
@@ -2895,27 +2891,6 @@ public class MainActivity extends Activity {
             return getString(R.string.task_complete_fallback);
         }
         return name;
-    }
-
-    private void cancelPersistentTaskNotification() {
-        Intent stopIntent = new Intent(this, AIMiniNotificationService.class)
-                .setAction(AIMiniNotificationService.ACTION_STOP);
-        try {
-            startService(stopIntent);
-        } catch (Exception ignored) {
-        }
-        try {
-            stopService(new Intent(this, AIMiniNotificationService.class));
-        } catch (Exception ignored) {
-        }
-        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (manager != null) {
-            manager.cancel(PERSISTENT_NOTIFICATION_ID);
-            for (String key : new HashSet<>(runningNotificationTasks)) {
-                manager.cancel(taskNotificationId(key, key));
-            }
-        }
-        runningNotificationTasks.clear();
     }
 
     private void ensureNotificationChannels(NotificationManager manager) {
@@ -4650,7 +4625,7 @@ public class MainActivity extends Activity {
         } else if (requestCode == NOTIFICATION_PERMISSION_REQUEST
                 && grantResults.length > 0
                 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            showPersistentConnectedNotificationIfNeeded();
+            syncNotificationMonitorService();
         }
     }
 

@@ -7,7 +7,6 @@ import android.app.job.JobService;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -90,20 +89,10 @@ public final class TaskMonitorJobService extends JobService {
     }
 
     private void wakeMonitorService() {
-        SharedPreferences preferences = getSharedPreferences(
-                MainActivity.PREFS_NAME,
-                MODE_PRIVATE
-        );
-        boolean persistent = MainActivity.NOTIFICATION_MODE_PERSISTENT.equals(
-                preferences.getString(
-                        MainActivity.KEY_NOTIFICATION_MODE,
-                        MainActivity.NOTIFICATION_MODE_END
-                )
-        );
         Intent intent = new Intent(this, AIMiniNotificationService.class)
                 .setAction(AIMiniNotificationService.ACTION_WAKE_POLL);
         try {
-            if (persistent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent);
             } else {
                 startService(intent);
