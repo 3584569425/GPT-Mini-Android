@@ -1,0 +1,454 @@
+package com.coimgrain.codexminiapp;
+
+import android.content.Context;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Bundle;
+import android.webkit.ValueCallback;
+
+import org.mozilla.geckoview.AllowOrDeny;
+import org.mozilla.geckoview.GeckoResult;
+import org.mozilla.geckoview.GeckoSession;
+import org.mozilla.geckoview.GeckoSessionSettings;
+import org.mozilla.geckoview.GeckoView;
+import org.mozilla.geckoview.WebResponse;
+
+import java.util.ArrayList;
+import java.util.List;
+
+final class AIMiniGeckoView extends GeckoView {
+    interface Delegate {
+        default boolean onLoadRequest(
+                AIMiniGeckoView view,
+                String uri,
+                boolean hasUserGesture,
+                int target
+        ) {
+            return false;
+        }
+
+        default void onNewWindow(AIMiniGeckoView view, String uri) {
+        }
+
+        default void onLocationChange(AIMiniGeckoView view, String uri) {
+        }
+
+        default void onPageFinished(AIMiniGeckoView view, String uri, boolean success) {
+        }
+
+        default void onExternalResponse(
+                AIMiniGeckoView view,
+                WebResponse response
+        ) {
+        }
+
+        default void onCloseRequest(AIMiniGeckoView view) {
+        }
+
+        default GeckoResult<GeckoSession.PromptDelegate.PromptResponse> onFilePrompt(
+                AIMiniGeckoView view,
+                GeckoSession.PromptDelegate.FilePrompt prompt
+        ) {
+            return GeckoResult.fromValue(prompt.dismiss());
+        }
+    }
+
+    private static final class PendingEvaluation {
+        final String script;
+        final ValueCallback<String> callback;
+
+        PendingEvaluation(String script, ValueCallback<String> callback) {
+            this.script = script;
+            this.callback = callback;
+        }
+    }
+
+    private final AIMiniGeckoEngine engine;
+    private GeckoSession session;
+    private final List<PendingEvaluation> pendingEvaluations = new ArrayList<>();
+    private Delegate delegate;
+    private String pendingUrl;
+    private String currentUrl = "";
+    private boolean canGoBack;
+    private boolean canGoForward;
+    private boolean destroyed;
+    private boolean contentRecoveryRunning;
+    private boolean desktopMode;
+    private boolean nativeDesktopMode;
+    private String mobileUserAgent = "";
+    private String desktopUserAgent = "";
+
+    AIMiniGeckoView(Context context, AIMiniGeckoEngine engine) {
+        super(context);
+        this.engine = engine;
+        session = createSession();
+        setSession(session);
+        setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW);
+        setBackgroundColor(Color.BLACK);
+        coverUntilFirstPaint(Color.BLACK);
+        setAutofillEnabled(true);
+        engine.register(this);
+    }
+
+    private GeckoSession createSession() {
+        GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
+                .allowJavascript(true)
+                .suspendMediaWhenInactive(false)
+                .userAgentMode(desktopMode
+                        ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                        : GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+                .viewportMode(desktopMode
+                        ? GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                        : GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
+                .displayMode(GeckoSessionSettings.DISPLAY_MODE_BROWSER)
+                .build();
+        GeckoSession created = new GeckoSession(settings);
+        created.setNavigationDelegate(navigationDelegate);
+        created.setProgressDelegate(progressDelegate);
+        created.setContentDelegate(contentDelegate);
+        created.setPromptDelegate(promptDelegate);
+        created.setPermissionDelegate(permissionDelegate);
+        created.open(engine.runtime());
+        if (desktopMode && !desktopUserAgent.isEmpty()) {
+            created.getSettings().setUserAgentOverride(desktopUserAgent);
+        } else if (!desktopMode && !mobileUserAgent.isEmpty()) {
+            created.getSettings().setUserAgentOverride(mobileUserAgent);
+        }
+        nativeDesktopMode = desktopMode;
+        return created;
+    }
+
+    GeckoSession session() {
+        return session;
+    }
+
+    void setDelegate(Delegate delegate) {
+        this.delegate = delegate;
+    }
+
+    void loadUrl(String url) {
+        if (destroyed) return;
+        applyNativeDesktopModeIfNeeded();
+        pendingUrl = url == null ? "" : url;
+        // The first navigation must wait until the built-in WebExtension has been
+        // installed. Navigating earlier creates a race where document_start scripts
+        // are missing from the first page, which breaks keyboard, download and task
+        // hooks and previously forced a visible recovery reload.
+        if (engine.isReady()) consumePendingUrl();
+    }
+
+    void reload() {
+        if (!destroyed && engine.isReady()) session.reload();
+    }
+
+    void stopLoading() {
+        if (!destroyed) session.stop();
+    }
+
+    void clearHistory() {
+        if (!destroyed) session.purgeHistory();
+    }
+
+    String getUrl() {
+        if (!currentUrl.isEmpty()) return currentUrl;
+        return pendingUrl == null ? "" : pendingUrl;
+    }
+
+    boolean canGoBack() {
+        return canGoBack;
+    }
+
+    boolean canGoForward() {
+        return canGoForward;
+    }
+
+    void goBack() {
+        if (!destroyed) session.goBack();
+    }
+
+    void goForward() {
+        if (!destroyed) session.goForward();
+    }
+
+    void evaluateJavascript(String script, ValueCallback<String> callback) {
+        if (destroyed) {
+            if (callback != null) callback.onReceiveValue("null");
+            return;
+        }
+        engine.evaluate(this, script, callback);
+    }
+
+    void setDesktopMode(boolean desktop, String mobileUserAgent, String desktopUserAgent) {
+        this.desktopMode = desktop;
+        this.mobileUserAgent = mobileUserAgent == null ? "" : mobileUserAgent;
+        this.desktopUserAgent = desktopUserAgent == null ? "" : desktopUserAgent;
+        // Changing Gecko's native viewport mode on an already painted session can
+        // briefly detach/recreate the compositor surface. Keep the current page
+        // alive and let MainActivity update its viewport meta/CSS in place instead.
+        if (currentUrl.isEmpty() && (pendingUrl == null || pendingUrl.isEmpty())) {
+            applyNativeDesktopModeIfNeeded();
+        }
+    }
+
+    private void applyNativeDesktopModeIfNeeded() {
+        if (nativeDesktopMode == desktopMode) {
+            GeckoSessionSettings currentSettings = session.getSettings();
+            currentSettings.setUserAgentOverride(
+                    desktopMode ? desktopUserAgent : mobileUserAgent
+            );
+            return;
+        }
+        GeckoSessionSettings settings = session.getSettings();
+        settings.setUserAgentMode(desktopMode
+                ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                : GeckoSessionSettings.USER_AGENT_MODE_MOBILE);
+        settings.setViewportMode(desktopMode
+                ? GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                : GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
+        settings.setUserAgentOverride(desktopMode ? desktopUserAgent : mobileUserAgent);
+        nativeDesktopMode = desktopMode;
+    }
+
+    void setBrowserActive(boolean active) {
+        if (destroyed) return;
+        session.setActive(active);
+        session.setFocused(active);
+    }
+
+    void prepareForForeground() {
+        if (destroyed) return;
+        // coverUntilFirstPaint() is only for the initial navigation. Re-applying it
+        // to an already painted session can leave a permanent black cover because a
+        // static restored page is not guaranteed to emit another first-paint event.
+        setVisibility(VISIBLE);
+        setAlpha(1f);
+        session.setActive(true);
+        session.setFocused(true);
+        post(() -> {
+            requestLayout();
+            invalidate();
+        });
+    }
+
+    void prepareForBackground(boolean keepRunning) {
+        if (destroyed) return;
+        session.setFocused(false);
+        session.setActive(keepRunning);
+    }
+
+    void saveState(Bundle ignored) {
+        session.flushSessionState();
+    }
+
+    void restoreState(Bundle ignored) {
+        // The connection URL is persisted by MainActivity. Gecko owns its own profile data.
+    }
+
+    void destroy() {
+        if (destroyed) return;
+        destroyed = true;
+        engine.unregister(this);
+        try {
+            releaseSession();
+        } catch (Exception ignored) {
+        }
+        try {
+            session.close();
+        } catch (Exception ignored) {
+        }
+        removeAllViews();
+    }
+
+    private void recoverContentProcess() {
+        if (destroyed || contentRecoveryRunning) return;
+        contentRecoveryRunning = true;
+        post(() -> {
+            if (destroyed) return;
+            String reloadUrl = getUrl();
+            GeckoSession previous = session;
+            try {
+                releaseSession();
+            } catch (Exception ignored) {
+            }
+            try {
+                previous.close();
+            } catch (Exception ignored) {
+            }
+            session = createSession();
+            setSession(session);
+            engine.onSessionReplaced(this, previous, session);
+            contentRecoveryRunning = false;
+            setVisibility(VISIBLE);
+            setAlpha(1f);
+            coverUntilFirstPaint(Color.BLACK);
+            if (reloadUrl != null && !reloadUrl.trim().isEmpty()) {
+                pendingUrl = reloadUrl;
+                consumePendingUrl();
+            }
+        });
+    }
+
+    void onEngineReady() {
+        consumePendingUrl();
+    }
+
+    void queueEvaluation(String script, ValueCallback<String> callback) {
+        pendingEvaluations.add(new PendingEvaluation(script, callback));
+    }
+
+    void flushQueuedEvaluations() {
+        if (pendingEvaluations.isEmpty()) return;
+        List<PendingEvaluation> copy = new ArrayList<>(pendingEvaluations);
+        pendingEvaluations.clear();
+        for (PendingEvaluation pending : copy) {
+            engine.evaluate(this, pending.script, pending.callback);
+        }
+    }
+
+    private void consumePendingUrl() {
+        if (!engine.isReady()) return;
+        if (pendingUrl == null || pendingUrl.trim().isEmpty()) return;
+        String url = pendingUrl;
+        pendingUrl = null;
+        session.loadUri(url);
+    }
+
+    private final GeckoSession.NavigationDelegate navigationDelegate =
+            new GeckoSession.NavigationDelegate() {
+                @Override
+                public void onLocationChange(
+                        GeckoSession session,
+                        String url,
+                        List<GeckoSession.PermissionDelegate.ContentPermission> permissions,
+                        Boolean hasUserGesture
+                ) {
+                    currentUrl = url == null ? "" : url;
+                    if (delegate != null) delegate.onLocationChange(AIMiniGeckoView.this, currentUrl);
+                }
+
+                @Override
+                public void onCanGoBack(GeckoSession session, boolean value) {
+                    canGoBack = value;
+                }
+
+                @Override
+                public void onCanGoForward(GeckoSession session, boolean value) {
+                    canGoForward = value;
+                }
+
+                @Override
+                public GeckoResult<AllowOrDeny> onLoadRequest(
+                        GeckoSession session,
+                        LoadRequest request
+                ) {
+                    boolean handled = delegate != null && delegate.onLoadRequest(
+                            AIMiniGeckoView.this,
+                            request.uri,
+                            request.hasUserGesture,
+                            request.target
+                    );
+                    return handled ? GeckoResult.deny() : GeckoResult.allow();
+                }
+
+                @Override
+                public GeckoResult<GeckoSession> onNewSession(
+                        GeckoSession session,
+                        String uri
+                ) {
+                    if (delegate != null) delegate.onNewWindow(AIMiniGeckoView.this, uri);
+                    return GeckoResult.fromValue(null);
+                }
+            };
+
+    private final GeckoSession.ProgressDelegate progressDelegate =
+            new GeckoSession.ProgressDelegate() {
+                @Override
+                public void onPageStop(GeckoSession session, boolean success) {
+                    if (delegate != null) {
+                        delegate.onPageFinished(AIMiniGeckoView.this, getUrl(), success);
+                    }
+                }
+            };
+
+    private final GeckoSession.ContentDelegate contentDelegate =
+            new GeckoSession.ContentDelegate() {
+                @Override
+                public void onExternalResponse(GeckoSession session, WebResponse response) {
+                    if (delegate != null && response != null) {
+                        delegate.onExternalResponse(
+                                AIMiniGeckoView.this,
+                                response
+                        );
+                    }
+                }
+
+                @Override
+                public void onCloseRequest(GeckoSession session) {
+                    if (delegate != null) delegate.onCloseRequest(AIMiniGeckoView.this);
+                }
+
+                @Override
+                public void onCrash(GeckoSession session) {
+                    recoverContentProcess();
+                }
+
+                @Override
+                public void onKill(GeckoSession session) {
+                    recoverContentProcess();
+                }
+            };
+
+    private final GeckoSession.PromptDelegate promptDelegate =
+            new GeckoSession.PromptDelegate() {
+                @Override
+                public GeckoResult<PromptResponse> onFilePrompt(
+                        GeckoSession session,
+                        FilePrompt prompt
+                ) {
+                    return delegate == null
+                            ? GeckoResult.fromValue(prompt.dismiss())
+                            : delegate.onFilePrompt(AIMiniGeckoView.this, prompt);
+                }
+
+                @Override
+                public GeckoResult<PromptResponse> onAlertPrompt(
+                        GeckoSession session,
+                        AlertPrompt prompt
+                ) {
+                    return GeckoResult.fromValue(prompt.dismiss());
+                }
+            };
+
+    private final GeckoSession.PermissionDelegate permissionDelegate =
+            new GeckoSession.PermissionDelegate() {
+                @Override
+                public void onAndroidPermissionsRequest(
+                        GeckoSession session,
+                        String[] permissions,
+                        Callback callback
+                ) {
+                    callback.grant();
+                }
+
+                @Override
+                public GeckoResult<Integer> onContentPermissionRequest(
+                        GeckoSession session,
+                        ContentPermission permission
+                ) {
+                    return GeckoResult.fromValue(ContentPermission.VALUE_ALLOW);
+                }
+
+                @Override
+                public void onMediaPermissionRequest(
+                        GeckoSession session,
+                        String uri,
+                        MediaSource[] video,
+                        MediaSource[] audio,
+                        MediaCallback callback
+                ) {
+                    MediaSource selectedVideo = video != null && video.length > 0 ? video[0] : null;
+                    MediaSource selectedAudio = audio != null && audio.length > 0 ? audio[0] : null;
+                    callback.grant(selectedVideo, selectedAudio);
+                }
+            };
+}

@@ -1,0 +1,60 @@
+apply plugin: 'com.android.application'
+
+def releaseSigningProps = new Properties()
+def releaseSigningPropsFile = rootProject.file('keystore/release-signing.properties')
+if (releaseSigningPropsFile.exists()) {
+    releaseSigningPropsFile.withInputStream { releaseSigningProps.load(it) }
+}
+
+android {
+    namespace 'com.coimgrain.codexminiapp'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'app.gptmini'
+        minSdk 26
+        targetSdk 35
+        versionCode 15
+        versionName '1.14'
+        setProperty('archivesBaseName', 'AI Mini-1.14')
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a'
+            universalApk false
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (!releaseSigningProps.isEmpty()) {
+                storeFile rootProject.file(releaseSigningProps['storeFile'])
+                storePassword releaseSigningProps['storePassword']
+                keyAlias releaseSigningProps['keyAlias']
+                keyPassword releaseSigningProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    implementation 'org.mozilla.geckoview:geckoview:152.0.20260706120035'
+}

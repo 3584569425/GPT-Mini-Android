@@ -1,0 +1,4 @@
+<resources>
+    <item name="saved_connection_title" type="id" />
+    <item name="saved_connection_subtitle" type="id" />
+</resources>
