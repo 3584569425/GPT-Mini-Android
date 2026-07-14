@@ -277,9 +277,9 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    if (window.__AIMiniGeckoGlassVersion === "1.16.1") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.17") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.16.1";
+    window.__AIMiniGeckoGlassVersion = "1.17";
     document.documentElement.classList.add("ai-mini-geckoview");
 
     const oldStyle = document.getElementById("ai-mini-gecko-liquid-glass");
@@ -308,67 +308,24 @@
       .composer.codex-liquid-glass-original > .liquid-glass-warp {
         display: block !important;
         filter: none !important;
+        position: absolute !important;
+        inset: -1px !important;
         border-radius: inherit !important;
-        background:
-          linear-gradient(135deg,
-            rgba(255,255,255,.035) 0%,
-            rgba(158,203,255,.025) 42%,
-            rgba(142,240,183,.025) 70%,
-            rgba(255,255,255,.025) 100%) !important;
+        background: transparent !important;
         backdrop-filter: blur(6px) saturate(140%) !important;
         -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
         opacity: 1 !important;
-      }
-      html.ai-mini-geckoview:not(.liquid-glass-off)
-      .composer.codex-liquid-glass-original > .liquid-glass-border-overlay {
-        display: block !important;
-        border-radius: inherit !important;
-        background:
-          linear-gradient(
-            var(--liquid-glass-border-angle, 145deg),
-            transparent 0%,
-            rgba(255,255,255,.38) 18%,
-            rgba(158,203,255,.42) 44%,
-            rgba(142,240,183,.36) 67%,
-            transparent 100%
-          ) !important;
-        box-shadow:
-          inset 0 0 0 .5px rgba(255,255,255,.50),
-          inset 0 1px 3px rgba(255,255,255,.25),
-          0 1px 4px rgba(0,0,0,.35) !important;
-        opacity: 1 !important;
         pointer-events: none !important;
-      }
-      html.ai-mini-geckoview.theme-light:not(.liquid-glass-off)
-      .composer.codex-liquid-glass-original,
-      html.ai-mini-geckoview[data-theme="light"]:not(.liquid-glass-off)
-      .composer.codex-liquid-glass-original {
-        background:
-          linear-gradient(135deg,
-            rgba(255,255,255,.16),
-            rgba(232,243,255,.10) 48%,
-            rgba(231,250,245,.10)) !important;
-        border-color: rgba(255,255,255,.42) !important;
-        box-shadow:
-          0 12px 42px rgba(35,55,80,.18),
-          inset 0 1px 0 rgba(255,255,255,.44),
-          inset 0 -1px 0 rgba(65,92,120,.08) !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
 
   function installDownloadHooks() {
-    if (window.__AIMiniDownloadHooksVersion === "1.14") return;
-    window.__AIMiniDownloadHooksVersion = "1.14";
+    if (window.__AIMiniDownloadHooksVersion === "1.17") return;
+    window.__AIMiniDownloadHooksVersion = "1.17";
 
     const objectUrls = new Map();
-    let activeAttachment = null;
-    try {
-      activeAttachment = JSON.parse(sessionStorage.getItem("__aiMiniActiveAttachment") || "null");
-    } catch (_) {
-      activeAttachment = null;
-    }
     const originalCreateObjectURL = URL.createObjectURL.bind(URL);
     const originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
     URL.createObjectURL = function (object) {
@@ -471,139 +428,11 @@
         return true;
       }
 
-      if (/^https?:/i.test(href)) {
-        fetch(href, { credentials: "include", cache: "no-store" })
-          .then(function (response) {
-            if (!response.ok) throw new Error("HTTP " + response.status);
-            const type = response.headers.get("content-type") || mimeType;
-            return response.blob().then(function (blob) {
-              return sendBlobChunks(blob, fileName, type);
-            });
-          })
-          .catch(function () {
-            window.CodexMiniNative.startDownload(href, fileName, mimeType);
-          });
-        return true;
-      }
+      // HTTP(S) downloads are deliberately left to the WebUI and GeckoView.
+      // The WebUI already resolves authentication, redirects and attachment
+      // endpoints correctly. Re-fetching those links here can turn an APK
+      // attachment into the HTML page returned by an intermediate route.
       return false;
-    }
-
-    function rememberAttachment(attachment) {
-      if (!attachment) return;
-      const name = String(
-        attachment.getAttribute("data-name")
-          || attachment.getAttribute("data-filename")
-          || attachment.getAttribute("download")
-          || "download"
-      );
-      const downloadPath = String(
-        attachment.getAttribute("data-download-path")
-          || attachment.getAttribute("data-preview-path")
-          || attachment.getAttribute("data-url")
-          || attachment.getAttribute("href")
-          || ""
-      );
-      if (!downloadPath) return;
-      activeAttachment = { name: name, downloadPath: downloadPath };
-      try {
-        sessionStorage.setItem("__aiMiniActiveAttachment", JSON.stringify(activeAttachment));
-      } catch (_) {}
-    }
-
-    function previewDownloadTarget(button) {
-      let remembered = activeAttachment;
-      if (!remembered) {
-        try {
-          remembered = JSON.parse(sessionStorage.getItem("__aiMiniActiveAttachment") || "null");
-        } catch (_) {}
-      }
-      const anchor = button && button.closest ? button.closest("a[href]") : null;
-      const rawPath = String(
-        (button && (
-          button.getAttribute("data-download-path")
-            || button.getAttribute("data-preview-path")
-            || button.getAttribute("data-url")
-            || button.getAttribute("href")
-        ))
-          || (anchor && anchor.href)
-          || (remembered && remembered.downloadPath)
-          || ""
-      );
-      if (!rawPath) return null;
-      let fileName = String(
-        (button && (button.getAttribute("download") || button.getAttribute("data-name")))
-          || (anchor && anchor.download)
-          || (remembered && remembered.name)
-          || ""
-      );
-      if (!fileName) {
-        const title = document.querySelector(
-          ".file-preview-name,.file-preview-title,[data-preview-filename]"
-        );
-        fileName = title
-          ? String(title.getAttribute("data-preview-filename") || title.textContent || "").trim()
-          : "";
-      }
-      if (!fileName) {
-        try {
-          fileName = decodeURIComponent(new URL(rawPath, location.href).pathname.split("/").pop() || "");
-        } catch (_) {}
-      }
-      return { name: fileName || "download", downloadPath: rawPath };
-    }
-
-    function resolvedAttachmentUrl(rawPath) {
-      let href = String(rawPath || "");
-      if (!href) return "";
-      try {
-        if (typeof window.attachmentUrl === "function") {
-          href = window.attachmentUrl(href);
-        } else {
-          href = new URL(href, location.href).href;
-        }
-      } catch (_) {
-        try {
-          href = new URL(href, location.href).href;
-        } catch (_) {
-          return "";
-        }
-      }
-      try {
-        const resolved = new URL(href, location.href);
-        const page = new URL(location.href);
-        const token = page.searchParams.get("token");
-        if (token && !resolved.searchParams.has("token")) {
-          resolved.searchParams.set("token", token);
-        }
-        return resolved.href;
-      } catch (_) {
-        return href;
-      }
-    }
-
-    function downloadAttachment(target) {
-      if (!target || !target.downloadPath) return false;
-      const href = resolvedAttachmentUrl(target.downloadPath);
-      if (!href) return false;
-      fetch(href, { credentials: "include", cache: "no-store" })
-        .then(function (response) {
-          if (!response.ok) throw new Error("HTTP " + response.status);
-          const type = response.headers.get("content-type") || "";
-          return response.blob().then(function (blob) {
-            return sendBlobChunks(blob, target.name, type || blob.type || "");
-          });
-        })
-        .catch(function () {
-          window.CodexMiniNative.startDownload(href, target.name, "");
-        });
-      return true;
-    }
-
-    function rememberAttachmentFromEvent(event) {
-      const attachment = event.target && event.target.closest
-        ? event.target.closest(".file-attachment-preview,[data-download-path][data-preview-path]")
-        : null;
-      if (attachment) rememberAttachment(attachment);
     }
 
     const originalAnchorClick = HTMLAnchorElement.prototype.click;
@@ -611,23 +440,7 @@
       if (interceptDownloadAnchor(this)) return;
       return originalAnchorClick.call(this);
     };
-    document.addEventListener("pointerdown", rememberAttachmentFromEvent, true);
-    document.addEventListener("touchstart", rememberAttachmentFromEvent, true);
     document.addEventListener("click", function (event) {
-      rememberAttachmentFromEvent(event);
-
-      const previewDownload = event.target && event.target.closest
-        ? event.target.closest(
-          "#file-preview-download,.file-preview-download,"
-            + "[data-action='download'],button[title*='下载'],a[title*='下载']"
-        )
-        : null;
-      if (previewDownload && downloadAttachment(previewDownloadTarget(previewDownload))) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
-
       const anchor = event.target && event.target.closest
         ? event.target.closest("a[download]")
         : null;

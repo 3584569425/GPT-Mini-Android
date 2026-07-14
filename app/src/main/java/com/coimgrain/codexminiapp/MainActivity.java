@@ -194,7 +194,7 @@ public class MainActivity extends Activity {
     private Button downloadBatchDeleteButton;
     private ImageView downloadCollapseButton;
     private Button downloadsButton;
-    private ImageView miniButton;
+    private RoundedIconView miniButton;
     private View miniMenuScrim;
     private LinearLayout miniMenu;
     private LinearLayout floatSettingsPanel;
@@ -871,6 +871,7 @@ public class MainActivity extends Activity {
         miniButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
         miniButton.setPadding(0, 0, 0, 0);
         miniButton.setBackgroundColor(Color.TRANSPARENT);
+        miniButton.setContentScale(1.05f);
         miniButton.setAlpha(floatIdleAlpha());
         int size = dp(floatButtonSizeDp());
         FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
@@ -1387,22 +1388,18 @@ public class MainActivity extends Activity {
 
     private void refreshFloatingButtonGlassStyle() {
         if (miniButton == null) return;
-        if (nativeLiquidGlassEnabled()) {
-            miniButton.setPadding(dp(3), dp(3), dp(3), dp(3));
-            miniButton.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            miniButton.setBackground(liquidGlassPanelBackground(isFloatMenuLight(), dp(14)));
-            miniButton.setElevation(dp(10));
-        } else {
-            miniButton.setPadding(0, 0, 0, 0);
-            miniButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            miniButton.setBackgroundColor(Color.TRANSPARENT);
-            miniButton.setElevation(0);
-        }
+        // The floating launcher is the app icon itself, not a glass panel that
+        // contains the icon. Keep it edge-to-edge and only round/crop its corners.
+        miniButton.setPadding(0, 0, 0, 0);
+        miniButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        miniButton.setBackgroundColor(Color.TRANSPARENT);
+        miniButton.setElevation(0);
+        miniButton.setContentScale(1.05f);
     }
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.16";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.17";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1556,7 +1553,7 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.16";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.17";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -3168,8 +3165,8 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.16.1'){return;}"
-                + "window.__AIMiniFixVersion='1.16.1';"
+                + "if(window.__AIMiniFixVersion==='1.17'){return;}"
+                + "window.__AIMiniFixVersion='1.17';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
@@ -3194,11 +3191,10 @@ public class MainActivity extends Activity {
                 + "if(!window.__AIMiniDownloadHooksVersion){"
                 + "var bytesToBase64=function(bytes){var binary='';var step=32768;for(var i=0;i<bytes.length;i+=step){var part=bytes.subarray(i,Math.min(bytes.length,i+step));binary+=String.fromCharCode.apply(null,part);}return btoa(binary);};"
                 + "var sendBlobChunks=async function(blob,fileName,mimeType){var id='dl-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);var chunkSize=196608;CodexMiniNative.beginBlobDownload(id,fileName||'download',mimeType||blob.type||'',blob.size||0);try{var index=0;for(var offset=0;offset<blob.size;offset+=chunkSize){var buffer=await blob.slice(offset,Math.min(blob.size,offset+chunkSize)).arrayBuffer();CodexMiniNative.appendBlobDownload(id,index++,bytesToBase64(new Uint8Array(buffer)));}CodexMiniNative.finishBlobDownload(id);}catch(err){CodexMiniNative.cancelBlobDownload(id);CodexMiniNative.toast('Download failed');}};"
-                + "var sendBlob=function(a){try{if(!a||!a.href||a.href.indexOf('blob:')!==0||!window.CodexMiniNative){return false;}fetch(a.href).then(function(r){return r.blob();}).then(function(blob){return sendBlobChunks(blob,a.download||'download',blob.type||'');}).catch(function(){CodexMiniNative.toast('Download failed');});return true;}catch(e){return false;}};"
+                + "var sendBlob=function(a){try{if(!a||!a.href||!a.hasAttribute('download')||!window.CodexMiniNative){return false;}var href=String(a.href||'');if(href.indexOf('blob:')!==0&&href.indexOf('data:')!==0){return false;}fetch(href).then(function(r){return r.blob();}).then(function(blob){return sendBlobChunks(blob,a.download||'download',blob.type||'');}).catch(function(){CodexMiniNative.toast('Download failed');});return true;}catch(e){return false;}};"
                 + "var oldClick=HTMLAnchorElement.prototype.click;"
-                + "var sendRegularDownload=function(a){try{if(!a||!a.href||a.href.indexOf('blob:')===0||!a.hasAttribute('download')||!window.CodexMiniNative){return false;}var href=a.href;var name=a.download||'download';fetch(href,{credentials:'include',cache:'no-store'}).then(function(r){if(!r.ok){throw new Error('HTTP '+r.status);}var type=r.headers.get('content-type')||a.type||'';return r.blob().then(function(blob){return sendBlobChunks(blob,name,type);});}).catch(function(){CodexMiniNative.startDownload(href,name,a.type||'');});return true;}catch(e){return false;}};"
-                + "HTMLAnchorElement.prototype.click=function(){if(sendBlob(this)||sendRegularDownload(this)){return;}return oldClick.call(this);};"
-                + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[download]');if(sendBlob(a)||sendRegularDownload(a)){e.preventDefault();e.stopPropagation();}},true);"
+                + "HTMLAnchorElement.prototype.click=function(){if(sendBlob(this)){return;}return oldClick.call(this);};"
+                + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[download]');if(sendBlob(a)){e.preventDefault();e.stopPropagation();}},true);"
                 + "}"
                 + "var fire=function(){window.dispatchEvent(new Event('resize'));};"
                 + "fire();setTimeout(fire,60);setTimeout(fire,180);setTimeout(fire,420);"
@@ -3228,34 +3224,12 @@ public class MainActivity extends Activity {
                 + "overflow:hidden!important;isolation:isolate!important;}"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) "
                 + ".composer.codex-liquid-glass-original>.liquid-glass-warp{"
-                + "display:block!important;filter:none!important;border-radius:inherit!important;"
-                + "background:linear-gradient(135deg,rgba(255,255,255,.035),"
-                + "rgba(158,203,255,.025) 42%,rgba(142,240,183,.025) 70%,"
-                + "rgba(255,255,255,.025))!important;"
+                + "display:block!important;filter:none!important;"
+                + "position:absolute!important;inset:-1px!important;"
+                + "border-radius:inherit!important;background:transparent!important;"
                 + "backdrop-filter:blur(6px) saturate(140%)!important;"
                 + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;"
-                + "opacity:1!important;}"
-                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
-                + ".composer.codex-liquid-glass-original>.liquid-glass-border-overlay{"
-                + "display:block!important;border-radius:inherit!important;"
-                + "background:linear-gradient(var(--liquid-glass-border-angle,145deg),"
-                + "transparent 0%,rgba(255,255,255,.38) 18%,"
-                + "rgba(158,203,255,.42) 44%,rgba(142,240,183,.36) 67%,"
-                + "transparent 100%)!important;"
-                + "box-shadow:inset 0 0 0 .5px rgba(255,255,255,.50),"
-                + "inset 0 1px 3px rgba(255,255,255,.25),"
-                + "0 1px 4px rgba(0,0,0,.35)!important;"
-                + "opacity:1!important;pointer-events:none!important;}"
-                + "html.ai-mini-geckoview.theme-light:not(.liquid-glass-off) "
-                + ".composer.codex-liquid-glass-original,"
-                + "html.ai-mini-geckoview[data-theme=light]:not(.liquid-glass-off) "
-                + ".composer.codex-liquid-glass-original{"
-                + "background:linear-gradient(135deg,rgba(255,255,255,.16),"
-                + "rgba(232,243,255,.10) 48%,rgba(231,250,245,.10))!important;"
-                + "border-color:rgba(255,255,255,.42)!important;"
-                + "box-shadow:0 12px 42px rgba(35,55,80,.18),"
-                + "inset 0 1px 0 rgba(255,255,255,.44),"
-                + "inset 0 -1px 0 rgba(65,92,120,.08)!important;}";
+                + "opacity:1!important;pointer-events:none!important;}";
     }
 
     private void adaptPlainTextPageForMobile() {
@@ -4544,10 +4518,14 @@ public class MainActivity extends Activity {
         activityInForeground = false;
         persistDownloads();
         // Native Service polling owns task completion in the background. Suspending
-        // Gecko prevents stale/out-of-order WebUI status responses from resurrecting
-        // a task that the Service has already completed.
-        if (webView != null) webView.prepareForBackground(false);
-        if (externalWebView != null) externalWebView.prepareForBackground(false);
+        // Gecko timers are not used for completion, while leaving the visible
+        // compositor active avoids a white TextureView surface in the task snapshot
+        // and when returning after the app has stayed in the background.
+        AIMiniGeckoView visibleBrowser = activeWebView();
+        if (webView != null) webView.prepareForBackground(webView == visibleBrowser);
+        if (externalWebView != null) {
+            externalWebView.prepareForBackground(externalWebView == visibleBrowser);
+        }
         startBackgroundTaskPolling();
         super.onPause();
     }
@@ -6032,9 +6010,15 @@ public class MainActivity extends Activity {
 
         private final Path clipPath = new Path();
         private final RectF bounds = new RectF();
+        private float contentScale = 1f;
 
         RoundedIconView(Context context) {
             super(context);
+        }
+
+        void setContentScale(float scale) {
+            contentScale = Math.max(1f, Math.min(1.12f, scale));
+            invalidate();
         }
 
         @Override
@@ -6051,6 +6035,9 @@ public class MainActivity extends Activity {
         protected void onDraw(Canvas canvas) {
             int saveCount = canvas.save();
             canvas.clipPath(clipPath);
+            if (contentScale > 1f) {
+                canvas.scale(contentScale, contentScale, getWidth() / 2f, getHeight() / 2f);
+            }
             super.onDraw(canvas);
             canvas.restoreToCount(saveCount);
         }

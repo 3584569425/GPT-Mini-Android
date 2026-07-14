@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
 import android.webkit.ValueCallback;
 
 import org.mozilla.geckoview.AllowOrDeny;
@@ -77,6 +78,8 @@ final class AIMiniGeckoView extends GeckoView {
     private boolean nativeDesktopMode;
     private String mobileUserAgent = "";
     private String desktopUserAgent = "";
+    private View compositorCover;
+    private boolean suspendedForBackground;
 
     AIMiniGeckoView(Context context, AIMiniGeckoEngine engine) {
         super(context);
@@ -217,6 +220,7 @@ final class AIMiniGeckoView extends GeckoView {
 
     void prepareForForeground() {
         if (destroyed) return;
+        if (suspendedForBackground) showCompositorCover();
         // coverUntilFirstPaint() is only for the initial navigation. Re-applying it
         // to an already painted session can leave a permanent black cover because a
         // static restored page is not guaranteed to emit another first-paint event.
@@ -224,16 +228,52 @@ final class AIMiniGeckoView extends GeckoView {
         setAlpha(1f);
         session.setActive(true);
         session.setFocused(true);
+        suspendedForBackground = false;
         post(() -> {
             requestLayout();
             invalidate();
         });
+        postDelayed(this::hideCompositorCover, 520L);
     }
 
     void prepareForBackground(boolean keepRunning) {
         if (destroyed) return;
+        if (!keepRunning && !currentUrl.isEmpty()) {
+            suspendedForBackground = true;
+            showCompositorCover();
+        }
         session.setFocused(false);
         session.setActive(keepRunning);
+    }
+
+    private void showCompositorCover() {
+        if (destroyed) return;
+        if (compositorCover == null || compositorCover.getParent() != this) {
+            compositorCover = new View(getContext());
+            compositorCover.setBackgroundColor(Color.BLACK);
+            compositorCover.setClickable(false);
+            addView(compositorCover, new LayoutParams(
+                    LayoutParams.MATCH_PARENT,
+                    LayoutParams.MATCH_PARENT
+            ));
+        }
+        compositorCover.animate().cancel();
+        compositorCover.setAlpha(1f);
+        compositorCover.setVisibility(VISIBLE);
+        compositorCover.bringToFront();
+    }
+
+    private void hideCompositorCover() {
+        if (compositorCover == null || compositorCover.getVisibility() != VISIBLE) return;
+        compositorCover.animate()
+                .alpha(0f)
+                .setDuration(120L)
+                .withEndAction(() -> {
+                    if (compositorCover == null) return;
+                    compositorCover.setVisibility(GONE);
+                    compositorCover.setAlpha(1f);
+                })
+                .start();
     }
 
     void saveState(Bundle ignored) {
@@ -380,6 +420,21 @@ final class AIMiniGeckoView extends GeckoView {
                                 response
                         );
                     }
+                }
+
+                @Override
+                public void onFirstComposite(GeckoSession session) {
+                    post(AIMiniGeckoView.this::hideCompositorCover);
+                }
+
+                @Override
+                public void onFirstContentfulPaint(GeckoSession session) {
+                    post(AIMiniGeckoView.this::hideCompositorCover);
+                }
+
+                @Override
+                public void onPaintStatusReset(GeckoSession session) {
+                    post(AIMiniGeckoView.this::showCompositorCover);
                 }
 
                 @Override
