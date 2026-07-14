@@ -9,6 +9,7 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -38,6 +39,7 @@ public final class AIMiniNotificationService extends Service {
     static final String EXTRA_RUNNING_COUNT = "running_count";
 
     private static final long POLL_INTERVAL_MS = 2500L;
+    private static final long IDLE_DISCOVERY_INTERVAL_MS = 5000L;
     private static final long EARLY_TERMINAL_GRACE_MS = 8000L;
     private static final long WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L;
 
@@ -112,14 +114,17 @@ public final class AIMiniNotificationService extends Service {
             TaskMonitorJobService.cancel(this);
             releaseTaskWakeLock();
             refreshPersistentNotification(0);
-            return;
-        }
-        TaskMonitorJobService.ensureScheduled(this);
-        if (forceWakeLockRefresh) {
-            refreshTaskWakeLock();
         } else {
-            acquireTaskWakeLock();
+            TaskMonitorJobService.ensureScheduled(this);
+            if (forceWakeLockRefresh) {
+                refreshTaskWakeLock();
+            } else {
+                acquireTaskWakeLock();
+            }
         }
+        // Keep a lightweight connection-level status probe running even when no
+        // WebView callback registered a task. This lets the foreground service
+        // discover a task after Gecko has been frozen in the background.
         handler.post(poller);
     }
 
@@ -128,66 +133,246 @@ public final class AIMiniNotificationService extends Service {
             handler.postDelayed(poller, POLL_INTERVAL_MS);
             return;
         }
-        List<MonitoredTask> snapshot = readTasks();
-        if (snapshot.isEmpty()) {
-            TaskMonitorJobService.cancel(this);
-            releaseTaskWakeLock();
-            refreshPersistentNotification(0);
-            return;
-        }
 
         pollRunning = true;
         ioExecutor.execute(() -> {
             List<TerminalResult> terminals = new ArrayList<>();
-            long now = System.currentTimeMillis();
-            for (MonitoredTask task : snapshot) {
-                try {
-                    String response = httpGet(task.endpoint, 6000);
-                    JSONObject status = new JSONObject(response);
-                    String state = taskStateFromJson(status);
-                    Log.d(TAG, "task poll state=" + state);
-                    if ("running".equals(state)) {
-                        endpointsObservedRunning.add(task.endpoint);
-                        continue;
-                    }
-                    if (!"complete".equals(state) && !"error".equals(state)) continue;
+            try {
+                CurrentStatusResult currentStatus = fetchCurrentStatus();
+                if (currentStatus != null && "running".equals(currentStatus.state)) {
+                    upsertDiscoveredTask(currentStatus.toMonitoredTask());
+                }
+                List<MonitoredTask> snapshot = readTasks();
+                long now = System.currentTimeMillis();
+                for (MonitoredTask task : snapshot) {
+                    try {
+                        JSONObject status;
+                        String state;
+                        String effectiveEndpoint = task.endpoint;
+                        if (currentStatus != null
+                                && currentStatus.matches(task)
+                                && !currentStatus.state.trim().isEmpty()) {
+                            status = currentStatus.status;
+                            state = currentStatus.state;
+                            effectiveEndpoint = currentStatus.connection.statusForThread(
+                                    currentStatus.threadId
+                            );
+                        } else {
+                            ConnectionInfo connection = connectionInfo();
+                            if (connection != null && usableThreadId(task.threadId)) {
+                                effectiveEndpoint = connection.statusForThread(task.threadId);
+                            }
+                            String response = httpGet(effectiveEndpoint, 6000);
+                            status = new JSONObject(response);
+                            state = taskStateFromJson(status);
+                        }
+                        Log.d(TAG, "task poll state=" + state);
+                        if ("running".equals(state)) {
+                            endpointsObservedRunning.add(task.endpoint);
+                            endpointsObservedRunning.add(effectiveEndpoint);
+                            continue;
+                        }
+                        if (!"complete".equals(state) && !"error".equals(state)) continue;
 
-                    boolean observedRunning = endpointsObservedRunning.contains(task.endpoint);
-                    if (!observedRunning && now - task.startedAt < EARLY_TERMINAL_GRACE_MS) {
-                        continue;
+                        boolean observedRunning = endpointsObservedRunning.contains(task.endpoint)
+                                || endpointsObservedRunning.contains(effectiveEndpoint);
+                        if (!observedRunning && now - task.startedAt < EARLY_TERMINAL_GRACE_MS) {
+                            continue;
+                        }
+                        String threadId = status.optString("threadId", task.threadId);
+                        terminals.add(new TerminalResult(task, threadId, state));
+                    } catch (Exception error) {
+                        Log.w(TAG, "task poll temporarily failed", error);
+                        // Keep the monitor registered. Temporary local-route or network
+                        // failures must not turn a healthy task into a failure.
                     }
-                    String threadId = status.optString("threadId", task.threadId);
-                    terminals.add(new TerminalResult(task, threadId, state));
-                } catch (Exception error) {
-                    Log.w(TAG, "task poll temporarily failed", error);
-                    // Keep the monitor registered. Temporary local-route or network
-                    // failures must not turn a healthy task into a failure.
+                }
+
+                if (!terminals.isEmpty()) removeCompletedTasks(terminals);
+            } catch (Throwable error) {
+                // A malformed preference entry or an unexpected runtime failure must
+                // not permanently leave pollRunning=true and silently stop monitoring.
+                Log.e(TAG, "task monitor cycle failed", error);
+                terminals.clear();
+            } finally {
+                handler.post(() -> finishPollCycle(terminals));
+            }
+        });
+    }
+
+    private void finishPollCycle(List<TerminalResult> terminals) {
+        pollRunning = false;
+        for (TerminalResult terminal : terminals) {
+            endpointsObservedRunning.remove(terminal.task.endpoint);
+            showTerminalNotification(
+                    terminal.threadId,
+                    terminal.task.name,
+                    terminal.state
+            );
+        }
+        List<MonitoredTask> remaining = readTasks();
+        refreshPersistentNotification(remaining.size());
+        handler.removeCallbacks(poller);
+        if (remaining.isEmpty()) {
+            TaskMonitorJobService.cancel(this);
+            releaseTaskWakeLock();
+        } else {
+            TaskMonitorJobService.ensureScheduled(this);
+            acquireTaskWakeLock();
+        }
+        handler.postDelayed(
+                poller,
+                remaining.isEmpty() ? IDLE_DISCOVERY_INTERVAL_MS : POLL_INTERVAL_MS
+        );
+    }
+
+    private CurrentStatusResult fetchCurrentStatus() {
+        ConnectionInfo connection = connectionInfo();
+        if (connection == null) return null;
+        try {
+            JSONObject status = new JSONObject(httpGet(connection.currentStatusUrl, 6000));
+            String state = taskStateFromJson(status);
+            String threadId = status.optString("threadId", "").trim();
+            if (threadId.isEmpty()) return null;
+            Log.d(TAG, "connection status state=" + state + " thread=" + threadId);
+            return new CurrentStatusResult(connection, status, state, threadId);
+        } catch (Exception error) {
+            Log.w(TAG, "connection status discovery temporarily failed", error);
+            return null;
+        }
+    }
+
+    private void upsertDiscoveredTask(MonitoredTask discovered) {
+        if (discovered == null) return;
+        List<MonitoredTask> existingTasks = readTasks();
+        List<MonitoredTask> merged = new ArrayList<>();
+        MonitoredTask placeholder = null;
+        boolean hasExactMatch = false;
+        for (MonitoredTask existing : existingTasks) {
+            if (sameTask(existing, discovered)) hasExactMatch = true;
+            if (!isPlaceholderTask(existing)) continue;
+            if (placeholder == null || existing.startedAt > placeholder.startedAt) {
+                placeholder = existing;
+            }
+        }
+        boolean inserted = false;
+        boolean changed = false;
+        for (MonitoredTask existing : existingTasks) {
+            boolean exactMatch = sameTask(existing, discovered);
+            boolean placeholderMatch = !hasExactMatch
+                    && !inserted
+                    && placeholder != null
+                    && existing.key.equals(placeholder.key);
+            if (!exactMatch && !placeholderMatch) {
+                merged.add(existing);
+                continue;
+            }
+            if (inserted) {
+                endpointsObservedRunning.remove(existing.endpoint);
+                changed = true;
+                continue;
+            }
+            String name = existing.name == null || existing.name.trim().isEmpty()
+                    ? discovered.name
+                    : existing.name;
+            long startedAt = Math.min(existing.startedAt, discovered.startedAt);
+            MonitoredTask replacement = new MonitoredTask(
+                    discovered.key,
+                    discovered.threadId,
+                    name,
+                    discovered.endpoint,
+                    startedAt
+            );
+            merged.add(replacement);
+            changed = !existing.key.equals(replacement.key)
+                    || !existing.threadId.equals(replacement.threadId)
+                    || !existing.name.equals(replacement.name)
+                    || !existing.endpoint.equals(replacement.endpoint)
+                    || existing.startedAt != replacement.startedAt;
+            endpointsObservedRunning.remove(existing.endpoint);
+            inserted = true;
+        }
+        if (!inserted) {
+            merged.add(discovered);
+            changed = true;
+        }
+        endpointsObservedRunning.add(discovered.endpoint);
+        if (changed) writeTasks(merged);
+    }
+
+    private boolean sameTask(MonitoredTask left, MonitoredTask right) {
+        if (left == null || right == null) return false;
+        if (right.threadId.equals(left.threadId)
+                || right.threadId.equals(left.key)) {
+            return true;
+        }
+        try {
+            String endpointThread = Uri.parse(left.endpoint).getQueryParameter("thread");
+            return right.threadId.equals(endpointThread);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean isPlaceholderTask(MonitoredTask task) {
+        return task != null
+                && (task.key.startsWith("pending-")
+                || "current".equals(task.key)
+                || !usableThreadId(task.threadId));
+    }
+
+    private void writeTasks(List<MonitoredTask> tasks) {
+        JSONArray array = new JSONArray();
+        if (tasks != null) {
+            for (MonitoredTask task : tasks) {
+                if (task == null) continue;
+                try {
+                    array.put(task.toJson());
+                } catch (Exception ignored) {
                 }
             }
+        }
+        preferences.edit()
+                .putString(MainActivity.KEY_MONITORED_TASKS, array.toString())
+                .commit();
+    }
 
-            if (!terminals.isEmpty()) removeCompletedTasks(terminals);
-            handler.post(() -> {
-                pollRunning = false;
-                for (TerminalResult terminal : terminals) {
-                    endpointsObservedRunning.remove(terminal.task.endpoint);
-                    showTerminalNotification(
-                            terminal.threadId,
-                            terminal.task.name,
-                            terminal.state
-                    );
-                }
-                List<MonitoredTask> remaining = readTasks();
-                refreshPersistentNotification(remaining.size());
-                handler.removeCallbacks(poller);
-                if (remaining.isEmpty()) {
-                    TaskMonitorJobService.cancel(this);
-                    releaseTaskWakeLock();
-                } else {
-                    acquireTaskWakeLock();
-                    handler.postDelayed(poller, POLL_INTERVAL_MS);
-                }
-            });
-        });
+    private ConnectionInfo connectionInfo() {
+        String savedUrl = preferences.getString(MainActivity.KEY_LAST_URL, "");
+        if (savedUrl == null || savedUrl.trim().isEmpty()) return null;
+        try {
+            Uri page = Uri.parse(savedUrl.trim());
+            String scheme = page.getScheme();
+            String authority = page.getEncodedAuthority();
+            String token = page.getQueryParameter("token");
+            if ((!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))
+                    || authority == null
+                    || authority.trim().isEmpty()
+                    || token == null
+                    || token.trim().isEmpty()) {
+                return null;
+            }
+            String path = page.getPath() == null ? "" : page.getPath();
+            while (path.endsWith("/") && path.length() > 1) {
+                path = path.substring(0, path.length() - 1);
+            }
+            if ("/".equals(path)) path = "";
+            String base = scheme + "://" + authority + path;
+            Uri currentStatus = Uri.parse(base + "/codex/status")
+                    .buildUpon()
+                    .appendQueryParameter("token", token)
+                    .build();
+            return new ConnectionInfo(base, token, currentStatus.toString());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean usableThreadId(String threadId) {
+        return threadId != null
+                && !threadId.trim().isEmpty()
+                && !"current".equals(threadId.trim())
+                && !threadId.trim().startsWith("pending-");
     }
 
     private void refreshTaskWakeLock() {
@@ -218,17 +403,12 @@ public final class AIMiniNotificationService extends Service {
     private void removeCompletedTasks(List<TerminalResult> terminals) {
         Set<String> completedKeys = new HashSet<>();
         for (TerminalResult terminal : terminals) completedKeys.add(terminal.task.key);
-        JSONArray remaining = new JSONArray();
+        List<MonitoredTask> remaining = new ArrayList<>();
         for (MonitoredTask task : readTasks()) {
             if (completedKeys.contains(task.key)) continue;
-            try {
-                remaining.put(task.toJson());
-            } catch (Exception ignored) {
-            }
+            remaining.add(task);
         }
-        preferences.edit()
-                .putString(MainActivity.KEY_MONITORED_TASKS, remaining.toString())
-                .commit();
+        writeTasks(remaining);
     }
 
     private List<MonitoredTask> readTasks() {
@@ -528,6 +708,68 @@ public final class AIMiniNotificationService extends Service {
             object.put("endpoint", endpoint);
             object.put("startedAt", startedAt);
             return object;
+        }
+    }
+
+    private final class CurrentStatusResult {
+        final ConnectionInfo connection;
+        final JSONObject status;
+        final String state;
+        final String threadId;
+
+        CurrentStatusResult(
+                ConnectionInfo connection,
+                JSONObject status,
+                String state,
+                String threadId
+        ) {
+            this.connection = connection;
+            this.status = status;
+            this.state = state == null ? "" : state;
+            this.threadId = threadId == null ? "" : threadId;
+        }
+
+        MonitoredTask toMonitoredTask() {
+            return new MonitoredTask(
+                    threadId,
+                    threadId,
+                    getString(R.string.task_complete_fallback),
+                    connection.statusForThread(threadId),
+                    System.currentTimeMillis()
+            );
+        }
+
+        boolean matches(MonitoredTask task) {
+            if (task == null) return false;
+            if (threadId.equals(task.threadId) || threadId.equals(task.key)) return true;
+            try {
+                return threadId.equals(
+                        Uri.parse(task.endpoint).getQueryParameter("thread")
+                );
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+    }
+
+    private static final class ConnectionInfo {
+        final String base;
+        final String token;
+        final String currentStatusUrl;
+
+        ConnectionInfo(String base, String token, String currentStatusUrl) {
+            this.base = base;
+            this.token = token;
+            this.currentStatusUrl = currentStatusUrl;
+        }
+
+        String statusForThread(String threadId) {
+            return Uri.parse(base + "/codex/status")
+                    .buildUpon()
+                    .appendQueryParameter("token", token)
+                    .appendQueryParameter("thread", threadId)
+                    .build()
+                    .toString();
         }
     }
 

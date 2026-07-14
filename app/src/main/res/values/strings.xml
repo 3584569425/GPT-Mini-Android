@@ -94,7 +94,7 @@
     <string name="notification_channel_alerts_description">任务完成、失败或异常时在屏幕顶部显示提醒</string>
     <string name="task_connected_title">GPT Mini 已连接</string>
     <string name="background_service_title">GPT Mini 后台服务</string>
-    <string name="background_service_text">后台服务运行中，仅在任务结束时提醒</string>
+    <string name="background_service_text">后台服务运行中，正在检查任务状态</string>
     <string name="task_idle_text">空闲中</string>
     <string name="task_running_title">GPT Mini 任务运行中</string>
     <plurals name="task_running_summary">

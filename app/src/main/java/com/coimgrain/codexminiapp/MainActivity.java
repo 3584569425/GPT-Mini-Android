@@ -110,7 +110,7 @@ public class MainActivity extends Activity {
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1004;
     private static final int QR_SCAN_REQUEST = 1005;
     static final String PREFS_NAME = "codex_mini_android";
-    private static final String KEY_LAST_URL = "last_url";
+    static final String KEY_LAST_URL = "last_url";
     private static final String KEY_SAVED_CONNECTIONS = "saved_connections";
     private static final String KEY_DOWNLOAD_RECORDS = "download_records";
     private static final String KEY_FLOAT_SIZE = "float_size";
@@ -147,6 +147,7 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
     private final List<TextView> miniMenuButtons = new ArrayList<>();
+    private final List<TextView> settingsLabels = new ArrayList<>();
     private final Set<String> runningNotificationTasks = new HashSet<>();
     private final Map<String, String> monitoredTaskStatusUrls = new HashMap<>();
     private final Map<String, String> monitoredTaskNames = new HashMap<>();
@@ -268,11 +269,24 @@ public class MainActivity extends Activity {
         geckoEngine.setNativeMessageHandler(this::handleGeckoNativeMessage);
 
         Window window = getWindow();
-        window.setStatusBarColor(Color.BLACK);
+        window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.BLACK);
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(true);
+            window.setDecorFitsSystemWindows(false);
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
+        } else {
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            );
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(attributes);
         }
 
         appHost = new FrameLayout(this);
@@ -1236,9 +1250,11 @@ public class MainActivity extends Activity {
             topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
         }
         boolean light = isFloatMenuLight();
-        int systemBarColor = light ? Color.rgb(238, 242, 248) : Color.rgb(9, 12, 18);
         Window window = getWindow();
-        window.setStatusBarColor(systemBarColor);
+        // The WebUI must render behind the status bar/cutout. The adjustable
+        // topInsetArea is the only optional safe area and starts at the physical
+        // top edge of the display.
+        window.setStatusBarColor(Color.TRANSPARENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             android.view.WindowInsetsController controller = window.getInsetsController();
             if (controller != null) {
@@ -1325,7 +1341,7 @@ public class MainActivity extends Activity {
             ));
             boolean light = isFloatMenuLight();
             floatGlassOption.setTextColor(enabled
-                    ? Color.rgb(48, 211, 157)
+                    ? light ? Color.rgb(0, 105, 72) : Color.rgb(48, 211, 157)
                     : light ? Color.rgb(72, 76, 86) : Color.rgb(218, 222, 230));
             floatGlassOption.setBackground(enabled
                     ? optionSelectedBackground(light)
@@ -1350,7 +1366,7 @@ public class MainActivity extends Activity {
         button.setText((selected ? "●  " : "○  ") + label);
         boolean light = isFloatMenuLight();
         button.setTextColor(selected
-                ? Color.rgb(78, 230, 176)
+                ? light ? Color.rgb(0, 105, 72) : Color.rgb(78, 230, 176)
                 : light ? Color.rgb(72, 76, 86) : Color.rgb(218, 222, 230));
         button.setBackground(selected ? optionSelectedBackground(light) : optionBackground(light));
     }
@@ -1377,6 +1393,12 @@ public class MainActivity extends Activity {
             button.setTextColor(light ? Color.rgb(30, 34, 42) : Color.rgb(244, 244, 245));
             button.setBackground(optionBackground(light));
         }
+        int labelColor = light
+                ? Color.rgb(27, 78, 62)
+                : Color.rgb(195, 236, 213);
+        for (TextView label : settingsLabels) {
+            label.setTextColor(labelColor);
+        }
         updateFloatSettingsLabels();
         updateNotificationSettingsLabels();
         refreshDownloadsTheme();
@@ -1399,7 +1421,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.17";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.19";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1553,7 +1575,7 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.17";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.19";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -2300,7 +2322,7 @@ public class MainActivity extends Activity {
         String state = normalizeTaskState(status);
         String normalizedName = normalizedTaskName(threadName);
         String taskKey = notificationTaskKey(threadId, normalizedName);
-        String endpoint = statusUrl == null ? "" : statusUrl.trim();
+        String endpoint = backgroundSafeStatusEndpoint(statusUrl, threadId);
         String previousEndpointKey = taskKeyForEndpoint(endpoint);
         if (!activityInForeground) {
             boolean alreadyTracked = monitoredTaskStatusUrls.containsKey(taskKey)
@@ -3090,6 +3112,45 @@ public class MainActivity extends Activity {
         return base.toString();
     }
 
+    private String backgroundSafeStatusEndpoint(String rawEndpoint, String threadId) {
+        String endpoint = rawEndpoint == null ? "" : rawEndpoint.trim();
+        String savedUrl = preferences == null
+                ? ""
+                : preferences.getString(KEY_LAST_URL, "");
+        if (savedUrl == null || savedUrl.trim().isEmpty()) return endpoint;
+        try {
+            Uri saved = Uri.parse(normalizeUrl(savedUrl));
+            String token = saved.getQueryParameter("token");
+            if (!isHttpScheme(saved.getScheme())
+                    || saved.getHost() == null
+                    || token == null
+                    || token.trim().isEmpty()) {
+                return endpoint;
+            }
+
+            Uri source = endpoint.isEmpty() ? null : Uri.parse(endpoint);
+            String sourcePath = source == null ? "" : String.valueOf(source.getPath());
+            String apiFamily = sourcePath.contains("/claude/") ? "claude" : "codex";
+            String sourceThread = source == null ? "" : source.getQueryParameter("thread");
+            String resolvedThread = sourceThread == null || sourceThread.trim().isEmpty()
+                    ? threadId == null ? "" : threadId.trim()
+                    : sourceThread.trim();
+
+            Uri.Builder builder = Uri.parse(
+                    routeBaseForPage(saved) + "/" + apiFamily + "/status"
+            ).buildUpon();
+            builder.appendQueryParameter("token", token);
+            if (!resolvedThread.isEmpty()
+                    && !"current".equals(resolvedThread)
+                    && !resolvedThread.startsWith("pending-")) {
+                builder.appendQueryParameter("thread", resolvedThread);
+            }
+            return builder.build().toString();
+        } catch (Exception ignored) {
+            return endpoint;
+        }
+    }
+
     private boolean isPrivateHost(String host) {
         if (host == null) return false;
         String value = host.toLowerCase(Locale.ROOT);
@@ -3140,8 +3201,8 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.17'){return;}"
-                + "window.__AIMiniFixVersion='1.17';"
+                + "if(window.__AIMiniFixVersion==='1.19'){return;}"
+                + "window.__AIMiniFixVersion='1.19';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
@@ -3228,6 +3289,7 @@ public class MainActivity extends Activity {
     private void installImeInsetHandling(View root) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             root.setOnApplyWindowInsetsListener((view, insets) -> {
+                applySystemBottomInset(insets);
                 applyImeInset(view, imeOverlap(view, insets));
                 return insets;
             });
@@ -3239,6 +3301,7 @@ public class MainActivity extends Activity {
                         WindowInsets insets,
                         List<WindowInsetsAnimation> runningAnimations
                 ) {
+                    applySystemBottomInset(insets);
                     applyImeInset(root, imeOverlap(root, insets));
                     return insets;
                 }
@@ -3246,7 +3309,10 @@ public class MainActivity extends Activity {
                 @Override
                 public void onEnd(WindowInsetsAnimation animation) {
                     WindowInsets insets = root.getRootWindowInsets();
-                    if (insets != null) applyImeInset(root, imeOverlap(root, insets));
+                    if (insets != null) {
+                        applySystemBottomInset(insets);
+                        applyImeInset(root, imeOverlap(root, insets));
+                    }
                 }
             });
             root.post(root::requestApplyInsets);
@@ -3255,12 +3321,29 @@ public class MainActivity extends Activity {
         watchKeyboardLegacy(root);
     }
 
+    private void applySystemBottomInset(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R
+                || insets == null
+                || appHost == null) {
+            return;
+        }
+        Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
+        Insets ime = insets.getInsets(WindowInsets.Type.ime());
+        // Edge-to-edge removes Android's automatic system-bar padding. Apply only
+        // the bottom inset ourselves so the top remains truly full-screen, while
+        // GeckoView still resizes continuously with the IME animation.
+        int bottom = Math.max(0, Math.max(navigation.bottom, ime.bottom));
+        if (appHost.getPaddingBottom() != bottom) {
+            appHost.setPadding(0, 0, 0, bottom);
+        }
+    }
+
     private int imeOverlap(View root, WindowInsets insets) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || insets == null) return 0;
         Insets ime = insets.getInsets(WindowInsets.Type.ime());
         Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
-        // decorFitsSystemWindows(true) already keeps the app above the navigation bar.
-        // Only compensate the part of the IME that actually overlaps app content.
+        // appHost keeps content above the navigation bar while the status bar is
+        // edge-to-edge. Only compensate the part of the IME beyond that bottom inset.
         return Math.max(
                 visibleKeyboardOverlap(root),
                 Math.max(0, ime.bottom - navigation.bottom)
@@ -4731,8 +4814,11 @@ public class MainActivity extends Activity {
         TextView view = new TextView(this);
         view.setText(text);
         view.setTextSize(13);
-        view.setTextColor(Color.rgb(195, 236, 213));
+        view.setTextColor(isFloatMenuLight()
+                ? Color.rgb(27, 78, 62)
+                : Color.rgb(195, 236, 213));
         view.setPadding(0, dp(8), 0, 0);
+        settingsLabels.add(view);
         return view;
     }
 
