@@ -1,58 +1,285 @@
 package com.coimgrain.codexminiapp;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class AIMiniNotificationService extends Service {
+    private static final String TAG = "GPTMiniTaskMonitor";
+    static final String ACTION_SYNC = "app.gptmini.action.SYNC_TASK_MONITOR";
     static final String ACTION_UPDATE = "app.gptmini.action.UPDATE_PERSISTENT_NOTIFICATION";
     static final String ACTION_STOP = "app.gptmini.action.STOP_PERSISTENT_NOTIFICATION";
+    static final String ACTION_WAKE_POLL = "app.gptmini.action.WAKE_TASK_MONITOR";
     static final String EXTRA_RUNNING_COUNT = "running_count";
+
+    private static final long POLL_INTERVAL_MS = 2500L;
+    private static final long EARLY_TERMINAL_GRACE_MS = 8000L;
+    private static final long WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final Set<String> endpointsObservedRunning = new HashSet<>();
+    private volatile boolean pollRunning;
+    private SharedPreferences preferences;
+    private PowerManager.WakeLock taskWakeLock;
+
+    private final Runnable poller = new Runnable() {
+        @Override
+        public void run() {
+            pollMonitoredTasks();
+        }
+    };
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        preferences = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
+        ensureChannels();
+        PowerManager powerManager = getSystemService(PowerManager.class);
+        if (powerManager != null) {
+            taskWakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    getPackageName() + ":task-monitor"
+            );
+            taskWakeLock.setReferenceCounted(false);
+        }
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE);
-            } else {
-                stopForeground(true);
-            }
+            TaskMonitorJobService.cancel(this);
+            stopForegroundNotification();
             stopSelf();
             return START_NOT_STICKY;
         }
+        boolean alarmWake = intent != null && ACTION_WAKE_POLL.equals(intent.getAction());
 
-        int runningCount = intent == null ? 0 : Math.max(
-                0,
-                intent.getIntExtra(EXTRA_RUNNING_COUNT, 0)
-        );
-        ensureStatusChannel();
-        startForeground(
-                MainActivity.PERSISTENT_NOTIFICATION_ID,
-                buildPersistentNotification(runningCount)
-        );
-        return START_NOT_STICKY;
+        boolean persistent = isPersistentMode();
+        List<MonitoredTask> tasks = readTasks();
+        // SharedPreferences is the monitor's source of truth. Activity state can
+        // remain stale while Gecko is frozen in the background, so an intent extra
+        // must never resurrect an already completed task in the foreground notice.
+        int runningCount = tasks.size();
+        if (persistent) {
+            startForeground(
+                    MainActivity.PERSISTENT_NOTIFICATION_ID,
+                    buildPersistentNotification(runningCount)
+            );
+        } else {
+            stopForegroundNotification();
+        }
+
+        schedulePolling(tasks, alarmWake);
+        return persistent || !tasks.isEmpty() ? START_STICKY : START_NOT_STICKY;
     }
 
     @Override
     public void onDestroy() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
-        }
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager != null) manager.cancel(MainActivity.PERSISTENT_NOTIFICATION_ID);
+        handler.removeCallbacksAndMessages(null);
+        ioExecutor.shutdownNow();
+        releaseTaskWakeLock();
+        stopForegroundNotification();
         super.onDestroy();
     }
 
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    private void schedulePolling(List<MonitoredTask> tasks) {
+        schedulePolling(tasks, false);
+    }
+
+    private void schedulePolling(List<MonitoredTask> tasks, boolean forceWakeLockRefresh) {
+        handler.removeCallbacks(poller);
+        if (tasks == null || tasks.isEmpty()) {
+            TaskMonitorJobService.cancel(this);
+            releaseTaskWakeLock();
+            if (!isPersistentMode()) stopSelf();
+            return;
+        }
+        TaskMonitorJobService.ensureScheduled(this);
+        if (forceWakeLockRefresh) {
+            refreshTaskWakeLock();
+        } else {
+            acquireTaskWakeLock();
+        }
+        handler.post(poller);
+    }
+
+    private void pollMonitoredTasks() {
+        if (pollRunning) {
+            handler.postDelayed(poller, POLL_INTERVAL_MS);
+            return;
+        }
+        List<MonitoredTask> snapshot = readTasks();
+        if (snapshot.isEmpty()) {
+            TaskMonitorJobService.cancel(this);
+            releaseTaskWakeLock();
+            if (isPersistentMode()) refreshPersistentNotification(0);
+            else stopSelf();
+            return;
+        }
+
+        pollRunning = true;
+        ioExecutor.execute(() -> {
+            List<TerminalResult> terminals = new ArrayList<>();
+            long now = System.currentTimeMillis();
+            for (MonitoredTask task : snapshot) {
+                try {
+                    String response = httpGet(task.endpoint, 6000);
+                    JSONObject status = new JSONObject(response);
+                    String state = taskStateFromJson(status);
+                    Log.d(TAG, "task poll state=" + state);
+                    if ("running".equals(state)) {
+                        endpointsObservedRunning.add(task.endpoint);
+                        continue;
+                    }
+                    if (!"complete".equals(state) && !"error".equals(state)) continue;
+
+                    boolean observedRunning = endpointsObservedRunning.contains(task.endpoint);
+                    if (!observedRunning && now - task.startedAt < EARLY_TERMINAL_GRACE_MS) {
+                        continue;
+                    }
+                    String threadId = status.optString("threadId", task.threadId);
+                    terminals.add(new TerminalResult(task, threadId, state));
+                } catch (Exception error) {
+                    Log.w(TAG, "task poll temporarily failed", error);
+                    // Keep the monitor registered. Temporary local-route or network
+                    // failures must not turn a healthy task into a failure.
+                }
+            }
+
+            if (!terminals.isEmpty()) removeCompletedTasks(terminals);
+            handler.post(() -> {
+                pollRunning = false;
+                for (TerminalResult terminal : terminals) {
+                    endpointsObservedRunning.remove(terminal.task.endpoint);
+                    showTerminalNotification(
+                            terminal.threadId,
+                            terminal.task.name,
+                            terminal.state
+                    );
+                }
+                List<MonitoredTask> remaining = readTasks();
+                if (isPersistentMode()) refreshPersistentNotification(remaining.size());
+                handler.removeCallbacks(poller);
+                if (remaining.isEmpty()) {
+                    TaskMonitorJobService.cancel(this);
+                    releaseTaskWakeLock();
+                    if (!isPersistentMode()) stopSelf();
+                } else {
+                    acquireTaskWakeLock();
+                    handler.postDelayed(poller, POLL_INTERVAL_MS);
+                }
+            });
+        });
+    }
+
+    private void refreshTaskWakeLock() {
+        releaseTaskWakeLock();
+        acquireTaskWakeLock();
+    }
+
+    private void acquireTaskWakeLock() {
+        if (taskWakeLock == null || taskWakeLock.isHeld()) return;
+        try {
+            taskWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+            Log.d(TAG, "task wake lock acquired");
+        } catch (Exception error) {
+            Log.w(TAG, "failed to acquire task wake lock", error);
+        }
+    }
+
+    private void releaseTaskWakeLock() {
+        if (taskWakeLock == null || !taskWakeLock.isHeld()) return;
+        try {
+            taskWakeLock.release();
+            Log.d(TAG, "task wake lock released");
+        } catch (Exception error) {
+            Log.w(TAG, "failed to release task wake lock", error);
+        }
+    }
+
+    private void removeCompletedTasks(List<TerminalResult> terminals) {
+        Set<String> completedKeys = new HashSet<>();
+        for (TerminalResult terminal : terminals) completedKeys.add(terminal.task.key);
+        JSONArray remaining = new JSONArray();
+        for (MonitoredTask task : readTasks()) {
+            if (completedKeys.contains(task.key)) continue;
+            try {
+                remaining.put(task.toJson());
+            } catch (Exception ignored) {
+            }
+        }
+        preferences.edit()
+                .putString(MainActivity.KEY_MONITORED_TASKS, remaining.toString())
+                .commit();
+    }
+
+    private List<MonitoredTask> readTasks() {
+        List<MonitoredTask> tasks = new ArrayList<>();
+        String raw = preferences.getString(MainActivity.KEY_MONITORED_TASKS, "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject object = array.optJSONObject(index);
+                if (object == null) continue;
+                MonitoredTask task = MonitoredTask.fromJson(object);
+                if (task != null) tasks.add(task);
+            }
+        } catch (Exception ignored) {
+        }
+        return tasks;
+    }
+
+    private boolean isPersistentMode() {
+        return MainActivity.NOTIFICATION_MODE_PERSISTENT.equals(
+                preferences.getString(
+                        MainActivity.KEY_NOTIFICATION_MODE,
+                        MainActivity.NOTIFICATION_MODE_END
+                )
+        );
+    }
+
+    private void refreshPersistentNotification(int runningCount) {
+        if (!isPersistentMode()) return;
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) {
+            manager.notify(
+                    MainActivity.PERSISTENT_NOTIFICATION_ID,
+                    buildPersistentNotification(runningCount)
+            );
+        }
     }
 
     private Notification buildPersistentNotification(int runningCount) {
@@ -92,17 +319,237 @@ public final class AIMiniNotificationService extends Service {
         return builder.build();
     }
 
-    private void ensureStatusChannel() {
+    private void showTerminalNotification(String threadId, String taskName, String state) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        ensureChannels();
+
+        boolean error = "error".equals(state);
+        String name = taskName == null || taskName.trim().isEmpty()
+                ? getString(R.string.task_complete_fallback)
+                : taskName.trim();
+        String key = threadId == null || threadId.trim().isEmpty()
+                ? name
+                : threadId.trim();
+        int notificationId = 10000 + Math.abs(key.hashCode() % 20000);
+
+        Intent launchIntent = new Intent(this, MainActivity.class);
+        launchIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                notificationId,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, MainActivity.NOTIFICATION_ALERT_CHANNEL_ID)
+                : new Notification.Builder(this);
+        builder.setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(getString(
+                        error ? R.string.task_error_title : R.string.task_complete_title
+                ))
+                .setContentText(name)
+                .setStyle(new Notification.BigTextStyle().bigText(name))
+                .setContentIntent(pendingIntent)
+                .setOngoing(false)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(false)
+                .setShowWhen(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setVisibility(Notification.VISIBILITY_PUBLIC);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setPriority(Notification.PRIORITY_HIGH)
+                    .setDefaults(Notification.DEFAULT_ALL);
+        }
+        manager.cancel(notificationId);
+        manager.notify(notificationId, builder.build());
+    }
+
+    private void stopForegroundNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(MainActivity.PERSISTENT_NOTIFICATION_ID);
+    }
+
+    private void ensureChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
-        NotificationChannel channel = new NotificationChannel(
+
+        NotificationChannel statusChannel = new NotificationChannel(
                 MainActivity.NOTIFICATION_STATUS_CHANNEL_ID,
                 getString(R.string.notification_channel_tasks),
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription(getString(R.string.notification_channel_tasks));
-        channel.setShowBadge(true);
-        manager.createNotificationChannel(channel);
+        statusChannel.setDescription(getString(R.string.notification_channel_tasks));
+        statusChannel.setShowBadge(true);
+
+        NotificationChannel alertChannel = new NotificationChannel(
+                MainActivity.NOTIFICATION_ALERT_CHANNEL_ID,
+                getString(R.string.notification_channel_alerts),
+                NotificationManager.IMPORTANCE_HIGH
+        );
+        alertChannel.setDescription(getString(R.string.notification_channel_alerts_description));
+        alertChannel.enableVibration(true);
+        alertChannel.setVibrationPattern(new long[]{0, 180, 90, 180});
+        alertChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        alertChannel.setShowBadge(true);
+        manager.createNotificationChannel(statusChannel);
+        manager.createNotificationChannel(alertChannel);
+    }
+
+    private String httpGet(String url, int timeoutMs) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        connection.setConnectTimeout(timeoutMs);
+        connection.setReadTimeout(timeoutMs);
+        connection.setRequestMethod("GET");
+        connection.setUseCaches(false);
+        try (InputStream stream = connection.getInputStream()) {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[4096];
+            int read;
+            while ((read = stream.read(chunk)) >= 0) {
+                buffer.write(chunk, 0, read);
+            }
+            return buffer.toString("UTF-8");
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private String taskStateFromJson(JSONObject object) {
+        String raw = object.optString("status", "");
+        if (raw.trim().isEmpty()) raw = object.optString("state", "");
+        if (raw.trim().isEmpty()) raw = object.optString("phase", "");
+        if (raw.trim().isEmpty()
+                && (object.optBoolean("running", false)
+                || object.optBoolean("busy", false)
+                || object.optBoolean("active", false))) {
+            raw = "running";
+        }
+        if (raw.trim().isEmpty()
+                && (object.optBoolean("done", false)
+                || object.optBoolean("completed", false)
+                || object.optBoolean("finished", false))) {
+            raw = "complete";
+        }
+        if (raw.trim().isEmpty()
+                && (object.optBoolean("failed", false)
+                || hasMeaningfulError(object.opt("error"))
+                || (object.has("ok") && !object.optBoolean("ok", true)))) {
+            raw = "error";
+        }
+        String state = raw.trim().toLowerCase(Locale.ROOT);
+        switch (state) {
+            case "running":
+            case "waiting":
+            case "queued":
+            case "pending":
+            case "busy":
+            case "processing":
+            case "working":
+            case "active":
+            case "started":
+            case "starting":
+            case "streaming":
+                return "running";
+            case "completed":
+            case "complete":
+            case "done":
+            case "success":
+            case "succeeded":
+            case "finished":
+            case "idle":
+            case "ready":
+                return "complete";
+            case "error":
+            case "failed":
+            case "failure":
+            case "aborted":
+            case "interrupted":
+            case "cancelled":
+            case "canceled":
+            case "timeout":
+            case "timed_out":
+                return "error";
+            default:
+                return state;
+        }
+    }
+
+    private boolean hasMeaningfulError(Object value) {
+        if (value == null || value == JSONObject.NULL) return false;
+        if (value instanceof Boolean) return (Boolean) value;
+        if (value instanceof Number) return ((Number) value).doubleValue() != 0d;
+        if (value instanceof JSONObject) return ((JSONObject) value).length() > 0;
+        if (value instanceof JSONArray) return ((JSONArray) value).length() > 0;
+        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
+        return !text.isEmpty()
+                && !"false".equals(text)
+                && !"null".equals(text)
+                && !"none".equals(text)
+                && !"undefined".equals(text)
+                && !"{}".equals(text)
+                && !"[]".equals(text);
+    }
+
+    private static final class MonitoredTask {
+        final String key;
+        final String threadId;
+        final String name;
+        final String endpoint;
+        final long startedAt;
+
+        MonitoredTask(String key, String threadId, String name, String endpoint, long startedAt) {
+            this.key = key;
+            this.threadId = threadId;
+            this.name = name;
+            this.endpoint = endpoint;
+            this.startedAt = startedAt;
+        }
+
+        static MonitoredTask fromJson(JSONObject object) {
+            String key = object.optString("key", "").trim();
+            String endpoint = object.optString("endpoint", "").trim();
+            if (key.isEmpty() || endpoint.isEmpty()) return null;
+            return new MonitoredTask(
+                    key,
+                    object.optString("threadId", key),
+                    object.optString("name", ""),
+                    endpoint,
+                    object.optLong("startedAt", System.currentTimeMillis())
+            );
+        }
+
+        JSONObject toJson() throws Exception {
+            JSONObject object = new JSONObject();
+            object.put("key", key);
+            object.put("threadId", threadId);
+            object.put("name", name);
+            object.put("endpoint", endpoint);
+            object.put("startedAt", startedAt);
+            return object;
+        }
+    }
+
+    private static final class TerminalResult {
+        final MonitoredTask task;
+        final String threadId;
+        final String state;
+
+        TerminalResult(MonitoredTask task, String threadId, String state) {
+            this.task = task;
+            this.threadId = threadId;
+            this.state = state;
+        }
     }
 }

@@ -52,6 +52,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.PixelCopy;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsAnimation;
@@ -108,7 +109,7 @@ public class MainActivity extends Activity {
     private static final int CAMERA_PERMISSION_REQUEST = 1003;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1004;
     private static final int QR_SCAN_REQUEST = 1005;
-    private static final String PREFS_NAME = "codex_mini_android";
+    static final String PREFS_NAME = "codex_mini_android";
     private static final String KEY_LAST_URL = "last_url";
     private static final String KEY_SAVED_CONNECTIONS = "saved_connections";
     private static final String KEY_DOWNLOAD_RECORDS = "download_records";
@@ -116,16 +117,18 @@ public class MainActivity extends Activity {
     private static final String KEY_FLOAT_ALPHA = "float_alpha";
     private static final String KEY_FLOAT_Y = "float_y";
     private static final String KEY_TOP_INSET_DP = "top_inset_dp";
-    private static final String KEY_NOTIFICATION_MODE = "notification_mode";
-    private static final String NOTIFICATION_MODE_END = "end";
-    private static final String NOTIFICATION_MODE_PERSISTENT = "persistent";
+    private static final String KEY_TOP_INSET_V116_MIGRATED = "top_inset_v116_migrated";
+    static final String KEY_NOTIFICATION_MODE = "notification_mode";
+    static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
+    static final String NOTIFICATION_MODE_END = "end";
+    static final String NOTIFICATION_MODE_PERSISTENT = "persistent";
     private static final String KEY_FLOAT_MENU_THEME = "float_menu_theme";
     private static final String KEY_NATIVE_LIQUID_GLASS = "native_liquid_glass";
     private static final String FLOAT_MENU_THEME_DARK = "dark";
     private static final String FLOAT_MENU_THEME_LIGHT = "light";
     private static final String FLOAT_MENU_THEME_SYSTEM = "system";
     static final String NOTIFICATION_STATUS_CHANNEL_ID = "ai_mini_task_status_v4";
-    private static final String NOTIFICATION_ALERT_CHANNEL_ID = "ai_mini_task_alerts_v4";
+    static final String NOTIFICATION_ALERT_CHANNEL_ID = "ai_mini_task_alerts_v4";
     private static final String LEGACY_NOTIFICATION_CHANNEL_ID = "gpt_mini_tasks";
     static final int PERSISTENT_NOTIFICATION_ID = 2100;
     private static final long DOWNLOAD_POLL_MS = 800L;
@@ -137,9 +140,9 @@ public class MainActivity extends Activity {
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
-    private static final int DEFAULT_TOP_INSET_DP = 28;
-    private static final int MIN_TOP_INSET_DP = 18;
-    private static final int MAX_TOP_INSET_DP = 58;
+    private static final int DEFAULT_TOP_INSET_DP = 20;
+    private static final int MIN_TOP_INSET_DP = 0;
+    private static final int MAX_TOP_INSET_DP = 64;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
@@ -147,6 +150,7 @@ public class MainActivity extends Activity {
     private final Set<String> runningNotificationTasks = new HashSet<>();
     private final Map<String, String> monitoredTaskStatusUrls = new HashMap<>();
     private final Map<String, String> monitoredTaskNames = new HashMap<>();
+    private final Map<String, Long> monitoredTaskStartedAt = new HashMap<>();
     private final Map<String, Long> pendingTaskErrorTokens = new HashMap<>();
     private final Map<String, PendingBlobDownload> pendingBlobDownloads = new ConcurrentHashMap<>();
     private final Set<String> cancelledStreamDownloads = ConcurrentHashMap.newKeySet();
@@ -157,6 +161,7 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private FrameLayout appHost;
     private LinearLayout appRoot;
+    private View topInsetArea;
     private View welcomeView;
     private FrameLayout browserFrame;
     private AIMiniGeckoEngine geckoEngine;
@@ -176,6 +181,7 @@ public class MainActivity extends Activity {
     private TextView continueSubtitle;
     private TextView savedConnectionsSubtitle;
     private String pendingConnectionUrl;
+    private boolean waitingForMainPageReveal;
     private volatile String availableLocalApiBase;
     private LinearLayout downloadsPanel;
     private LinearLayout downloadsList;
@@ -256,6 +262,8 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        migrateTopInsetDefault();
+        restoreMonitoredTasks();
         geckoEngine = new AIMiniGeckoEngine(this);
         geckoEngine.setNativeMessageHandler(this::handleGeckoNativeMessage);
 
@@ -300,7 +308,6 @@ public class MainActivity extends Activity {
                 urlInput.setText("");
                 showWelcome();
             } else {
-                showApp();
                 urlInput.setText(lastUrl);
                 loadUrl(lastUrl);
             }
@@ -308,6 +315,13 @@ public class MainActivity extends Activity {
     }
 
     private void buildToolbar(LinearLayout root) {
+        topInsetArea = new View(this);
+        root.addView(topInsetArea, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(topInsetDp())
+        ));
+        updateTopInsetArea();
+
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -482,16 +496,6 @@ public class MainActivity extends Activity {
         scan.setOnClickListener(view -> startQrScan());
         actions.addView(scan, connectionActionParams(false));
 
-        LinearLayout savedConnections = createConnectionAction(
-                R.string.saved_connections,
-                R.string.saved_connections_empty,
-                ConnectionIconView.TYPE_SAVED,
-                false
-        );
-        savedConnectionsSubtitle = (TextView) savedConnections.getTag(R.id.saved_connection_subtitle);
-        savedConnections.setOnClickListener(view -> showSavedConnectionsDialog());
-        actions.addView(savedConnections, connectionActionParams(true));
-
         continueButton = createConnectionAction(
                 R.string.continue_last_title,
                 R.string.continue_last_subtitle,
@@ -655,7 +659,6 @@ public class MainActivity extends Activity {
         footerParams.setMargins(0, dp(18), 0, dp(8));
         content.addView(footer, footerParams);
 
-        refreshSavedConnectionsSummary();
     }
 
     private void buildBrowserArea(LinearLayout root) {
@@ -1194,10 +1197,57 @@ public class MainActivity extends Activity {
         );
     }
 
+    private void migrateTopInsetDefault() {
+        if (preferences.getBoolean(KEY_TOP_INSET_V116_MIGRATED, false)) return;
+        SharedPreferences.Editor editor = preferences.edit()
+                .putBoolean(KEY_TOP_INSET_V116_MIGRATED, true);
+        if (!preferences.contains(KEY_TOP_INSET_DP)
+                || preferences.getInt(KEY_TOP_INSET_DP, 28) == 28) {
+            editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+        }
+        editor.apply();
+    }
+
     private void requestInterfaceInsets() {
+        updateTopInsetArea();
         if (appHost == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             appHost.requestApplyInsets();
+        }
+    }
+
+    private void updateTopInsetArea() {
+        if (topInsetArea != null) {
+            ViewGroup.LayoutParams params = topInsetArea.getLayoutParams();
+            int height = dp(topInsetDp());
+            if (params != null && params.height != height) {
+                params.height = height;
+                topInsetArea.setLayoutParams(params);
+            }
+            topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
+        }
+        boolean light = isFloatMenuLight();
+        int systemBarColor = light ? Color.rgb(238, 242, 248) : Color.rgb(9, 12, 18);
+        Window window = getWindow();
+        window.setStatusBarColor(systemBarColor);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.view.WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(
+                        light
+                                ? android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                : 0,
+                        android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                );
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int flags = window.getDecorView().getSystemUiVisibility();
+            if (light) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            } else {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            }
+            window.getDecorView().setSystemUiVisibility(flags);
         }
     }
 
@@ -1218,12 +1268,21 @@ public class MainActivity extends Activity {
         // this click handler returns, which prevents a stale callback from restoring
         // the foreground notification immediately after the user disables it.
         preferences.edit().putString(KEY_NOTIFICATION_MODE, mode).commit();
+        requestNotificationPermissionIfNeeded();
         if (NOTIFICATION_MODE_END.equals(mode)) {
-            cancelPersistentTaskNotification();
+            // Remove the visible foreground notification synchronously. The monitor
+            // service remains alive as an ordinary background service while a task is
+            // running, so switching modes takes effect immediately without losing the
+            // pending completion notification.
+            NotificationManager manager =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (manager != null) manager.cancel(PERSISTENT_NOTIFICATION_ID);
+            runningNotificationTasks.clear();
+            syncNotificationMonitorService();
             return;
         }
-        requestNotificationPermissionIfNeeded();
         showPersistentConnectedNotificationIfNeeded();
+        syncNotificationMonitorService();
         requestImmediateTaskStatusRefresh();
     }
 
@@ -1297,6 +1356,7 @@ public class MainActivity extends Activity {
 
     private void refreshMiniMenuTheme() {
         boolean light = isFloatMenuLight();
+        updateTopInsetArea();
         if (miniMenu != null) {
             miniMenu.setBackground(nativeLiquidGlassEnabled()
                     ? liquidGlassPanelBackground(light, dp(26))
@@ -1342,7 +1402,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.15";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.16";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1496,7 +1556,7 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.15";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.16";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -1619,19 +1679,48 @@ public class MainActivity extends Activity {
 
     private void showWelcome() {
         closeExternalPage();
+        waitingForMainPageReveal = false;
         appRoot.setVisibility(View.GONE);
+        appRoot.setAlpha(1f);
+        welcomeView.setAlpha(1f);
         welcomeView.setVisibility(View.VISIBLE);
         String lastUrl = preferences.getString(KEY_LAST_URL, "");
         configureContinueButton(lastUrl);
-        refreshSavedConnectionsSummary();
         welcomeUrlInput.setText("");
         welcomeUrlInput.clearFocus();
         hideSoftKeyboard(welcomeUrlInput);
     }
 
     private void showApp() {
+        waitingForMainPageReveal = false;
+        appRoot.setAlpha(1f);
         welcomeView.setVisibility(View.GONE);
+        welcomeView.setAlpha(1f);
         appRoot.setVisibility(View.VISIBLE);
+    }
+
+    private boolean prepareMainPageReveal() {
+        if (welcomeView == null || welcomeView.getVisibility() != View.VISIBLE) return false;
+        waitingForMainPageReveal = true;
+        appRoot.setAlpha(1f);
+        appRoot.setVisibility(View.VISIBLE);
+        welcomeView.setAlpha(1f);
+        welcomeView.bringToFront();
+        return true;
+    }
+
+    private void revealLoadedMainPage() {
+        if (!waitingForMainPageReveal || welcomeView == null) return;
+        waitingForMainPageReveal = false;
+        appRoot.setVisibility(View.VISIBLE);
+        welcomeView.animate()
+                .alpha(0f)
+                .setDuration(140L)
+                .withEndAction(() -> {
+                    welcomeView.setVisibility(View.GONE);
+                    welcomeView.setAlpha(1f);
+                })
+                .start();
     }
 
     private void configureContinueButton(String lastUrl) {
@@ -2216,12 +2305,25 @@ public class MainActivity extends Activity {
         String taskKey = notificationTaskKey(threadId, normalizedName);
         String endpoint = statusUrl == null ? "" : statusUrl.trim();
         String previousEndpointKey = taskKeyForEndpoint(endpoint);
+        if (!activityInForeground) {
+            boolean alreadyTracked = monitoredTaskStatusUrls.containsKey(taskKey)
+                    || !previousEndpointKey.isEmpty();
+            // Once the native Service owns a background task, Gecko responses can
+            // arrive late or out of order after the Service has already completed
+            // it. Ignore those callbacks so they cannot re-add the task or replace
+            // the completion alert with a stale "running" notification. The only
+            // background callback still accepted is a first-time running event that
+            // raced with onPause by a few milliseconds.
+            if (alreadyTracked || !"running".equals(state)) return;
+        }
         String previousEndpointName = previousEndpointKey.isEmpty()
                 ? ""
                 : monitoredTaskNames.get(previousEndpointKey);
         if (!previousEndpointKey.isEmpty() && !previousEndpointKey.equals(taskKey)) {
             monitoredTaskStatusUrls.remove(previousEndpointKey);
             monitoredTaskNames.remove(previousEndpointKey);
+            Long startedAt = monitoredTaskStartedAt.remove(previousEndpointKey);
+            if (startedAt != null) monitoredTaskStartedAt.put(taskKey, startedAt);
             if (runningNotificationTasks.remove(previousEndpointKey)) {
                 runningNotificationTasks.add(taskKey);
             }
@@ -2253,6 +2355,85 @@ public class MainActivity extends Activity {
         );
     }
 
+    private void restoreMonitoredTasks() {
+        monitoredTaskStatusUrls.clear();
+        monitoredTaskNames.clear();
+        monitoredTaskStartedAt.clear();
+        runningNotificationTasks.clear();
+        String raw = preferences.getString(KEY_MONITORED_TASKS, "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject item = array.optJSONObject(index);
+                if (item == null) continue;
+                String key = item.optString("key", "").trim();
+                String endpoint = item.optString("endpoint", "").trim();
+                if (key.isEmpty() || endpoint.isEmpty()) continue;
+                monitoredTaskStatusUrls.put(key, endpoint);
+                monitoredTaskNames.put(
+                        key,
+                        normalizedTaskName(item.optString("name", ""))
+                );
+                monitoredTaskStartedAt.put(
+                        key,
+                        item.optLong("startedAt", System.currentTimeMillis())
+                );
+                runningNotificationTasks.add(key);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void persistMonitoredTasks() {
+        JSONArray array = new JSONArray();
+        for (Map.Entry<String, String> entry : monitoredTaskStatusUrls.entrySet()) {
+            String endpoint = entry.getValue();
+            if (endpoint == null || endpoint.trim().isEmpty()) continue;
+            try {
+                JSONObject item = new JSONObject();
+                item.put("key", entry.getKey());
+                item.put("threadId", entry.getKey());
+                item.put("name", normalizedTaskName(monitoredTaskNames.get(entry.getKey())));
+                item.put("endpoint", endpoint.trim());
+                item.put(
+                        "startedAt",
+                        monitoredTaskStartedAt.containsKey(entry.getKey())
+                                ? monitoredTaskStartedAt.get(entry.getKey())
+                                : System.currentTimeMillis()
+                );
+                array.put(item);
+            } catch (Exception ignored) {
+            }
+        }
+        preferences.edit().putString(KEY_MONITORED_TASKS, array.toString()).commit();
+        syncNotificationMonitorService();
+    }
+
+    private void syncNotificationMonitorService() {
+        if (preferences == null) return;
+        boolean persistent = NOTIFICATION_MODE_PERSISTENT.equals(notificationMode());
+        boolean hasTasks = !monitoredTaskStatusUrls.isEmpty();
+        Intent intent = new Intent(this, AIMiniNotificationService.class);
+        if (!persistent && !hasTasks) {
+            intent.setAction(AIMiniNotificationService.ACTION_STOP);
+        } else {
+            intent.setAction(AIMiniNotificationService.ACTION_SYNC)
+                    .putExtra(
+                            AIMiniNotificationService.EXTRA_RUNNING_COUNT,
+                            monitoredTaskStatusUrls.size()
+                    );
+        }
+        try {
+            if (persistent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception ignored) {
+            if (persistent) showPersistentNotificationFallback();
+        }
+    }
+
     private void applyResolvedTaskState(
             String threadId,
             String taskKey,
@@ -2277,6 +2458,9 @@ public class MainActivity extends Activity {
             boolean alreadyMonitored = monitoredTaskStatusUrls.containsKey(taskKey);
             if (!endpoint.isEmpty()) {
                 monitoredTaskStatusUrls.put(taskKey, endpoint);
+                if (!monitoredTaskStartedAt.containsKey(taskKey)) {
+                    monitoredTaskStartedAt.put(taskKey, System.currentTimeMillis());
+                }
                 if (!alreadyMonitored || !monitoredTaskNames.containsKey(taskKey)) {
                     monitoredTaskNames.put(taskKey, notificationName);
                 }
@@ -2287,7 +2471,9 @@ public class MainActivity extends Activity {
         } else if (terminal) {
             monitoredTaskStatusUrls.remove(taskKey);
             monitoredTaskNames.remove(taskKey);
+            monitoredTaskStartedAt.remove(taskKey);
         }
+        persistMonitoredTasks();
         if (shouldUpdateNotification) {
             showTaskStateNotification(threadId, notificationName, state);
         }
@@ -2391,9 +2577,9 @@ public class MainActivity extends Activity {
 
     private void startBackgroundTaskPolling() {
         handler.removeCallbacks(backgroundTaskPoller);
-        if (!activityInForeground && !monitoredTaskStatusUrls.isEmpty() && webView != null) {
-            handler.post(backgroundTaskPoller);
-        }
+        // The Service owns background polling. Activity/Gecko timers can be frozen
+        // by Android as soon as the app leaves the foreground.
+        syncNotificationMonitorService();
     }
 
     private void pollTaskStatusesNatively() {
@@ -2640,7 +2826,7 @@ public class MainActivity extends Activity {
     private void updatePersistentNotificationService() {
         if (!NOTIFICATION_MODE_PERSISTENT.equals(notificationMode())) return;
         Intent intent = new Intent(this, AIMiniNotificationService.class)
-                .setAction(AIMiniNotificationService.ACTION_UPDATE)
+                .setAction(AIMiniNotificationService.ACTION_SYNC)
                 .putExtra(
                         AIMiniNotificationService.EXTRA_RUNNING_COUNT,
                         runningNotificationTasks.size()
@@ -2782,7 +2968,8 @@ public class MainActivity extends Activity {
         availableLocalApiBase = null;
         pendingConnectionUrl = url;
         preferences.edit().putString(KEY_LAST_URL, url).apply();
-        showApp();
+        boolean revealingFromWelcome = prepareMainPageReveal();
+        if (!revealingFromWelcome) showApp();
         urlInput.setText(url);
         urlInput.clearFocus();
         hideSoftKeyboard(urlInput);
@@ -2981,8 +3168,8 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.15'){return;}"
-                + "window.__AIMiniFixVersion='1.15';"
+                + "if(window.__AIMiniFixVersion==='1.16.1'){return;}"
+                + "window.__AIMiniFixVersion='1.16.1';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
@@ -3029,7 +3216,46 @@ public class MainActivity extends Activity {
                 // extra keyboard transform is unnecessary in the app.
                 + "html.ai-mini-geckoview .composer-shell{"
                 + "transform:none!important;transition:none!important;"
-                + "will-change:auto!important;}";
+                + "will-change:auto!important;}"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original{"
+                + "background:rgba(255,255,255,.06)!important;"
+                + "border:1px solid rgba(255,255,255,.18)!important;"
+                + "border-radius:29px!important;"
+                + "box-shadow:0 12px 42px rgba(0,0,0,.27),"
+                + "inset 0 1px 0 rgba(255,255,255,.10),"
+                + "inset 0 -1px 0 rgba(0,0,0,.08)!important;"
+                + "overflow:hidden!important;isolation:isolate!important;}"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original>.liquid-glass-warp{"
+                + "display:block!important;filter:none!important;border-radius:inherit!important;"
+                + "background:linear-gradient(135deg,rgba(255,255,255,.035),"
+                + "rgba(158,203,255,.025) 42%,rgba(142,240,183,.025) 70%,"
+                + "rgba(255,255,255,.025))!important;"
+                + "backdrop-filter:blur(6px) saturate(140%)!important;"
+                + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;"
+                + "opacity:1!important;}"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original>.liquid-glass-border-overlay{"
+                + "display:block!important;border-radius:inherit!important;"
+                + "background:linear-gradient(var(--liquid-glass-border-angle,145deg),"
+                + "transparent 0%,rgba(255,255,255,.38) 18%,"
+                + "rgba(158,203,255,.42) 44%,rgba(142,240,183,.36) 67%,"
+                + "transparent 100%)!important;"
+                + "box-shadow:inset 0 0 0 .5px rgba(255,255,255,.50),"
+                + "inset 0 1px 3px rgba(255,255,255,.25),"
+                + "0 1px 4px rgba(0,0,0,.35)!important;"
+                + "opacity:1!important;pointer-events:none!important;}"
+                + "html.ai-mini-geckoview.theme-light:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original,"
+                + "html.ai-mini-geckoview[data-theme=light]:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original{"
+                + "background:linear-gradient(135deg,rgba(255,255,255,.16),"
+                + "rgba(232,243,255,.10) 48%,rgba(231,250,245,.10))!important;"
+                + "border-color:rgba(255,255,255,.42)!important;"
+                + "box-shadow:0 12px 42px rgba(35,55,80,.18),"
+                + "inset 0 1px 0 rgba(255,255,255,.44),"
+                + "inset 0 -1px 0 rgba(65,92,120,.08)!important;}";
     }
 
     private void adaptPlainTextPageForMobile() {
@@ -4284,6 +4510,9 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityInForeground = true;
+        // The Service may have completed and removed tasks while Gecko/Activity was
+        // suspended. Reconcile the in-memory maps before refreshing notifications.
+        restoreMonitoredTasks();
         if (webView != null) webView.prepareForForeground();
         if (externalWebView != null) externalWebView.prepareForForeground();
         handler.removeCallbacks(backgroundTaskPoller);
@@ -4314,9 +4543,10 @@ public class MainActivity extends Activity {
     protected void onPause() {
         activityInForeground = false;
         persistDownloads();
-        // Keep Gecko active while the app is merely in the background so task completion
-        // events and the native-message bridge are not suspended.
-        if (webView != null) webView.prepareForBackground(true);
+        // Native Service polling owns task completion in the background. Suspending
+        // Gecko prevents stale/out-of-order WebUI status responses from resurrecting
+        // a task that the Service has already completed.
+        if (webView != null) webView.prepareForBackground(false);
         if (externalWebView != null) externalWebView.prepareForBackground(false);
         startBackgroundTaskPolling();
         super.onPause();
@@ -4451,6 +4681,7 @@ public class MainActivity extends Activity {
         handler.removeCallbacksAndMessages(null);
         monitoredTaskStatusUrls.clear();
         monitoredTaskNames.clear();
+        monitoredTaskStartedAt.clear();
         pendingTaskErrorTokens.clear();
         downloadIoExecutor.shutdownNow();
         uploadIoExecutor.shutdownNow();
@@ -4463,7 +4694,6 @@ public class MainActivity extends Activity {
             if (pending.tempFile.exists()) pending.tempFile.delete();
         }
         pendingBlobDownloads.clear();
-        if (isFinishing()) cancelPersistentTaskNotification();
         closeExternalPage();
         if (networkCallback != null) {
             try {
@@ -4685,11 +4915,33 @@ public class MainActivity extends Activity {
 
     private GradientDrawable welcomeCardBackground(int radius) {
         GradientDrawable drawable = new GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{Color.argb(160, 2, 16, 47), Color.argb(132, 1, 11, 32)}
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{
+                        Color.argb(190, 21, 45, 83),
+                        Color.argb(158, 7, 25, 58),
+                        Color.argb(178, 10, 47, 67)
+                }
         );
         drawable.setCornerRadius(radius);
-        drawable.setStroke(dp(1), Color.argb(130, 52, 103, 176));
+        drawable.setStroke(dp(1), Color.argb(148, 139, 203, 255));
+        return drawable;
+    }
+
+    private GradientDrawable topInsetBackground(boolean light) {
+        GradientDrawable drawable = new GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                light
+                        ? new int[]{
+                                Color.rgb(244, 247, 252),
+                                Color.rgb(229, 239, 248),
+                                Color.rgb(241, 247, 245)
+                        }
+                        : new int[]{
+                                Color.rgb(9, 12, 18),
+                                Color.rgb(14, 23, 38),
+                                Color.rgb(8, 24, 28)
+                        }
+        );
         return drawable;
     }
 
@@ -4827,12 +5079,10 @@ public class MainActivity extends Activity {
             public void onPageFinished(AIMiniGeckoView view, String url, boolean success) {
                 if (!success) {
                     pendingConnectionUrl = null;
+                    waitingForMainPageReveal = false;
                     return;
                 }
-                if (pendingConnectionUrl != null && !pendingConnectionUrl.isEmpty()) {
-                    saveSuccessfulConnection(pendingConnectionUrl);
-                    pendingConnectionUrl = null;
-                }
+                pendingConnectionUrl = null;
                 injectMobileFixes();
                 adaptPlainTextPageForMobile();
                 if (availableLocalApiBase != null && !availableLocalApiBase.isEmpty()) {
@@ -4847,6 +5097,7 @@ public class MainActivity extends Activity {
                         () -> requestImmediateTaskStatusRefresh(view),
                         850
                 );
+                handler.postDelayed(MainActivity.this::revealLoadedMainPage, 90);
             }
 
             @Override

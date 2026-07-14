@@ -83,8 +83,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.15") return;
-    window.__AIMiniKeyboardHooksVersion = "1.15";
+    if (window.__AIMiniKeyboardHooksVersion === "1.16") return;
+    window.__AIMiniKeyboardHooksVersion = "1.16";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -274,6 +274,88 @@
         if (keyboardOpen || editableFor(document.activeElement)) revealEditable();
       });
     }
+  }
+
+  function installGeckoLiquidGlassFallback() {
+    if (window.__AIMiniGeckoGlassVersion === "1.16.1") return;
+    if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
+    window.__AIMiniGeckoGlassVersion = "1.16.1";
+    document.documentElement.classList.add("ai-mini-geckoview");
+
+    const oldStyle = document.getElementById("ai-mini-gecko-liquid-glass");
+    if (oldStyle) oldStyle.remove();
+    const style = document.createElement("style");
+    style.id = "ai-mini-gecko-liquid-glass";
+    style.textContent = `
+      html.ai-mini-geckoview .composer-shell {
+        transform: none !important;
+        transition: none !important;
+        will-change: auto !important;
+      }
+      html.ai-mini-geckoview:not(.liquid-glass-off)
+      .composer.codex-liquid-glass-original {
+        background: rgba(255,255,255,.06) !important;
+        border: 1px solid rgba(255,255,255,.18) !important;
+        border-radius: 29px !important;
+        box-shadow:
+          0 12px 42px rgba(0,0,0,.27),
+          inset 0 1px 0 rgba(255,255,255,.10),
+          inset 0 -1px 0 rgba(0,0,0,.08) !important;
+        overflow: hidden !important;
+        isolation: isolate !important;
+      }
+      html.ai-mini-geckoview:not(.liquid-glass-off)
+      .composer.codex-liquid-glass-original > .liquid-glass-warp {
+        display: block !important;
+        filter: none !important;
+        border-radius: inherit !important;
+        background:
+          linear-gradient(135deg,
+            rgba(255,255,255,.035) 0%,
+            rgba(158,203,255,.025) 42%,
+            rgba(142,240,183,.025) 70%,
+            rgba(255,255,255,.025) 100%) !important;
+        backdrop-filter: blur(6px) saturate(140%) !important;
+        -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
+        opacity: 1 !important;
+      }
+      html.ai-mini-geckoview:not(.liquid-glass-off)
+      .composer.codex-liquid-glass-original > .liquid-glass-border-overlay {
+        display: block !important;
+        border-radius: inherit !important;
+        background:
+          linear-gradient(
+            var(--liquid-glass-border-angle, 145deg),
+            transparent 0%,
+            rgba(255,255,255,.38) 18%,
+            rgba(158,203,255,.42) 44%,
+            rgba(142,240,183,.36) 67%,
+            transparent 100%
+          ) !important;
+        box-shadow:
+          inset 0 0 0 .5px rgba(255,255,255,.50),
+          inset 0 1px 3px rgba(255,255,255,.25),
+          0 1px 4px rgba(0,0,0,.35) !important;
+        opacity: 1 !important;
+        pointer-events: none !important;
+      }
+      html.ai-mini-geckoview.theme-light:not(.liquid-glass-off)
+      .composer.codex-liquid-glass-original,
+      html.ai-mini-geckoview[data-theme="light"]:not(.liquid-glass-off)
+      .composer.codex-liquid-glass-original {
+        background:
+          linear-gradient(135deg,
+            rgba(255,255,255,.16),
+            rgba(232,243,255,.10) 48%,
+            rgba(231,250,245,.10)) !important;
+        border-color: rgba(255,255,255,.42) !important;
+        box-shadow:
+          0 12px 42px rgba(35,55,80,.18),
+          inset 0 1px 0 rgba(255,255,255,.44),
+          inset 0 -1px 0 rgba(65,92,120,.08) !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
   }
 
   function installDownloadHooks() {
@@ -556,8 +638,8 @@
   }
 
   function installTaskHooks() {
-    if (window.__AIMiniTaskHooksVersion === "1.15") return;
-    window.__AIMiniTaskHooksVersion = "1.15";
+    if (window.__AIMiniTaskHooksVersion === "1.16") return;
+    window.__AIMiniTaskHooksVersion = "1.16";
 
     const pendingTaskErrors = Object.create(null);
 
@@ -653,6 +735,45 @@
       } catch (_) {
         return "";
       }
+    }
+
+    function statusEndpointBeforeSend(sendUrl) {
+      try {
+        const known = Object.keys(window.__AIMiniStatusPollers || {});
+        const preferred = known.find(function (url) {
+          return /\/codex\/status(?:\?|$)/i.test(url);
+        }) || known.find(isStatusUrl);
+        if (preferred) return normalizedStatusEndpoint(preferred);
+
+        const endpoint = new URL(String(sendUrl || ""), location.href);
+        endpoint.pathname = endpoint.pathname.replace(/\/send\/?$/, "/status");
+        const pageParams = new URLSearchParams(location.search || "");
+        if (!endpoint.searchParams.has("token") && pageParams.get("token")) {
+          endpoint.searchParams.set("token", pageParams.get("token"));
+        }
+        return normalizedStatusEndpoint(endpoint.href);
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function beginTrackingBeforeSend(sendUrl) {
+      if (!isSendUrl(sendUrl)) return;
+      const endpoint = statusEndpointBeforeSend(sendUrl);
+      let id = "current";
+      try {
+        const parsed = new URL(endpoint || String(sendUrl || ""), location.href);
+        id = String(
+          parsed.searchParams.get("thread")
+            || parsed.searchParams.get("session")
+            || "current"
+        );
+      } catch (_) {}
+      trackTaskState({
+        threadId: id,
+        status: "running",
+        updatedAt: new Date().toISOString()
+      }, endpoint);
     }
 
     function trackTaskState(data, statusUrl) {
@@ -806,6 +927,7 @@
         const args = arguments;
         const url = String((args[0] && args[0].url) || args[0] || "");
         const isStatusRequest = isStatusUrl(url);
+        if (isSendUrl(url)) beginTrackingBeforeSend(url);
         if (isStatusRequest) {
           try {
             const savedInput = args[0] instanceof Request ? args[0].clone() : args[0];
@@ -850,6 +972,7 @@
     XMLHttpRequest.prototype.send = function () {
       const xhr = this;
       const url = String(xhr.__aiMiniTaskUrl || "");
+      if (isSendUrl(url)) beginTrackingBeforeSend(url);
       if (isSendUrl(url) || isStatusUrl(url)) {
         xhr.addEventListener("load", function () {
           if (xhr.status < 200 || xhr.status >= 300) return;
@@ -907,6 +1030,7 @@
   }
 
   installKeyboardHooks();
+  installGeckoLiquidGlassFallback();
   installDownloadHooks();
   installTaskHooks();
 
