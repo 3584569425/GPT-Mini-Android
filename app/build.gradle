@@ -14,9 +14,9 @@ android {
         applicationId 'app.gptmini'
         minSdk 26
         targetSdk 35
-        versionCode 15
-        versionName '1.14'
-        setProperty('archivesBaseName', 'AI Mini-1.14')
+        versionCode 16
+        versionName '1.15'
+        setProperty('archivesBaseName', 'GPT Mini-1.15')
     }
 
     splits {

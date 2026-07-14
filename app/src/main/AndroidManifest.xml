@@ -54,7 +54,7 @@
             android:stopWithTask="true">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Maintain real-time AI task status notifications for a user-connected WebUI" />
+                android:value="Maintain real-time GPT task status notifications for a user-connected WebUI" />
         </service>
     </application>
 </manifest>

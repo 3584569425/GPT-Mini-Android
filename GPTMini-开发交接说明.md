@@ -1,10 +1,10 @@
-# AI Mini Android 开发交接说明
+# GPT Mini Android 开发交接说明
 
 本文档用于把当前项目交给另一台电脑或另一个 AI 继续开发。它记录当前项目状态、已实现功能、关键文件、构建方式、签名信息和后续开发注意事项。
 
 ## 1. 项目概况
 
-项目名称：AI Mini
+项目名称：GPT Mini
 
 项目类型：Android 原生 App（Mozilla GeckoView 浏览器内核）
 
@@ -15,9 +15,9 @@
 当前版本：
 
 - applicationId：`app.gptmini`
-- versionCode：`10`
-- versionName：`1.9`
-- App 显示名称：`AI Mini`
+- versionCode：`16`
+- versionName：`1.15`
+- App 显示名称：`GPT Mini`
 
 当前定位：
 
@@ -61,10 +61,10 @@
   - 网络配置。
   - 已允许 HTTP 明文流量，便于访问局域网或公网 HTTP WebUI。
 
-- `AIMini-应用介绍与使用帮助.md`
+- `GPTMini-应用介绍与使用帮助.md`
   - 面向用户的 App 介绍、优化说明和使用帮助。
 
-- `AI-开发交接说明.md`
+- `GPTMini-开发交接说明.md`
   - 当前文档，面向继续开发的 AI 或开发者。
 
 - `scripts/build-debug.sh`
@@ -270,17 +270,14 @@ App 不会直接把 WebView 地址栏改成局域网地址。
 
 ## 4. 当前 release 包状态
 
-当前版本使用 GeckoView，正式包按 ABI 分为两个：
-
-- `arm64-v8a`：绝大多数现代 Android 手机使用。
-- `armeabi-v7a`：32 位 ARM 旧设备使用。
+当前版本使用 GeckoView，正式包仅构建 `arm64-v8a`。
 
 已验证：
 
 - release v1/v2 签名通过。
 - zipalign 通过。
 - 包名：`app.gptmini`
-- 版本：`1.9`
+- 版本：`1.15`
 
 如果用户之前安装的是 debug 包，可能因为签名不同不能直接覆盖安装，需要先卸载 debug 版。
 
@@ -365,21 +362,24 @@ release 签名文件：
 
 最近完成的修改：
 
-- App 显示名称由 GPT Mini 改为 AI Mini。
-- 扫码界面文案统一改为 AI Mini。
+- App 显示名称、首页、悬浮窗和通知文案统一为 GPT Mini。
+- App、首页、悬浮窗与 Launcher 图标统一使用 GPT Mini 图标。
+- 修复 GeckoView 输入框合成层导致液态玻璃丢失的问题，并保持输入框随键盘升降。
+- 修复任务正常完成前短暂误报“失败/异常”的问题。
+- 修复“任务结束通知”与“常驻通知”切换不能立即生效的问题。
 - 新增后台任务完成、失败/异常顶部横幅通知。
 - 新增 App 内临时网页层。
 - 新增临时网页手机模式/桌面模式切换。
 - 新增悬浮窗“关闭当前网页”入口。
 - 新增 release 签名配置。
 - 生成 release 签名证书。
-- 打包 `AI Mini v1.5 release`。
+- 打包 `GPT Mini v1.15 arm64-v8a release`。
 - 下载界面新增分享按钮。
 - 下载文件名改为最多两行。
 - 下载完成状态和下载时间合并到一行显示。
 - 下载记录改为持久化保存。
 - 删除下载时同步删除本地文件和下载记录。
-- 新增用户文档 `AIMini-应用介绍与使用帮助.md`。
+- 新增用户文档 `GPTMini-应用介绍与使用帮助.md`。
 - 修正文档中悬浮窗按钮名称，和实际 UI 保持一致。
 
 ## 9. 建议后续开发事项
@@ -402,8 +402,8 @@ release 签名文件：
 
 继续修改前，建议优先阅读：
 
-1. `AI-开发交接说明.md`
-2. `AIMini-应用介绍与使用帮助.md`
+1. `GPTMini-开发交接说明.md`
+2. `GPTMini-应用介绍与使用帮助.md`
 3. `app/src/main/java/com/coimgrain/codexminiapp/MainActivity.java`
 4. `app/src/main/res/values/strings.xml`
 5. `app/build.gradle`
@@ -431,8 +431,8 @@ release 签名文件：
 验证 release APK：
 
 ```bash
-.tools/android-sdk/build-tools/35.0.0/apksigner verify --verbose "app/build/outputs/apk/release/AI Mini-1.5-release.apk"
-.tools/android-sdk/build-tools/35.0.0/zipalign -c -p 4 "app/build/outputs/apk/release/AI Mini-1.5-release.apk"
+.tools/android-sdk/build-tools/35.0.0/apksigner verify --verbose "app/build/outputs/apk/release/GPT Mini-1.15-arm64-v8a-release.apk"
+.tools/android-sdk/build-tools/35.0.0/zipalign -c -p 4 "app/build/outputs/apk/release/GPT Mini-1.15-arm64-v8a-release.apk"
 ```
 
 如果新电脑没有 `.tools`，请改用新电脑 Android SDK 对应的 `apksigner` 和 `zipalign` 路径。

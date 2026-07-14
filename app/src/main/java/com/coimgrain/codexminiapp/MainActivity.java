@@ -22,11 +22,9 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
-import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
@@ -134,6 +132,7 @@ public class MainActivity extends Activity {
     private static final long BLOB_PROGRESS_UI_INTERVAL_MS = 220L;
     private static final long BLOB_PROGRESS_PERSIST_INTERVAL_MS = 700L;
     private static final long BACKGROUND_TASK_POLL_MS = 2500L;
+    private static final long TASK_ERROR_CONFIRM_DELAY_MS = 1600L;
     private static final int DEFAULT_FLOAT_SIZE_DP = 42;
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
@@ -148,6 +147,7 @@ public class MainActivity extends Activity {
     private final Set<String> runningNotificationTasks = new HashSet<>();
     private final Map<String, String> monitoredTaskStatusUrls = new HashMap<>();
     private final Map<String, String> monitoredTaskNames = new HashMap<>();
+    private final Map<String, Long> pendingTaskErrorTokens = new HashMap<>();
     private final Map<String, PendingBlobDownload> pendingBlobDownloads = new ConcurrentHashMap<>();
     private final Set<String> cancelledStreamDownloads = ConcurrentHashMap.newKeySet();
     private final ExecutorService downloadIoExecutor = Executors.newSingleThreadExecutor();
@@ -212,6 +212,7 @@ public class MainActivity extends Activity {
     private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
     private volatile boolean backgroundStatusPollRunning;
+    private long taskStateSequence;
     private boolean downloadManageMode;
     private final Set<String> selectedDownloadKeys = new HashSet<>();
     private float miniTouchDx;
@@ -397,7 +398,7 @@ public class MainActivity extends Activity {
         ));
 
         TextView gptTitle = new TextView(this);
-        gptTitle.setText("AI");
+        gptTitle.setText("GPT");
         gptTitle.setTextSize(36);
         gptTitle.setTextColor(Color.rgb(248, 250, 255));
         gptTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -446,7 +447,10 @@ public class MainActivity extends Activity {
         addAccentSegment(accent, dp(24), Color.argb(90, 68, 203, 215));
         addAccentSegment(accent, dp(12), Color.argb(42, 68, 203, 215));
 
-        ChatGptIconView icon = new ChatGptIconView(this);
+        RoundedIconView icon = new RoundedIconView(this);
+        icon.setImageResource(R.drawable.ic_gptmini);
+        icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        icon.setBackgroundColor(Color.TRANSPARENT);
         LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(70), dp(70));
         iconParams.setMargins(dp(12), 0, 0, 0);
         hero.addView(icon, iconParams);
@@ -860,7 +864,7 @@ public class MainActivity extends Activity {
         buildNotificationSettingsPanel();
 
         miniButton = new RoundedIconView(this);
-        miniButton.setImageResource(R.drawable.ic_chatgpt);
+        miniButton.setImageResource(R.drawable.ic_gptmini);
         miniButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
         miniButton.setPadding(0, 0, 0, 0);
         miniButton.setBackgroundColor(Color.TRANSPARENT);
@@ -1017,14 +1021,7 @@ public class MainActivity extends Activity {
         button.setGravity(Gravity.CENTER_VERTICAL);
         button.setPadding(dp(12), 0, dp(12), 0);
         button.setOnClickListener(view -> {
-            preferences.edit().putString(KEY_NOTIFICATION_MODE, mode).apply();
-            if (NOTIFICATION_MODE_END.equals(mode)) {
-                cancelPersistentTaskNotification();
-            } else {
-                requestNotificationPermissionIfNeeded();
-                showPersistentConnectedNotificationIfNeeded();
-                requestImmediateTaskStatusRefresh();
-            }
+            switchNotificationMode(mode);
             updateNotificationSettingsLabels();
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
@@ -1213,6 +1210,23 @@ public class MainActivity extends Activity {
         return NOTIFICATION_MODE_PERSISTENT.equals(mode) ? NOTIFICATION_MODE_PERSISTENT : NOTIFICATION_MODE_END;
     }
 
+    private void switchNotificationMode(String requestedMode) {
+        String mode = NOTIFICATION_MODE_PERSISTENT.equals(requestedMode)
+                ? NOTIFICATION_MODE_PERSISTENT
+                : NOTIFICATION_MODE_END;
+        // commit() makes the mode visible to every lifecycle/status callback before
+        // this click handler returns, which prevents a stale callback from restoring
+        // the foreground notification immediately after the user disables it.
+        preferences.edit().putString(KEY_NOTIFICATION_MODE, mode).commit();
+        if (NOTIFICATION_MODE_END.equals(mode)) {
+            cancelPersistentTaskNotification();
+            return;
+        }
+        requestNotificationPermissionIfNeeded();
+        showPersistentConnectedNotificationIfNeeded();
+        requestImmediateTaskStatusRefresh();
+    }
+
     private String floatMenuTheme() {
         String theme = preferences.getString(KEY_FLOAT_MENU_THEME, FLOAT_MENU_THEME_DARK);
         if (FLOAT_MENU_THEME_DARK.equals(theme) || FLOAT_MENU_THEME_LIGHT.equals(theme)) return theme;
@@ -1328,7 +1342,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " AIMiniAndroidApp/1.14";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.15";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1482,7 +1496,7 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 AIMiniAndroidApp/1.14";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.15";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -2212,6 +2226,40 @@ public class MainActivity extends Activity {
                 runningNotificationTasks.add(taskKey);
             }
         }
+        String notificationName = monitoredTaskNames.containsKey(taskKey)
+                ? monitoredTaskNames.get(taskKey)
+                : previousEndpointName != null && !previousEndpointName.trim().isEmpty()
+                ? previousEndpointName
+                : normalizedName;
+
+        if ("error".equals(state)) {
+            scheduleTaskErrorConfirmation(
+                    threadId,
+                    taskKey,
+                    notificationName,
+                    endpoint
+            );
+            return;
+        }
+        cancelPendingTaskError(taskKey);
+        if (!previousEndpointKey.isEmpty()) cancelPendingTaskError(previousEndpointKey);
+
+        applyResolvedTaskState(
+                threadId,
+                taskKey,
+                notificationName,
+                state,
+                endpoint
+        );
+    }
+
+    private void applyResolvedTaskState(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String state,
+            String endpoint
+    ) {
         boolean running = "running".equals(state);
         boolean terminal = "complete".equals(state)
                 || "completed".equals(state)
@@ -2225,11 +2273,6 @@ public class MainActivity extends Activity {
                 || "cancelled".equals(state)
                 || "canceled".equals(state);
         boolean shouldUpdateNotification = true;
-        String notificationName = monitoredTaskNames.containsKey(taskKey)
-                ? monitoredTaskNames.get(taskKey)
-                : previousEndpointName != null && !previousEndpointName.trim().isEmpty()
-                ? previousEndpointName
-                : normalizedName;
         if (running) {
             boolean alreadyMonitored = monitoredTaskStatusUrls.containsKey(taskKey);
             if (!endpoint.isEmpty()) {
@@ -2253,6 +2296,88 @@ public class MainActivity extends Activity {
         } else if (monitoredTaskStatusUrls.isEmpty()) {
             handler.removeCallbacks(backgroundTaskPoller);
         }
+    }
+
+    private void scheduleTaskErrorConfirmation(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String endpoint
+    ) {
+        long token = ++taskStateSequence;
+        pendingTaskErrorTokens.put(taskKey, token);
+        handler.postDelayed(
+                () -> confirmTaskError(
+                        threadId,
+                        taskKey,
+                        notificationName,
+                        endpoint,
+                        token
+                ),
+                TASK_ERROR_CONFIRM_DELAY_MS
+        );
+    }
+
+    private void confirmTaskError(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String endpoint,
+            long token
+    ) {
+        if (!isPendingTaskError(taskKey, token)) return;
+        if (endpoint == null || endpoint.trim().isEmpty()) {
+            pendingTaskErrorTokens.remove(taskKey);
+            applyResolvedTaskState(
+                    threadId,
+                    taskKey,
+                    notificationName,
+                    "error",
+                    ""
+            );
+            return;
+        }
+
+        notificationIoExecutor.execute(() -> {
+            String latestState = "";
+            try {
+                latestState = taskStateFromJson(new JSONObject(httpGet(endpoint, 5500)));
+            } catch (Exception ignored) {
+                // If confirmation cannot be fetched, retain the original terminal
+                // error after the debounce delay rather than losing a real failure.
+            }
+            String confirmedState = latestState;
+            handler.post(() -> {
+                if (!isPendingTaskError(taskKey, token)) return;
+                pendingTaskErrorTokens.remove(taskKey);
+                if (!confirmedState.isEmpty() && !"error".equals(confirmedState)) {
+                    handleTaskStateFromWeb(
+                            threadId,
+                            notificationName,
+                            confirmedState,
+                            endpoint
+                    );
+                    return;
+                }
+                applyResolvedTaskState(
+                        threadId,
+                        taskKey,
+                        notificationName,
+                        "error",
+                        endpoint
+                );
+            });
+        });
+    }
+
+    private boolean isPendingTaskError(String taskKey, long token) {
+        Long current = pendingTaskErrorTokens.get(taskKey);
+        return current != null && current == token;
+    }
+
+    private void cancelPendingTaskError(String taskKey) {
+        if (taskKey == null || taskKey.trim().isEmpty()) return;
+        pendingTaskErrorTokens.remove(taskKey);
     }
 
     private String taskKeyForEndpoint(String endpoint) {
@@ -2421,9 +2546,7 @@ public class MainActivity extends Activity {
             raw = "complete";
         }
         Object errorValue = object.opt("error");
-        boolean hasError = errorValue != null
-                && errorValue != JSONObject.NULL
-                && !String.valueOf(errorValue).trim().isEmpty();
+        boolean hasError = hasMeaningfulTaskError(errorValue);
         if (raw.trim().isEmpty()
                 && (object.optBoolean("failed", false)
                 || hasError
@@ -2431,6 +2554,23 @@ public class MainActivity extends Activity {
             raw = "error";
         }
         return normalizeTaskState(raw);
+    }
+
+    private boolean hasMeaningfulTaskError(Object value) {
+        if (value == null || value == JSONObject.NULL) return false;
+        if (value instanceof Boolean) return (Boolean) value;
+        if (value instanceof Number) return ((Number) value).doubleValue() != 0d;
+        if (value instanceof JSONObject) return ((JSONObject) value).length() > 0;
+        if (value instanceof JSONArray) return ((JSONArray) value).length() > 0;
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) return false;
+        String normalized = text.toLowerCase(Locale.ROOT);
+        return !"false".equals(normalized)
+                && !"null".equals(normalized)
+                && !"none".equals(normalized)
+                && !"undefined".equals(normalized)
+                && !"{}".equals(normalized)
+                && !"[]".equals(normalized);
     }
 
     private String normalizeTaskState(String rawState) {
@@ -2575,15 +2715,22 @@ public class MainActivity extends Activity {
     }
 
     private void cancelPersistentTaskNotification() {
+        Intent stopIntent = new Intent(this, AIMiniNotificationService.class)
+                .setAction(AIMiniNotificationService.ACTION_STOP);
+        try {
+            startService(stopIntent);
+        } catch (Exception ignored) {
+        }
         try {
             stopService(new Intent(this, AIMiniNotificationService.class));
         } catch (Exception ignored) {
         }
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (manager == null) return;
-        manager.cancel(PERSISTENT_NOTIFICATION_ID);
-        for (String key : new HashSet<>(runningNotificationTasks)) {
-            manager.cancel(taskNotificationId(key, key));
+        if (manager != null) {
+            manager.cancel(PERSISTENT_NOTIFICATION_ID);
+            for (String key : new HashSet<>(runningNotificationTasks)) {
+                manager.cancel(taskNotificationId(key, key));
+            }
         }
         runningNotificationTasks.clear();
     }
@@ -2834,8 +2981,8 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.14'){return;}"
-                + "window.__AIMiniFixVersion='1.14';"
+                + "if(window.__AIMiniFixVersion==='1.15'){return;}"
+                + "window.__AIMiniFixVersion='1.15';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
@@ -2876,8 +3023,13 @@ public class MainActivity extends Activity {
     private String androidWebViewCss() {
         return ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
                 + "'Apple Chancery','Segoe Script',cursive!important;}"
-                + "html.ai-mini-geckoview body.keyboard-open .composer-shell{"
-                + "bottom:var(--keyboard-inset,0px)!important;}";
+                // Gecko can drop backdrop-filter descendants when their fixed
+                // ancestor is permanently promoted by translate3d/will-change.
+                // ADJUST_RESIZE already moves the visual viewport, so the WebUI's
+                // extra keyboard transform is unnecessary in the app.
+                + "html.ai-mini-geckoview .composer-shell{"
+                + "transform:none!important;transition:none!important;"
+                + "will-change:auto!important;}";
     }
 
     private void adaptPlainTextPageForMobile() {
@@ -2988,8 +3140,9 @@ public class MainActivity extends Activity {
                         + "document.documentElement.style.setProperty("
                         + "'--keyboard-inset',cssPx+'px');"
                         + "document.querySelectorAll('.composer-shell').forEach("
-                        + "function(el){el.style.setProperty("
-                        + "'bottom',cssPx+'px','important');});"
+                        + "function(el){if(el.style.getPropertyValue('bottom')==='0px'"
+                        + "&&el.style.getPropertyPriority('bottom')==='important'){"
+                        + "el.style.removeProperty('bottom');}});"
                         + "window.dispatchEvent(new Event('resize'));"
                         + "}catch(e){}})();",
                 null
@@ -3987,9 +4140,24 @@ public class MainActivity extends Activity {
             if (!item.manual) {
                 DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
                 if (manager == null) return false;
-                Uri existingUri = downloadUri(item);
+                Uri existingUri = queryDownloadManagerLocalUri(manager, item);
+                String localPath = resolveDownloadLocalPath(existingUri);
+
+                // Some OEM DownloadManager implementations (notably ColorOS) remove
+                // only their database row and leave the public Download file behind.
+                // Capture the exact COLUMN_LOCAL_URI first, because duplicate names
+                // may have been changed to "-1", "-2", etc. by DownloadManager.
+                deletePhysicalDownload(existingUri, localPath);
                 int removed = manager.remove(item.id);
-                return removed > 0 || existingUri == null || !uriExists(existingUri);
+                boolean physicalDeleted = deletePhysicalDownload(existingUri, localPath);
+                if (!physicalDeleted) {
+                    Log.w(
+                            "GPTMiniDownload",
+                            "DownloadManager record removed but file remains: " + localPath
+                    );
+                }
+                return physicalDeleted
+                        && (removed > 0 || existingUri == null || !uriExists(existingUri));
             }
             Uri uri = item.manualUri;
             if (uri == null) return true;
@@ -4001,6 +4169,91 @@ public class MainActivity extends Activity {
             return deleted > 0 || !uriExists(uri);
         } catch (Exception ignored) {
             return false;
+        }
+    }
+
+    private Uri queryDownloadManagerLocalUri(DownloadManager manager, DownloadItem item) {
+        Uri uri = null;
+        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(item.id))) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int localUriColumn = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+                if (localUriColumn >= 0) {
+                    String value = cursor.getString(localUriColumn);
+                    if (value != null && !value.trim().isEmpty()) {
+                        item.localUri = value;
+                        uri = Uri.parse(value);
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (uri == null && item.localUri != null && !item.localUri.trim().isEmpty()) {
+            uri = Uri.parse(item.localUri);
+        }
+        if (uri == null) uri = manager.getUriForDownloadedFile(item.id);
+        return uri;
+    }
+
+    private String resolveDownloadLocalPath(Uri uri) {
+        if (uri == null) return null;
+        if ("file".equalsIgnoreCase(uri.getScheme())) return uri.getPath();
+        if (!"content".equalsIgnoreCase(uri.getScheme())) return null;
+
+        try (Cursor cursor = getContentResolver().query(
+                uri,
+                new String[]{MediaStore.MediaColumns.DATA},
+                null,
+                null,
+                null
+        )) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int dataColumn = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                if (dataColumn >= 0) {
+                    String path = cursor.getString(dataColumn);
+                    if (path != null && !path.trim().isEmpty()) return path;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private boolean deletePhysicalDownload(Uri uri, String localPath) {
+        boolean hadTarget = uriExists(uri)
+                || (localPath != null && new File(localPath).exists());
+        if (!hadTarget) return true;
+
+        if (localPath != null && !localPath.trim().isEmpty()) {
+            File file = new File(localPath);
+            if (file.exists()) {
+                try {
+                    file.delete();
+                } catch (Exception ignored) {
+                }
+            }
+            deleteMediaStoreDownloadByPath(localPath);
+        }
+
+        if (uri != null && uriExists(uri)) {
+            try {
+                getContentResolver().delete(uri, null, null);
+            } catch (Exception ignored) {
+            }
+        }
+
+        boolean fileExists = localPath != null && new File(localPath).exists();
+        return !fileExists && !uriExists(uri);
+    }
+
+    private void deleteMediaStoreDownloadByPath(String localPath) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        try {
+            getContentResolver().delete(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    MediaStore.MediaColumns.DATA + "=?",
+                    new String[]{localPath}
+            );
+        } catch (Exception ignored) {
         }
     }
 
@@ -4198,6 +4451,7 @@ public class MainActivity extends Activity {
         handler.removeCallbacksAndMessages(null);
         monitoredTaskStatusUrls.clear();
         monitoredTaskNames.clear();
+        pendingTaskErrorTokens.clear();
         downloadIoExecutor.shutdownNow();
         uploadIoExecutor.shutdownNow();
         notificationIoExecutor.shutdownNow();
@@ -4893,7 +5147,7 @@ public class MainActivity extends Activity {
 
     /*
      * Legacy Android WebView clients kept in source history for reference only.
-     * AI Mini 1.9 uses GeckoView through AIMiniGeckoEngine/AIMiniGeckoView.
+     * GPT Mini uses GeckoView through the compatibility engine/view classes.
      *
     private final class NativeBridge {
         @JavascriptInterface
@@ -5313,50 +5567,6 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
             return context.getString(R.string.saved_connection_default);
-        }
-    }
-
-    private final class ChatGptIconView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint logoPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Bitmap logoBitmap;
-        private final Rect src = new Rect();
-        private final RectF dst = new RectF();
-
-        ChatGptIconView(Context context) {
-            super(context);
-            logoBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.ic_chatgpt);
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            float width = getWidth();
-            float height = getHeight();
-            float radius = Math.min(width, height) * 0.28f;
-            paint.setShader(new LinearGradient(
-                    0,
-                    0,
-                    width,
-                    height,
-                    new int[]{Color.rgb(52, 102, 255), Color.rgb(70, 216, 204)},
-                    null,
-                    Shader.TileMode.CLAMP
-            ));
-            canvas.drawRoundRect(0, 0, width, height, radius, radius, paint);
-            paint.setShader(null);
-
-            if (logoBitmap == null) return;
-            src.set(0, 0, logoBitmap.getWidth(), logoBitmap.getHeight());
-            float inset = Math.min(width, height) * 0.14f;
-            dst.set(inset, inset, width - inset, height - inset);
-            logoPaint.setColorFilter(new android.graphics.ColorMatrixColorFilter(new float[]{
-                    0, 0, 0, 0, 255,
-                    0, 0, 0, 0, 255,
-                    0, 0, 0, 0, 255,
-                    -1, 0, 0, 0, 255
-            }));
-            canvas.drawBitmap(logoBitmap, src, dst, logoPaint);
         }
     }
 

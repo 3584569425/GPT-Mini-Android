@@ -35,7 +35,19 @@ public final class AIMiniNotificationService extends Service {
                 MainActivity.PERSISTENT_NOTIFICATION_ID,
                 buildPersistentNotification(runningCount)
         );
-        return START_STICKY;
+        return START_NOT_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(MainActivity.PERSISTENT_NOTIFICATION_ID);
+        super.onDestroy();
     }
 
     @Override

@@ -83,8 +83,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.14.5") return;
-    window.__AIMiniKeyboardHooksVersion = "1.14.5";
+    if (window.__AIMiniKeyboardHooksVersion === "1.15") return;
+    window.__AIMiniKeyboardHooksVersion = "1.15";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -94,32 +94,27 @@
       document.documentElement ? document.documentElement.clientHeight : 0
     );
 
-    function ensureKeyboardStyle() {
-      if (document.getElementById("ai-mini-keyboard-inset-style")) return;
-      const style = document.createElement("style");
-      style.id = "ai-mini-keyboard-inset-style";
-      style.textContent =
-        "html.ai-mini-geckoview body.keyboard-open .composer-shell{" +
-        "bottom:var(--keyboard-inset,0px)!important;" +
-        "}";
-      (document.head || document.documentElement).appendChild(style);
-    }
-
     function applyNativeKeyboardInset() {
       // Android uses ADJUST_RESIZE and Gecko's viewport now follows the
       // animated View bounds. Applying the physical IME height again would
-      // move the composer twice and leave it near the top of the screen.
+      // move the composer twice and leave it near the top of the screen. Also
+      // avoid mutating bottom/transform on the fixed shell: Gecko may stop
+      // compositing backdrop-filter descendants after that layer mutation.
       const cssValue = "0px";
       document.documentElement.style.setProperty(
         "--keyboard-inset",
         cssValue
       );
+      document.documentElement.style.setProperty("--keyboard-shift", cssValue);
+      const staleStyle = document.getElementById("ai-mini-keyboard-inset-style");
+      if (staleStyle) staleStyle.remove();
       document.querySelectorAll(".composer-shell").forEach(function (shell) {
-        shell.style.setProperty("bottom", cssValue, "important");
+        if (shell.style.getPropertyValue("bottom") === "0px"
+            && shell.style.getPropertyPriority("bottom") === "important") {
+          shell.style.removeProperty("bottom");
+        }
       });
     }
-
-    ensureKeyboardStyle();
 
     function enforceResizeViewport() {
       try {
@@ -561,8 +556,29 @@
   }
 
   function installTaskHooks() {
-    if (window.__AIMiniTaskHooksVersion === "1.14") return;
-    window.__AIMiniTaskHooksVersion = "1.14";
+    if (window.__AIMiniTaskHooksVersion === "1.15") return;
+    window.__AIMiniTaskHooksVersion = "1.15";
+
+    const pendingTaskErrors = Object.create(null);
+
+    function hasMeaningfulError(value) {
+      if (value === undefined || value === null || value === false) return false;
+      if (value === true) return true;
+      if (typeof value === "number") return value !== 0;
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        return normalized !== ""
+          && normalized !== "false"
+          && normalized !== "null"
+          && normalized !== "none"
+          && normalized !== "undefined"
+          && normalized !== "{}"
+          && normalized !== "[]";
+      }
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === "object") return Object.keys(value).length > 0;
+      return true;
+    }
 
     function isStatusUrl(url) {
       return /\/(?:codex|claude)\/(?:status|gui-status)(?:\?|$)/i.test(
@@ -651,7 +667,11 @@
         if (!rawStatus && (data.done === true || data.completed === true || data.finished === true)) {
           rawStatus = "complete";
         }
-        if (!rawStatus && (data.error || data.failed === true || data.ok === false)) {
+        if (!rawStatus && (
+          hasMeaningfulError(data.error)
+          || data.failed === true
+          || data.ok === false
+        )) {
           rawStatus = "error";
         }
         const status = [
@@ -678,6 +698,7 @@
         const endpointTitleKey = endpoint
           ? "__aiMiniTaskTitleEndpoint_" + endpoint
           : "";
+        const errorKey = endpoint || id;
         const currentTitle = currentThreadTitle();
         const title = String(
           (endpointTitleKey && sessionStorage.getItem(endpointTitleKey))
@@ -693,6 +714,10 @@
         };
 
         if (status === "running") {
+          if (pendingTaskErrors[errorKey]) {
+            clearTimeout(pendingTaskErrors[errorKey]);
+            delete pendingTaskErrors[errorKey];
+          }
           sessionStorage.setItem(runningKey, "1");
           if (endpointRunningKey) sessionStorage.setItem(endpointRunningKey, "1");
           if (!sessionStorage.getItem(titleKey)) {
@@ -706,22 +731,41 @@
           return;
         }
         if (status !== "complete" && status !== "error") return;
-        // A terminal state only belongs to this phone if this phone observed the
-        // same task running first. This avoids replaying old completed tasks.
-        if (sessionStorage.getItem(runningKey) !== "1"
-            && (!endpointRunningKey || sessionStorage.getItem(endpointRunningKey) !== "1")) {
+
+        const finishTerminal = function () {
+          delete pendingTaskErrors[errorKey];
+          // A terminal state only belongs to this phone if this phone observed
+          // the same task running first. This avoids replaying old tasks.
+          if (sessionStorage.getItem(runningKey) !== "1"
+              && (!endpointRunningKey
+                || sessionStorage.getItem(endpointRunningKey) !== "1")) {
+            return;
+          }
+          const at = String(data.completedAt || data.updatedAt || Date.now());
+          const doneKey = "__aiMiniDone_" + id + "|" + status + "|" + at;
+          if (sessionStorage.getItem(doneKey)) return;
+          sessionStorage.setItem(doneKey, "1");
+          sessionStorage.removeItem(runningKey);
+          if (endpointRunningKey) sessionStorage.removeItem(endpointRunningKey);
+          sessionStorage.removeItem(titleKey);
+          if (endpointTitleKey) sessionStorage.removeItem(endpointTitleKey);
+          sessionStorage.removeItem("__aiMiniState_" + id);
+          notifyNative();
+        };
+
+        if (status === "complete") {
+          if (pendingTaskErrors[errorKey]) {
+            clearTimeout(pendingTaskErrors[errorKey]);
+            delete pendingTaskErrors[errorKey];
+          }
+          finishTerminal();
           return;
         }
-        const at = String(data.completedAt || data.updatedAt || Date.now());
-        const doneKey = "__aiMiniDone_" + id + "|" + status + "|" + at;
-        if (sessionStorage.getItem(doneKey)) return;
-        sessionStorage.setItem(doneKey, "1");
-        sessionStorage.removeItem(runningKey);
-        if (endpointRunningKey) sessionStorage.removeItem(endpointRunningKey);
-        sessionStorage.removeItem(titleKey);
-        if (endpointTitleKey) sessionStorage.removeItem(endpointTitleKey);
-        sessionStorage.removeItem("__aiMiniState_" + id);
-        notifyNative();
+        if (pendingTaskErrors[errorKey]) return;
+        // Some status endpoints briefly expose an error-shaped transition while
+        // moving from running to complete. Keep polling and only publish an error
+        // if no successful terminal state replaces it during the debounce window.
+        pendingTaskErrors[errorKey] = setTimeout(finishTerminal, 1500);
       } catch (_) {}
     }
 
