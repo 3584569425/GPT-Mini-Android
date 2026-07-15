@@ -21,6 +21,9 @@
     showKeyboard: function () {
       send("showKeyboard");
     },
+    hideKeyboard: function () {
+      send("hideKeyboard");
+    },
     saveDataUrlDownload: function (fileName, mimeType, dataUrl) {
       send("saveDataUrlDownload", {
         fileName: String(fileName || "download"),
@@ -94,14 +97,16 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.21") return;
-    window.__AIMiniKeyboardHooksVersion = "1.21";
+    if (window.__AIMiniKeyboardHooksVersion === "1.22") return;
+    window.__AIMiniKeyboardHooksVersion = "1.22";
 
     let lastEditable = null;
     let keyboardOpen = false;
     let nativeKeyboardInsetDevicePixels = 0;
     let revealFrame = 0;
     let lastKeyboardRequestAt = 0;
+    let lastDirectEditableInteractionAt = 0;
+    let suppressProgrammaticFocusUntil = 0;
     let largestViewportHeight = Math.max(
       window.innerHeight || 0,
       document.documentElement ? document.documentElement.clientHeight : 0
@@ -242,8 +247,7 @@
       else run();
     }
 
-    function requestKeyboard(event) {
-      const editable = editableFor(event && event.target);
+    function sendKeyboardRequest(editable) {
       if (!editable) return;
       lastEditable = editable;
       const now = Date.now();
@@ -254,13 +258,61 @@
       }, 24);
     }
 
+    function recordPointerIntent(event) {
+      const editable = editableFor(event && event.target);
+      const now = Date.now();
+      if (editable) {
+        lastEditable = editable;
+        lastDirectEditableInteractionAt = now;
+        suppressProgrammaticFocusUntil = 0;
+        return;
+      }
+      // WebUI deliberately copies a user message when it is tapped. Some of
+      // its click handlers also focus the composer as a side effect. Remember
+      // that this gesture did not start on an editor so the later focus event
+      // cannot reopen the IME.
+      if (!keyboardOpen) {
+        suppressProgrammaticFocusUntil = now + 900;
+        const current = editableFor(document.activeElement);
+        if (current) {
+          setTimeout(function () {
+            try {
+              if (document.activeElement === current) current.blur();
+            } catch (_) {}
+          }, 0);
+        }
+      }
+    }
+
+    function requestKeyboard(event) {
+      const editable = editableFor(event && event.target);
+      if (!editable) return;
+      lastDirectEditableInteractionAt = Date.now();
+      suppressProgrammaticFocusUntil = 0;
+      sendKeyboardRequest(editable);
+    }
+
+    document.addEventListener("pointerdown", recordPointerIntent, true);
+    document.addEventListener("touchstart", recordPointerIntent, true);
     document.addEventListener("touchend", requestKeyboard, true);
     document.addEventListener("click", requestKeyboard, true);
     document.addEventListener("focusin", function (event) {
       const editable = editableFor(event.target);
       if (!editable) return;
+      const now = Date.now();
+      const directInteraction = now - lastDirectEditableInteractionAt < 900;
+      if (!directInteraction && now < suppressProgrammaticFocusUntil) {
+        setTimeout(function () {
+          try {
+            if (document.activeElement === editable) editable.blur();
+            window.CodexMiniNative.hideKeyboard();
+          } catch (_) {}
+          updateKeyboardState();
+        }, 0);
+        return;
+      }
       lastEditable = editable;
-      requestKeyboard(event);
+      if (directInteraction) sendKeyboardRequest(editable);
       [32, 120, 240].forEach(function (delay) {
         setTimeout(function () {
           updateKeyboardState();
