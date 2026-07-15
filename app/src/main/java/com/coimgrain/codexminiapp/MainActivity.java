@@ -119,6 +119,7 @@ public class MainActivity extends Activity {
     private static final String KEY_FLOAT_Y = "float_y";
     private static final String KEY_TOP_INSET_DP = "top_inset_dp";
     private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
+    private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
     static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
     static final String NOTIFICATION_MODE_END = "end";
@@ -142,10 +143,15 @@ public class MainActivity extends Activity {
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
-    private static final int DEFAULT_TOP_INSET_DP = 0;
+    private static final int DEFAULT_TOP_INSET_DP = 20;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
     private static final String NAVIGATION_LOG_TAG = "GPTMiniNavigation";
+    private static final int WEB_CONTENT_BACKGROUND_COLOR = 0xFF0D0D0D;
+    private static final long MAIN_NAVIGATION_MIN_REVEAL_DELAY_MS = 180L;
+    private static final long MAIN_NAVIGATION_MAX_REVEAL_DELAY_MS = 1500L;
+    private static final long MAIN_NAVIGATION_REVEAL_POLL_MS = 100L;
+    private static final long MAIN_NAVIGATION_FALLBACK_MS = 2200L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
@@ -186,6 +192,11 @@ public class MainActivity extends Activity {
     private TextView savedConnectionsSubtitle;
     private String pendingConnectionUrl;
     private boolean waitingForMainPageReveal;
+    private ImageView mainNavigationCover;
+    private Bitmap mainNavigationSnapshot;
+    private long mainNavigationTransitionGeneration;
+    private boolean mainNavigationCaptureRunning;
+    private String pendingMainNavigationUrl;
     private volatile String availableLocalApiBase;
     private LinearLayout downloadsPanel;
     private LinearLayout downloadsList;
@@ -731,6 +742,7 @@ public class MainActivity extends Activity {
 
     private void buildBrowserArea(LinearLayout root) {
         browserFrame = new FrameLayout(this);
+        browserFrame.setBackgroundColor(WEB_CONTENT_BACKGROUND_COLOR);
         root.addView(browserFrame, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -1267,17 +1279,27 @@ public class MainActivity extends Activity {
     }
 
     private void migrateTopInsetDefault() {
-        if (preferences.getBoolean(KEY_TOP_INSET_V118_MIGRATED, false)) return;
-        SharedPreferences.Editor editor = preferences.edit()
-                .putBoolean(KEY_TOP_INSET_V118_MIGRATED, true);
-        // 28dp and 20dp were defaults in older builds. Move those defaults to a
-        // fully filled layout while retaining every other user-selected height.
-        if (!preferences.contains(KEY_TOP_INSET_DP)
-                || preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP) == 28
-                || preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP) == 20) {
-            editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+        SharedPreferences.Editor editor = preferences.edit();
+        boolean changed = false;
+        if (!preferences.getBoolean(KEY_TOP_INSET_V118_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_V118_MIGRATED, true);
+            changed = true;
+            if (!preferences.contains(KEY_TOP_INSET_DP)
+                    || preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP) == 28) {
+                editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            }
         }
-        editor.apply();
+        if (!preferences.getBoolean(KEY_TOP_INSET_V120_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_V120_MIGRATED, true);
+            changed = true;
+            // v1.19 stored its 0dp default explicitly. Move that old default to
+            // the new 20dp baseline while retaining other user-selected values.
+            if (!preferences.contains(KEY_TOP_INSET_DP)
+                    || preferences.getInt(KEY_TOP_INSET_DP, 0) == 0) {
+                editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            }
+        }
+        if (changed) editor.apply();
     }
 
     private void requestInterfaceInsets() {
@@ -1518,6 +1540,8 @@ public class MainActivity extends Activity {
 
         if (creatingBrowser) externalDesktopMode = false;
         applyBrowserMode(externalWebView, externalDesktopMode, externalMobileUserAgent);
+        if (webView != null) webView.setBrowserActive(false);
+        externalWebView.setBrowserActive(true);
         externalBrowserContainer.setVisibility(View.VISIBLE);
         updateExternalBrowserMenu();
         externalWebView.loadUrl(url);
@@ -1618,6 +1642,249 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean prepareMainNavigationTransition(
+            AIMiniGeckoView target,
+            String navigationUrl
+    ) {
+        String nextUrl = navigationUrl == null ? "" : navigationUrl.trim();
+        if (target == null || nextUrl.isEmpty()) return false;
+        if (browserFrame == null
+                || target != webView
+                || target.getVisibility() != View.VISIBLE
+                || !activityInForeground) {
+            target.loadUrl(nextUrl);
+            return true;
+        }
+
+        String currentUrl = target.getUrl();
+        if (sameVisibleNavigation(currentUrl, nextUrl)) return false;
+
+        pendingMainNavigationUrl = nextUrl;
+        if (mainNavigationCaptureRunning) return true;
+
+        int width = target.getWidth();
+        int height = target.getHeight();
+        if (width <= 0 || height <= 0) {
+            pendingMainNavigationUrl = null;
+            target.loadUrl(nextUrl);
+            return true;
+        }
+
+        Bitmap snapshot = reusableMainNavigationSnapshot(width, height);
+        if (snapshot == null) {
+            pendingMainNavigationUrl = null;
+            target.loadUrl(nextUrl);
+            return true;
+        }
+
+        int[] targetLocation = new int[2];
+        int[] frameLocation = new int[2];
+        target.getLocationInWindow(targetLocation);
+        browserFrame.getLocationInWindow(frameLocation);
+        Rect sourceRect = new Rect(
+                targetLocation[0],
+                targetLocation[1],
+                targetLocation[0] + width,
+                targetLocation[1] + height
+        );
+        long generation = ++mainNavigationTransitionGeneration;
+        mainNavigationCaptureRunning = true;
+        try {
+            PixelCopy.request(getWindow(), sourceRect, snapshot, copyResult -> {
+                mainNavigationCaptureRunning = false;
+                if (isFinishing()
+                        || isDestroyed()
+                        || generation != mainNavigationTransitionGeneration) {
+                    return;
+                }
+
+                String capturedNavigationUrl = pendingMainNavigationUrl;
+                pendingMainNavigationUrl = null;
+                if (capturedNavigationUrl == null || capturedNavigationUrl.isEmpty()) return;
+
+                // Some ColorOS builds report PixelCopy.SUCCESS while returning a
+                // fully black TextureView region. Reading Gecko's visible texture
+                // directly is reliable on those devices and also excludes the
+                // compositor's temporary loading cover.
+                boolean snapshotReady = target.copyVisibleTextureTo(snapshot)
+                        || copyResult == PixelCopy.SUCCESS;
+                Log.d(
+                        NAVIGATION_LOG_TAG,
+                        "transition-copy pixelCopy=" + copyResult
+                                + " snapshotReady=" + snapshotReady
+                );
+                if (snapshotReady) {
+                    showMainNavigationCover(
+                            snapshot,
+                            targetLocation,
+                            frameLocation,
+                            width,
+                            height,
+                            generation
+                    );
+                }
+
+                // Commit the navigation only after the frozen frame has reached
+                // the screen. This keeps WebUI's temporary shell/blank document
+                // hidden without fading a black layer over the finished page.
+                View frameGate = snapshotReady && mainNavigationCover != null
+                        ? mainNavigationCover
+                        : target;
+                frameGate.postOnAnimation(() -> frameGate.postOnAnimation(() -> {
+                    if (generation != mainNavigationTransitionGeneration) return;
+                    target.loadUrl(capturedNavigationUrl);
+                    handler.postDelayed(
+                            () -> hideMainNavigationCover(generation),
+                            MAIN_NAVIGATION_FALLBACK_MS
+                    );
+                }));
+            }, handler);
+        } catch (Throwable ignored) {
+            mainNavigationCaptureRunning = false;
+            pendingMainNavigationUrl = null;
+            target.loadUrl(nextUrl);
+        }
+        return true;
+    }
+
+    private Bitmap reusableMainNavigationSnapshot(int width, int height) {
+        if (mainNavigationSnapshot != null
+                && !mainNavigationSnapshot.isRecycled()
+                && mainNavigationSnapshot.getWidth() == width
+                && mainNavigationSnapshot.getHeight() == height) {
+            return mainNavigationSnapshot;
+        }
+        if (mainNavigationSnapshot != null && !mainNavigationSnapshot.isRecycled()) {
+            mainNavigationSnapshot.recycle();
+        }
+        mainNavigationSnapshot = null;
+        try {
+            mainNavigationSnapshot =
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        } catch (Throwable ignored) {
+        }
+        return mainNavigationSnapshot;
+    }
+
+    private void showMainNavigationCover(
+            Bitmap snapshot,
+            int[] targetLocation,
+            int[] frameLocation,
+            int width,
+            int height,
+            long generation
+    ) {
+        if (generation != mainNavigationTransitionGeneration || browserFrame == null) return;
+        if (mainNavigationCover == null) {
+            mainNavigationCover = new ImageView(this);
+            mainNavigationCover.setBackgroundColor(WEB_CONTENT_BACKGROUND_COLOR);
+            mainNavigationCover.setScaleType(ImageView.ScaleType.FIT_XY);
+            // Freeze interaction together with the pixels so a second tap cannot
+            // navigate the hidden page while the first transition is in flight.
+            mainNavigationCover.setClickable(true);
+            mainNavigationCover.setFocusable(false);
+        } else if (mainNavigationCover.getParent() instanceof ViewGroup
+                && mainNavigationCover.getParent() != browserFrame) {
+            ((ViewGroup) mainNavigationCover.getParent()).removeView(mainNavigationCover);
+        }
+
+        mainNavigationCover.animate().cancel();
+        mainNavigationCover.setAlpha(1f);
+        mainNavigationCover.setImageBitmap(snapshot);
+        FrameLayout.LayoutParams coverParams =
+                new FrameLayout.LayoutParams(width, height);
+        coverParams.leftMargin = targetLocation[0] - frameLocation[0];
+        coverParams.topMargin = targetLocation[1] - frameLocation[1];
+        if (mainNavigationCover.getParent() == browserFrame) {
+            mainNavigationCover.setLayoutParams(coverParams);
+        } else {
+            browserFrame.addView(mainNavigationCover, coverParams);
+        }
+        mainNavigationCover.setVisibility(View.VISIBLE);
+        mainNavigationCover.bringToFront();
+    }
+
+    private void scheduleMainNavigationReveal(
+            AIMiniGeckoView target,
+            boolean success
+    ) {
+        if (mainNavigationCover == null
+                || mainNavigationCover.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        long generation = mainNavigationTransitionGeneration;
+        if (!success || target == null) {
+            handler.postDelayed(() -> hideMainNavigationCover(generation), 80L);
+            return;
+        }
+        handler.postDelayed(
+                () -> probeMainNavigationContent(target, generation, 0L),
+                MAIN_NAVIGATION_MIN_REVEAL_DELAY_MS
+        );
+    }
+
+    private void probeMainNavigationContent(
+            AIMiniGeckoView target,
+            long generation,
+            long waitedMs
+    ) {
+        if (generation != mainNavigationTransitionGeneration
+                || mainNavigationCover == null
+                || mainNavigationCover.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        String readinessScript = "(function(){try{"
+                + "var text=(document.body&&document.body.innerText)||'';"
+                + "var shell=text.indexOf('手机同步到当前 GPT 对话')>=0;"
+                + "return !shell&&text.trim().length>100;"
+                + "}catch(e){return false;}})();";
+        target.evaluateJavascript(readinessScript, result -> {
+            if (generation != mainNavigationTransitionGeneration) return;
+            boolean ready = "true".equalsIgnoreCase(
+                    result == null ? "" : result.trim()
+            );
+            long nextWaitedMs = waitedMs + MAIN_NAVIGATION_REVEAL_POLL_MS;
+            if (ready || nextWaitedMs >= MAIN_NAVIGATION_MAX_REVEAL_DELAY_MS) {
+                if (mainNavigationCover == null) return;
+                mainNavigationCover.postOnAnimation(
+                        () -> mainNavigationCover.postOnAnimation(
+                                () -> hideMainNavigationCover(generation)
+                        )
+                );
+                return;
+            }
+            handler.postDelayed(
+                    () -> probeMainNavigationContent(
+                            target,
+                            generation,
+                            nextWaitedMs
+                    ),
+                    MAIN_NAVIGATION_REVEAL_POLL_MS
+            );
+        });
+    }
+
+    private void hideMainNavigationCover(long generation) {
+        if (generation != mainNavigationTransitionGeneration
+                || mainNavigationCover == null) {
+            return;
+        }
+        mainNavigationCover.animate().cancel();
+        mainNavigationCover.setVisibility(View.GONE);
+        mainNavigationCover.setAlpha(1f);
+        mainNavigationCover.setImageDrawable(null);
+    }
+
+    private boolean sameVisibleNavigation(String firstUrl, String secondUrl) {
+        String first = firstUrl == null ? "" : firstUrl.trim();
+        String second = secondUrl == null ? "" : secondUrl.trim();
+        int firstHash = first.indexOf('#');
+        int secondHash = second.indexOf('#');
+        if (firstHash >= 0) first = first.substring(0, firstHash);
+        if (secondHash >= 0) second = second.substring(0, secondHash);
+        return first.equals(second);
+    }
+
     private void applyBrowserMode(
             AIMiniGeckoView target,
             boolean desktopMode,
@@ -1628,8 +1895,7 @@ public class MainActivity extends Activity {
         applyBrowserViewport(target, desktopMode);
         // Updating Gecko session settings and the viewport in place avoids the
         // white flash and page-state loss caused by a full reload.
-        handler.postDelayed(() -> applyBrowserViewport(target, desktopMode), 80);
-        handler.postDelayed(() -> applyBrowserViewport(target, desktopMode), 240);
+        handler.postDelayed(() -> applyBrowserViewport(target, desktopMode), 120);
     }
 
     private String desktopUserAgent() {
@@ -1644,31 +1910,42 @@ public class MainActivity extends Activity {
                 : "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, "
                         + "interactive-widget=resizes-content";
         String script = "(function(){try{"
-                + "window.__AIMiniViewportContent=" + JSONObject.quote(content) + ";"
+                + "var desired=" + JSONObject.quote(content) + ";"
+                + "var desktop=" + (desktopMode ? "true" : "false") + ";"
+                + "var signature=desired+'|'+desktop;"
+                + "var previous=window.__AIMiniViewportSignature||'';"
+                + "window.__AIMiniViewportContent=desired;"
+                + "var changed=false;"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(!meta){meta=document.createElement('meta');meta.name='viewport';"
-                + "(document.head||document.documentElement).appendChild(meta);}"
-                + "meta.setAttribute('content',window.__AIMiniViewportContent);"
+                + "(document.head||document.documentElement).appendChild(meta);changed=true;}"
+                + "if(meta.getAttribute('content')!==desired){"
+                + "meta.setAttribute('content',desired);changed=true;}"
                 + "if(!window.__AIMiniViewportObserver){"
                 + "window.__AIMiniViewportObserver=new MutationObserver(function(){"
                 + "var current=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(current&&current.getAttribute('content')!==window.__AIMiniViewportContent){"
                 + "current.setAttribute('content',window.__AIMiniViewportContent);"
                 + "}});"
-                + "window.__AIMiniViewportObserver.observe(document.documentElement,"
+                + "window.__AIMiniViewportObserver.observe(document.head||document.documentElement,"
                 + "{subtree:true,childList:true,attributes:true,attributeFilter:['content']});"
                 + "}"
-                + "document.documentElement.classList.toggle('ai-mini-desktop-mode',"
-                + (desktopMode ? "true" : "false") + ");"
+                + "if(document.documentElement.classList.contains('ai-mini-desktop-mode')!==desktop){"
+                + "document.documentElement.classList.toggle('ai-mini-desktop-mode',desktop);"
+                + "changed=true;}"
                 + "var desktopStyle=document.getElementById('ai-mini-desktop-style');"
-                + "if(" + (desktopMode ? "true" : "false") + "){"
+                + "if(desktop){"
                 + "if(!desktopStyle){desktopStyle=document.createElement('style');"
                 + "desktopStyle.id='ai-mini-desktop-style';"
-                + "(document.head||document.documentElement).appendChild(desktopStyle);}"
-                + "desktopStyle.textContent='html.ai-mini-desktop-mode,html.ai-mini-desktop-mode body{min-width:1100px!important;overflow-x:auto!important;}';"
-                + "}else if(desktopStyle){desktopStyle.remove();}"
-                + "window.dispatchEvent(new Event('resize'));"
-                + "setTimeout(function(){window.dispatchEvent(new Event('resize'));},120);"
+                + "(document.head||document.documentElement).appendChild(desktopStyle);changed=true;}"
+                + "var css='html.ai-mini-desktop-mode,html.ai-mini-desktop-mode body{min-width:1100px!important;overflow-x:auto!important;}';"
+                + "if(desktopStyle.textContent!==css){desktopStyle.textContent=css;changed=true;}"
+                + "}else if(desktopStyle){desktopStyle.remove();changed=true;}"
+                + "window.__AIMiniViewportSignature=signature;"
+                + "if(changed||previous!==signature){"
+                + "requestAnimationFrame(function(){window.dispatchEvent(new Event('resize'));});"
+                + "setTimeout(function(){window.dispatchEvent(new Event('resize'));},96);"
+                + "}"
                 + "}catch(e){}})();";
         target.evaluateJavascript(script, null);
     }
@@ -1711,6 +1988,7 @@ public class MainActivity extends Activity {
             }
             externalWebView = null;
         }
+        if (webView != null) webView.setBrowserActive(true);
         externalMobileUserAgent = null;
         externalDesktopMode = false;
         updateExternalBrowserMenu();
@@ -1877,14 +2155,15 @@ public class MainActivity extends Activity {
         if (!waitingForMainPageReveal || welcomeView == null) return;
         waitingForMainPageReveal = false;
         appRoot.setVisibility(View.VISIBLE);
-        welcomeView.animate()
-                .alpha(0f)
-                .setDuration(140L)
-                .withEndAction(() -> {
-                    welcomeView.setVisibility(View.GONE);
-                    welcomeView.setAlpha(1f);
-                })
-                .start();
+        welcomeView.animate().cancel();
+        // Fading two full-screen trees (the welcome layout and Gecko's texture)
+        // forces several expensive blended frames. Swap after two stable frames
+        // instead: the loaded WebUI appears at once without a black/white ramp.
+        welcomeView.postOnAnimation(() -> welcomeView.postOnAnimation(() -> {
+            if (waitingForMainPageReveal) return;
+            welcomeView.setVisibility(View.GONE);
+            welcomeView.setAlpha(1f);
+        }));
     }
 
     private void configureContinueButton(String lastUrl) {
@@ -4832,23 +5111,36 @@ public class MainActivity extends Activity {
         // The Service may have completed and removed tasks while Gecko/Activity was
         // suspended. Reconcile the in-memory maps before refreshing notifications.
         restoreMonitoredTasks();
-        if (webView != null) webView.prepareForForeground();
-        if (externalWebView != null) externalWebView.prepareForForeground();
+        AIMiniGeckoView visibleBrowser = activeWebView();
+        if (webView != null) {
+            if (webView == visibleBrowser) webView.prepareForForeground();
+            else webView.setBrowserActive(false);
+        }
+        if (externalWebView != null) {
+            if (externalWebView == visibleBrowser) externalWebView.prepareForForeground();
+            else externalWebView.setBrowserActive(false);
+        }
         handler.removeCallbacks(backgroundTaskPoller);
         scheduleLocalRouteCheck(900);
-        showPersistentConnectedNotificationIfNeeded();
-        requestImmediateTaskStatusRefresh();
-        handler.postDelayed(this::requestImmediateTaskStatusRefresh, 900);
+        // Let the compositor present the preserved frame before starting
+        // notification IPC, status polling and viewport maintenance.
         handler.postDelayed(() -> {
+            if (!activityInForeground) return;
+            showPersistentConnectedNotificationIfNeeded();
+            requestImmediateTaskStatusRefresh();
+        }, 220);
+        handler.postDelayed(() -> {
+            if (activityInForeground) requestImmediateTaskStatusRefresh();
+        }, 1000);
+        handler.postDelayed(() -> {
+            if (!activityInForeground) return;
             AIMiniGeckoView active = activeWebView();
             if (active != null) {
-                active.requestLayout();
-                active.invalidate();
                 applyBrowserViewport(active, active == externalWebView
                         ? externalDesktopMode
                         : mainDesktopMode);
             }
-        }, 120);
+        }, 280);
     }
 
     @Override
@@ -5008,6 +5300,21 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        mainNavigationTransitionGeneration++;
+        pendingMainNavigationUrl = null;
+        mainNavigationCaptureRunning = false;
+        if (mainNavigationCover != null) {
+            mainNavigationCover.animate().cancel();
+            mainNavigationCover.setImageDrawable(null);
+            if (mainNavigationCover.getParent() instanceof ViewGroup) {
+                ((ViewGroup) mainNavigationCover.getParent()).removeView(mainNavigationCover);
+            }
+            mainNavigationCover = null;
+        }
+        if (mainNavigationSnapshot != null && !mainNavigationSnapshot.isRecycled()) {
+            mainNavigationSnapshot.recycle();
+        }
+        mainNavigationSnapshot = null;
         monitoredTaskStatusUrls.clear();
         monitoredTaskNames.clear();
         monitoredTaskStartedAt.clear();
@@ -5260,20 +5567,8 @@ public class MainActivity extends Activity {
     }
 
     private GradientDrawable topInsetBackground(boolean light) {
-        GradientDrawable drawable = new GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                light
-                        ? new int[]{
-                                Color.rgb(244, 247, 252),
-                                Color.rgb(229, 239, 248),
-                                Color.rgb(241, 247, 245)
-                        }
-                        : new int[]{
-                                Color.rgb(9, 12, 18),
-                                Color.rgb(14, 23, 38),
-                                Color.rgb(8, 24, 28)
-                        }
-        );
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(light ? Color.WHITE : Color.BLACK);
         return drawable;
     }
 
@@ -5390,21 +5685,28 @@ public class MainActivity extends Activity {
                         handler.removeCallbacks(localRouteRetryer);
                     }
                     String repaired = inheritMainNavigationToken(candidate);
+                    boolean sameMainDocument = isSameMainDocument(candidate);
                     Log.d(
                             NAVIGATION_LOG_TAG,
                             "load gesture=" + hasUserGesture
                                     + " target=" + target
-                                    + " sameMain=" + isSameMainDocument(candidate)
+                                    + " sameMain=" + sameMainDocument
                                     + " repaired=" + !repaired.equals(candidate)
                                     + " token=" + navigationTokenFingerprint(candidate)
                                     + " currentToken=" + navigationTokenFingerprint(view.getUrl())
                                     + " url=" + navigationUrlForLog(candidate)
                     );
+                    if (hasUserGesture
+                            && sameMainDocument
+                            && !sameVisibleNavigation(view.getUrl(), repaired)
+                            && prepareMainNavigationTransition(view, repaired)) {
+                        return true;
+                    }
                     if (!repaired.equals(candidate)) {
                         view.loadUrl(repaired);
                         return true;
                     }
-                    if (hasUserGesture && !isSameMainDocument(candidate)) {
+                    if (hasUserGesture && !sameMainDocument) {
                         openExternalPage(candidate);
                         return true;
                     }
@@ -5454,6 +5756,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(AIMiniGeckoView view, String url, boolean success) {
+                scheduleMainNavigationReveal(view, success);
                 if (!success) {
                     pendingConnectionUrl = null;
                     waitingForMainPageReveal = false;
@@ -5477,7 +5780,7 @@ public class MainActivity extends Activity {
                         () -> requestImmediateTaskStatusRefresh(view),
                         850
                 );
-                handler.postDelayed(MainActivity.this::revealLoadedMainPage, 90);
+                handler.postDelayed(MainActivity.this::revealLoadedMainPage, 180);
             }
 
             @Override
