@@ -1,9 +1,12 @@
 .DS_Store
+__MACOSX/
 .gradle/
 .tools/
 .idea/
 *.iml
 build/
+tmp/
+APK/
 local.properties
 captures/
 outputs/
