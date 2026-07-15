@@ -409,6 +409,197 @@
     applyNativeKeyboardInset(true);
   }
 
+  function installConversationFontScale() {
+    if (window.__AIMiniConversationFontScaleVersion === "1.0"
+        && window.__AIMiniSetConversationFontScale) {
+      return;
+    }
+    window.__AIMiniConversationFontScaleVersion = "1.0";
+
+    const originalFontStyles = new WeakMap();
+    const trackedTextElements = new Set();
+    const pendingRoots = new Set();
+    let scale = 1;
+    let observer = null;
+    let scanFrame = 0;
+
+    const scopeSelector = [
+      "[data-message-author-role]",
+      "[data-message-role]",
+      "[data-role='assistant']",
+      "[data-role='user']",
+      "[data-testid*='message' i]",
+      ".assistant-message",
+      ".user-message",
+      ".chat-message",
+      ".message-content",
+      ".message-text",
+      ".markdown-body",
+      ".markdown-content",
+      ".prose",
+      "main article"
+    ].join(",");
+    const textSelector = [
+      "p", "li", "blockquote", "pre", "code", "td", "th", "dd", "dt",
+      "h1", "h2", "h3", "h4", "h5", "h6"
+    ].join(",");
+    const excludedSelector = [
+      "nav", "header", "aside", "form", "input", "textarea",
+      "select", "[contenteditable='true']", ".composer", ".composer-shell"
+    ].join(",");
+
+    function hasDirectText(element) {
+      if (!element || !element.childNodes) return false;
+      return Array.prototype.some.call(element.childNodes, function (node) {
+        return node.nodeType === Node.TEXT_NODE
+          && String(node.nodeValue || "").trim().length > 0;
+      });
+    }
+
+    function isExcluded(element) {
+      return !element
+        || !element.isConnected
+        || (element.closest && !!element.closest(excludedSelector));
+    }
+
+    function restoreElement(element, original) {
+      if (!element || !original) return;
+      if (original.inlineValue) {
+        element.style.setProperty(
+          "font-size",
+          original.inlineValue,
+          original.inlinePriority
+        );
+      } else {
+        element.style.removeProperty("font-size");
+      }
+    }
+
+    function applyElement(element) {
+      if (!(element instanceof Element) || isExcluded(element)) return;
+      let original = originalFontStyles.get(element);
+      if (!original) {
+        const computedPixels = parseFloat(
+          window.getComputedStyle(element).fontSize || ""
+        );
+        if (!Number.isFinite(computedPixels) || computedPixels <= 0) return;
+        original = {
+          computedPixels: computedPixels,
+          inlineValue: element.style.getPropertyValue("font-size"),
+          inlinePriority: element.style.getPropertyPriority("font-size")
+        };
+        originalFontStyles.set(element, original);
+        trackedTextElements.add(element);
+      }
+      if (Math.abs(scale - 1) < 0.001) {
+        restoreElement(element, original);
+      } else {
+        element.style.setProperty(
+          "font-size",
+          (original.computedPixels * scale).toFixed(2) + "px",
+          "important"
+        );
+      }
+    }
+
+    function processScope(scope) {
+      if (!(scope instanceof Element) || isExcluded(scope)) return;
+      if (hasDirectText(scope)) applyElement(scope);
+      scope.querySelectorAll(textSelector).forEach(applyElement);
+      scope.querySelectorAll("div,span").forEach(function (element) {
+        if (hasDirectText(element)) applyElement(element);
+      });
+    }
+
+    function scan(root) {
+      if (!root) return;
+      if (root instanceof Element && root.matches(scopeSelector)) {
+        processScope(root);
+      }
+      if (root.querySelectorAll) {
+        root.querySelectorAll(scopeSelector).forEach(processScope);
+      }
+    }
+
+    function scheduleScan(root) {
+      let element = root;
+      if (element && element.nodeType !== Node.ELEMENT_NODE) {
+        element = element.parentElement;
+      }
+      if (!element) element = document;
+      if (element instanceof Element && element.closest) {
+        element = element.closest(scopeSelector) || element;
+      }
+      pendingRoots.add(element);
+      if (scanFrame) return;
+      scanFrame = requestAnimationFrame(function () {
+        scanFrame = 0;
+        const roots = Array.from(pendingRoots);
+        pendingRoots.clear();
+        roots.forEach(function (candidate) {
+          if (candidate === document || candidate.isConnected) scan(candidate);
+        });
+      });
+    }
+
+    function startObserver() {
+      if (observer || !document.documentElement) return;
+      observer = new MutationObserver(function (mutations) {
+        mutations.forEach(function (mutation) {
+          if (mutation.type === "characterData") {
+            scheduleScan(mutation.target);
+            return;
+          }
+          mutation.addedNodes.forEach(scheduleScan);
+        });
+      });
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        characterData: true
+      });
+    }
+
+    function restoreAll() {
+      trackedTextElements.forEach(function (element) {
+        const original = originalFontStyles.get(element);
+        if (element && element.isConnected) restoreElement(element, original);
+      });
+    }
+
+    window.__AIMiniSetConversationFontScale = function (percent) {
+      const clamped = Math.max(50, Math.min(200, Number(percent) || 100));
+      window.__AIMiniPendingConversationFontScale = clamped;
+      scale = clamped / 100;
+      if (Math.abs(scale - 1) < 0.001) {
+        if (observer) {
+          observer.disconnect();
+          observer = null;
+        }
+        restoreAll();
+        return;
+      }
+      startObserver();
+      trackedTextElements.forEach(function (element) {
+        if (!element || !element.isConnected) {
+          trackedTextElements.delete(element);
+          return;
+        }
+        applyElement(element);
+      });
+      scheduleScan(document);
+    };
+
+    const initialScale = window.__AIMiniPendingConversationFontScale || 100;
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", function () {
+        window.__AIMiniSetConversationFontScale(initialScale);
+      }, { once: true });
+    } else {
+      window.__AIMiniSetConversationFontScale(initialScale);
+    }
+  }
+
   function installGeckoLiquidGlassFallback() {
     if (window.__AIMiniGeckoGlassVersion === "1.17") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
@@ -1110,6 +1301,7 @@
   }
 
   installKeyboardHooks();
+  installConversationFontScale();
   installGeckoLiquidGlassFallback();
   installDownloadHooks();
   installTaskHooks();

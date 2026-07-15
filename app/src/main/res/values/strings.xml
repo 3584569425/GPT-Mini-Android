@@ -79,6 +79,7 @@
     <string name="float_size_value">图标大小：%1$d dp</string>
     <string name="float_alpha_value">图标透明度：%1$d%%</string>
     <string name="top_inset_value">顶部区域高度：%1$d dp</string>
+    <string name="conversation_font_scale_value">会话字体大小：%1$d%%</string>
     <string name="float_theme_value">主题：%1$s</string>
     <string name="float_theme_dark">深色</string>
     <string name="float_theme_light">浅色</string>

@@ -118,6 +118,7 @@ public class MainActivity extends Activity {
     private static final String KEY_FLOAT_ALPHA = "float_alpha";
     private static final String KEY_FLOAT_Y = "float_y";
     private static final String KEY_TOP_INSET_DP = "top_inset_dp";
+    private static final String KEY_CONVERSATION_FONT_SCALE = "conversation_font_scale";
     private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
     private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
@@ -146,6 +147,9 @@ public class MainActivity extends Activity {
     private static final int DEFAULT_TOP_INSET_DP = 20;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
+    private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
+    private static final int MIN_CONVERSATION_FONT_SCALE = 50;
+    private static final int MAX_CONVERSATION_FONT_SCALE = 200;
     private static final String NAVIGATION_LOG_TAG = "GPTMiniNavigation";
     private static final int WEB_CONTENT_BACKGROUND_COLOR = 0xFF0D0D0D;
     private static final long MAIN_NAVIGATION_MIN_REVEAL_DELAY_MS = 180L;
@@ -219,6 +223,7 @@ public class MainActivity extends Activity {
     private TextView floatSizeValue;
     private TextView floatAlphaValue;
     private TextView topInsetValue;
+    private TextView conversationFontScaleValue;
     private TextView notificationModeValue;
     private TextView notificationEndOption;
     private TextView notificationPersistentOption;
@@ -236,6 +241,8 @@ public class MainActivity extends Activity {
     private boolean modernImeInsetsReliable;
     private final Rect visibleDisplayFrame = new Rect();
     private final int[] rootLocationOnScreen = new int[2];
+    private final Runnable conversationFontScaleApplier =
+            () -> applyConversationFontScale(webView);
     private boolean miniDragging;
     private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
@@ -1021,6 +1028,31 @@ public class MainActivity extends Activity {
         }));
         floatSettingsPanel.addView(topInsetBar);
 
+        conversationFontScaleValue = settingsLabel("");
+        floatSettingsPanel.addView(conversationFontScaleValue);
+        SeekBar conversationFontScaleBar = new SeekBar(this);
+        conversationFontScaleBar.setMax(
+                MAX_CONVERSATION_FONT_SCALE - MIN_CONVERSATION_FONT_SCALE
+        );
+        conversationFontScaleBar.setProgress(
+                conversationFontScalePercent() - MIN_CONVERSATION_FONT_SCALE
+        );
+        conversationFontScaleBar.setOnSeekBarChangeListener(
+                new SimpleSeekBarListener(progress -> {
+                    int percent = MIN_CONVERSATION_FONT_SCALE + progress;
+                    preferences.edit()
+                            .putInt(KEY_CONVERSATION_FONT_SCALE, percent)
+                            .apply();
+                    updateFloatSettingsLabels();
+                    // Dragging a 150-step slider can produce several callbacks
+                    // in one display frame. Coalesce them so Gecko receives only
+                    // the latest value without making the settings panel stutter.
+                    handler.removeCallbacks(conversationFontScaleApplier);
+                    handler.postDelayed(conversationFontScaleApplier, 16L);
+                })
+        );
+        floatSettingsPanel.addView(conversationFontScaleBar);
+
         floatThemeValue = settingsLabel("");
         floatSettingsPanel.addView(floatThemeValue);
         LinearLayout themeRow = new LinearLayout(this);
@@ -1287,6 +1319,19 @@ public class MainActivity extends Activity {
         );
     }
 
+    private int conversationFontScalePercent() {
+        return Math.max(
+                MIN_CONVERSATION_FONT_SCALE,
+                Math.min(
+                        MAX_CONVERSATION_FONT_SCALE,
+                        preferences.getInt(
+                                KEY_CONVERSATION_FONT_SCALE,
+                                DEFAULT_CONVERSATION_FONT_SCALE
+                        )
+                )
+        );
+    }
+
     private void migrateTopInsetDefault() {
         SharedPreferences.Editor editor = preferences.edit();
         boolean changed = false;
@@ -1415,6 +1460,12 @@ public class MainActivity extends Activity {
         if (floatSizeValue != null) floatSizeValue.setText(getString(R.string.float_size_value, floatButtonSizeDp()));
         if (floatAlphaValue != null) floatAlphaValue.setText(getString(R.string.float_alpha_value, floatButtonTransparencyPercent()));
         if (topInsetValue != null) topInsetValue.setText(getString(R.string.top_inset_value, topInsetDp()));
+        if (conversationFontScaleValue != null) {
+            conversationFontScaleValue.setText(getString(
+                    R.string.conversation_font_scale_value,
+                    conversationFontScalePercent()
+            ));
+        }
         if (floatThemeValue != null) {
             int label = FLOAT_MENU_THEME_LIGHT.equals(floatMenuTheme())
                     ? R.string.float_theme_light
@@ -1511,7 +1562,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.25.1";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.25.2";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1982,7 +2033,22 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.25.1";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.25.2";
+    }
+
+    private void applyConversationFontScale(AIMiniGeckoView target) {
+        if (target == null || target != webView) return;
+        int percent = conversationFontScalePercent();
+        target.evaluateJavascript(
+                "(function(){try{"
+                        + "var value=" + percent + ";"
+                        + "window.__AIMiniPendingConversationFontScale=value;"
+                        + "if(window.__AIMiniSetConversationFontScale){"
+                        + "window.__AIMiniSetConversationFontScale(value);"
+                        + "}"
+                        + "}catch(e){}})();",
+                null
+        );
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -5716,6 +5782,7 @@ public class MainActivity extends Activity {
         String type = message.optString("type", "");
         switch (type) {
             case "bridgeReady":
+                handler.post(() -> applyConversationFontScale(source));
                 handler.postDelayed(
                         () -> requestImmediateTaskStatusRefresh(source),
                         350
@@ -5890,6 +5957,7 @@ public class MainActivity extends Activity {
                 pendingConnectionUrl = null;
                 injectMobileFixes();
                 adaptPlainTextPageForMobile();
+                applyConversationFontScale(view);
                 boolean nativeRouteAllowed = !hasDeviceProfileSelection(Uri.parse(url == null ? "" : url));
                 if (nativeRouteAllowed
                         && availableLocalApiBase != null
