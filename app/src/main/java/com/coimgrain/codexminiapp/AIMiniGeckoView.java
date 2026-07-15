@@ -21,6 +21,7 @@ import java.util.List;
 
 final class AIMiniGeckoView extends GeckoView {
     private static final int PAGE_BACKGROUND_COLOR = 0xFF0D0D0D;
+    private static final long RELOAD_START_TIMEOUT_MS = 1500L;
 
     interface Delegate {
         default boolean onLoadRequest(
@@ -81,6 +82,7 @@ final class AIMiniGeckoView extends GeckoView {
     private boolean canGoForward;
     private boolean destroyed;
     private boolean contentRecoveryRunning;
+    private long pageStartGeneration;
     private boolean desktopMode;
     private boolean nativeDesktopMode;
     private String mobileUserAgent = "";
@@ -95,6 +97,7 @@ final class AIMiniGeckoView extends GeckoView {
         session = createSession();
         setSession(session);
         setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW);
+        setBackgroundColor(PAGE_BACKGROUND_COLOR);
         setAutofillEnabled(true);
         engine.register(this);
     }
@@ -148,9 +151,32 @@ final class AIMiniGeckoView extends GeckoView {
     }
 
     void reload() {
+        reload("");
+    }
+
+    void reload(String fallbackUrl) {
+        if (destroyed) return;
+        String current = usablePageUrl(getUrl()) ? getUrl() : "";
+        String fallback = usablePageUrl(fallbackUrl) ? fallbackUrl.trim() : "";
+        if (current.isEmpty()) {
+            if (!fallback.isEmpty()) loadUrl(fallback);
+            return;
+        }
         if (!destroyed && engine.isReady()) {
             showCompositorCover(1800L);
+            long generation = pageStartGeneration;
             session.reload();
+            postDelayed(() -> {
+                if (destroyed
+                        || contentRecoveryRunning
+                        || pageStartGeneration != generation) {
+                    return;
+                }
+                // A healthy GeckoSession always emits onPageStart for reload().
+                // If the content process or its session became detached while the
+                // app was in the background, recreate the session and load the URL.
+                recoverContentProcess(current);
+            }, RELOAD_START_TIMEOUT_MS);
         }
     }
 
@@ -195,6 +221,18 @@ final class AIMiniGeckoView extends GeckoView {
             return;
         }
         engine.evaluate(this, script, callback);
+    }
+
+    void evaluateJavascript(
+            String script,
+            long timeoutMs,
+            ValueCallback<String> callback
+    ) {
+        if (destroyed) {
+            if (callback != null) callback.onReceiveValue("null");
+            return;
+        }
+        engine.evaluate(this, script, timeoutMs, callback);
     }
 
     void setDesktopMode(boolean desktop, String mobileUserAgent, String desktopUserAgent) {
@@ -286,6 +324,10 @@ final class AIMiniGeckoView extends GeckoView {
         session.setActive(keepRunning);
     }
 
+    void recoverContent(String fallbackUrl) {
+        recoverContentProcess(fallbackUrl);
+    }
+
     private void showCompositorCover() {
         showCompositorCover(1800L);
     }
@@ -355,11 +397,18 @@ final class AIMiniGeckoView extends GeckoView {
     }
 
     private void recoverContentProcess() {
+        recoverContentProcess("");
+    }
+
+    private void recoverContentProcess(String fallbackUrl) {
         if (destroyed || contentRecoveryRunning) return;
         contentRecoveryRunning = true;
         post(() -> {
-            if (destroyed) return;
-            String reloadUrl = getUrl();
+            if (destroyed) {
+                contentRecoveryRunning = false;
+                return;
+            }
+            String reloadUrl = usablePageUrl(getUrl()) ? getUrl() : fallbackUrl;
             GeckoSession previous = session;
             try {
                 releaseSession();
@@ -376,11 +425,19 @@ final class AIMiniGeckoView extends GeckoView {
             setVisibility(VISIBLE);
             setAlpha(1f);
             showCompositorCover(1800L);
-            if (reloadUrl != null && !reloadUrl.trim().isEmpty()) {
+            if (usablePageUrl(reloadUrl)) {
                 pendingUrl = reloadUrl;
                 consumePendingUrl();
             }
         });
+    }
+
+    private boolean usablePageUrl(String url) {
+        if (url == null) return false;
+        String value = url.trim();
+        return !value.isEmpty()
+                && !"about:blank".equalsIgnoreCase(value)
+                && !"about:srcdoc".equalsIgnoreCase(value);
     }
 
     void onEngineReady() {
@@ -459,6 +516,7 @@ final class AIMiniGeckoView extends GeckoView {
             new GeckoSession.ProgressDelegate() {
                 @Override
                 public void onPageStart(GeckoSession session, String url) {
+                    pageStartGeneration++;
                     post(() -> showCompositorCover(1800L));
                     if (delegate != null) {
                         delegate.onPageStarted(AIMiniGeckoView.this, url);

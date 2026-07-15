@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -22,6 +23,10 @@ final class TaskNotificationStyle {
     private static final Pattern MARKDOWN_MARKER = Pattern.compile("[*_~`]+");
     private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+    private static final String TERMINAL_LEDGER_PREFIX =
+            "task_terminal_notification_v1:";
+    private static final long UNKNOWN_RUN_DEDUP_WINDOW_MS = 6L * 60L * 60L * 1000L;
+    private static final long STARTED_AT_CLOCK_TOLERANCE_MS = 2000L;
     private static Bitmap cachedLargeIcon;
 
     private TaskNotificationStyle() {
@@ -105,6 +110,82 @@ final class TaskNotificationStyle {
                         markReadPendingIntent
                 ).build());
         return builder.build();
+    }
+
+    /**
+     * Atomically claims one terminal alert for a task run.
+     *
+     * <p>The foreground service and MainActivity receive task state through
+     * independent paths. Android can resume the page after the service has already
+     * posted the completion alert, causing the page to replay the same terminal
+     * state. Persisting the claim makes that replay silent even after the activity
+     * has been recreated or the original notification has been tapped and removed.</p>
+     */
+    static synchronized boolean claimTerminalNotification(
+            Context context,
+            String threadId,
+            String threadName,
+            boolean error,
+            long startedAt
+    ) {
+        if (context == null) return false;
+        String identity = terminalIdentity(threadId, threadName);
+        SharedPreferences preferences = context.getSharedPreferences(
+                MainActivity.PREFS_NAME,
+                Context.MODE_PRIVATE
+        );
+        String preferenceKey = TERMINAL_LEDGER_PREFIX + identity;
+        long now = System.currentTimeMillis();
+        long previousPostedAt = 0L;
+        long previousStartedAt = 0L;
+        try {
+            JSONObject previous = new JSONObject(
+                    preferences.getString(preferenceKey, "{}")
+            );
+            previousPostedAt = previous.optLong("postedAt", 0L);
+            previousStartedAt = previous.optLong("startedAt", 0L);
+        } catch (Exception ignored) {
+        }
+
+        if (previousPostedAt > 0L) {
+            if (startedAt > 0L) {
+                // A new run cannot have started before the previous terminal alert.
+                // A small tolerance absorbs timestamp rounding between WebUI and
+                // Android without suppressing a genuinely newer task.
+                if (startedAt <= previousPostedAt + STARTED_AT_CLOCK_TOLERANCE_MS) {
+                    return false;
+                }
+            } else if (now - previousPostedAt <= UNKNOWN_RUN_DEDUP_WINDOW_MS) {
+                // After the service removes the completed task from preferences,
+                // the resumed page no longer has a native startedAt value. Treat a
+                // near-term replay for the same conversation as the same run.
+                return false;
+            }
+        }
+
+        try {
+            JSONObject claimed = new JSONObject();
+            claimed.put("identity", identity);
+            claimed.put("startedAt", startedAt > 0L ? startedAt : previousStartedAt);
+            claimed.put("postedAt", now);
+            claimed.put("error", error);
+            preferences.edit().putString(preferenceKey, claimed.toString()).commit();
+        } catch (Exception ignored) {
+            // Failing to persist must not suppress a real terminal notification.
+        }
+        return true;
+    }
+
+    private static String terminalIdentity(String threadId, String threadName) {
+        String id = threadId == null ? "" : threadId.trim();
+        if (!id.isEmpty() && !"current".equals(id) && !id.startsWith("pending-")) {
+            return "thread:" + id;
+        }
+        String name = threadName == null
+                ? ""
+                : threadName.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT);
+        if (!name.isEmpty()) return "name:" + name;
+        return "thread:current";
     }
 
     static String summaryFromStatus(JSONObject status, boolean error) {

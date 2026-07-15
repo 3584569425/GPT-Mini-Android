@@ -779,6 +779,20 @@ public final class AIMiniNotificationService extends Service {
                 terminal.status,
                 terminal.task.startedAt
         );
+        if (!TaskNotificationStyle.claimTerminalNotification(
+                this,
+                terminal.threadId,
+                name,
+                error,
+                terminal.task.startedAt
+        )) {
+            Log.i(
+                    TAG,
+                    "duplicate terminal notification suppressed thread="
+                            + terminal.threadId
+            );
+            return;
+        }
         Notification notification = TaskNotificationStyle.buildTerminalNotification(
                 this,
                 notificationId,

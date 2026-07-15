@@ -112,6 +112,7 @@ public class MainActivity extends Activity {
     private static final int QR_SCAN_REQUEST = 1005;
     static final String PREFS_NAME = "codex_mini_android";
     static final String KEY_LAST_URL = "last_url";
+    private static final String KEY_WELCOME_VISIBLE_STATE = "welcome_visible_state";
     private static final String KEY_SAVED_CONNECTIONS = "saved_connections";
     private static final String KEY_DOWNLOAD_RECORDS = "download_records";
     private static final String KEY_FLOAT_SIZE = "float_size";
@@ -156,6 +157,8 @@ public class MainActivity extends Activity {
     private static final long MAIN_NAVIGATION_MAX_REVEAL_DELAY_MS = 1500L;
     private static final long MAIN_NAVIGATION_REVEAL_POLL_MS = 100L;
     private static final long MAIN_NAVIGATION_FALLBACK_MS = 2200L;
+    private static final long LONG_BACKGROUND_HEALTH_CHECK_MS = 60_000L;
+    private static final long RESUME_BRIDGE_RECOVERY_DELAY_MS = 1200L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
@@ -248,6 +251,8 @@ public class MainActivity extends Activity {
     private volatile boolean localRouteProbeRunning;
     private volatile boolean backgroundStatusPollRunning;
     private long taskStateSequence;
+    private long activityBackgroundedAtElapsed;
+    private long browserHealthCheckGeneration;
     private boolean downloadManageMode;
     private final Set<String> selectedDownloadKeys = new HashSet<>();
     private float miniTouchDx;
@@ -347,11 +352,22 @@ public class MainActivity extends Activity {
         syncNotificationMonitorService();
 
         if (savedInstanceState != null) {
-            showApp();
-            webView.restoreState(savedInstanceState);
-            urlInput.setText(savedInstanceState.getString(KEY_LAST_URL, preferences.getString(KEY_LAST_URL, "")));
-            if (!notificationThreadId.isEmpty()) {
-                handler.post(() -> openNotificationThread(notificationThreadId));
+            String restoredUrl = savedInstanceState.getString(
+                    KEY_LAST_URL,
+                    preferences.getString(KEY_LAST_URL, "")
+            );
+            restoredUrl = restoredUrl == null ? "" : restoredUrl.trim();
+            urlInput.setText(restoredUrl);
+            boolean restoreWelcome = savedInstanceState.getBoolean(
+                    KEY_WELCOME_VISIBLE_STATE,
+                    restoredUrl.isEmpty()
+            );
+            if (restoreWelcome || restoredUrl.isEmpty()) {
+                showWelcome();
+            } else {
+                loadUrl(notificationThreadId.isEmpty()
+                        ? restoredUrl
+                        : urlWithThread(restoredUrl, notificationThreadId));
             }
         } else {
             String lastUrl = preferences.getString(KEY_LAST_URL, "");
@@ -954,7 +970,7 @@ public class MainActivity extends Activity {
             AIMiniGeckoView activeWebView = activeWebView();
             if (activeWebView != null) {
                 showBrowserTransitionCover(2400L);
-                activeWebView.reload();
+                activeWebView.reload(reloadFallbackUrl(activeWebView));
             }
         }));
         miniMenu.addView(miniMenuButton(R.string.interface_settings, view -> toggleFloatSettings()));
@@ -3082,13 +3098,14 @@ public class MainActivity extends Activity {
                 || "cancelled".equals(state)
                 || "canceled".equals(state);
         boolean shouldUpdateNotification = true;
+        long terminalStartedAt = 0L;
         if (running) {
             boolean alreadyMonitored = monitoredTaskStatusUrls.containsKey(taskKey);
+            if (!monitoredTaskStartedAt.containsKey(taskKey)) {
+                monitoredTaskStartedAt.put(taskKey, System.currentTimeMillis());
+            }
             if (!endpoint.isEmpty()) {
                 monitoredTaskStatusUrls.put(taskKey, endpoint);
-                if (!monitoredTaskStartedAt.containsKey(taskKey)) {
-                    monitoredTaskStartedAt.put(taskKey, System.currentTimeMillis());
-                }
                 if (!alreadyMonitored
                         || !monitoredTaskNames.containsKey(taskKey)
                         || (isPlaceholderTaskName(monitoredTaskNames.get(taskKey))
@@ -3100,13 +3117,22 @@ public class MainActivity extends Activity {
                     || (NOTIFICATION_MODE_PERSISTENT.equals(notificationMode())
                     && !runningNotificationTasks.contains(taskKey));
         } else if (terminal) {
+            Long startedAt = monitoredTaskStartedAt.get(taskKey);
+            terminalStartedAt = startedAt == null ? 0L : startedAt;
             monitoredTaskStatusUrls.remove(taskKey);
             monitoredTaskNames.remove(taskKey);
             monitoredTaskStartedAt.remove(taskKey);
         }
         persistMonitoredTasks();
         if (shouldUpdateNotification) {
-            showTaskStateNotification(threadId, notificationName, state, summary, durationMs);
+            showTaskStateNotification(
+                    threadId,
+                    notificationName,
+                    state,
+                    summary,
+                    durationMs,
+                    terminalStartedAt
+            );
         }
         if (!activityInForeground && !monitoredTaskStatusUrls.isEmpty()) {
             startBackgroundTaskPolling();
@@ -3289,7 +3315,8 @@ public class MainActivity extends Activity {
             String threadName,
             String status,
             String summary,
-            long durationMs
+            long durationMs,
+            long startedAt
     ) {
         String state = normalizeTaskState(status);
         boolean running = "running".equals(state);
@@ -3333,6 +3360,15 @@ public class MainActivity extends Activity {
 
         int notificationId = connected ? PERSISTENT_NOTIFICATION_ID : taskNotificationId(threadId, name);
         if (complete || error) {
+            if (!TaskNotificationStyle.claimTerminalNotification(
+                    this,
+                    threadId,
+                    name,
+                    error,
+                    startedAt
+            )) {
+                return;
+            }
             Notification terminalNotification = TaskNotificationStyle.buildTerminalNotification(
                     this,
                     notificationId,
@@ -3651,6 +3687,68 @@ public class MainActivity extends Activity {
         webView.loadUrl(url);
         showPersistentConnectedNotificationIfNeeded();
         tryUpgradeToLocalRoute(url);
+    }
+
+    private String reloadFallbackUrl(AIMiniGeckoView target) {
+        if (target == null) return "";
+        String current = target.getUrl();
+        if (isUsableBrowserUrl(current)) return current;
+        if (target != webView || preferences == null) return "";
+        String saved = preferences.getString(KEY_LAST_URL, "");
+        return saved == null ? "" : saved.trim();
+    }
+
+    private boolean isUsableBrowserUrl(String url) {
+        if (url == null) return false;
+        String value = url.trim();
+        return !value.isEmpty()
+                && !"about:blank".equalsIgnoreCase(value)
+                && !"about:srcdoc".equalsIgnoreCase(value);
+    }
+
+    private void ensureVisibleBrowserContent(AIMiniGeckoView target) {
+        if (target == null || target != webView) return;
+        if (welcomeView != null && welcomeView.getVisibility() == View.VISIBLE) return;
+        if (isUsableBrowserUrl(target.getUrl())) return;
+        String fallback = reloadFallbackUrl(target);
+        if (fallback.isEmpty()) return;
+        target.loadUrl(fallback);
+    }
+
+    private void scheduleLongBackgroundBrowserRecovery(
+            AIMiniGeckoView target,
+            long backgroundDurationMs
+    ) {
+        long generation = ++browserHealthCheckGeneration;
+        if (target == null
+                || backgroundDurationMs < LONG_BACKGROUND_HEALTH_CHECK_MS) {
+            return;
+        }
+        handler.postDelayed(() -> {
+            if (generation != browserHealthCheckGeneration
+                    || !activityInForeground
+                    || target != activeWebView()) {
+                return;
+            }
+            ensureVisibleBrowserContent(target);
+            if (geckoEngine == null
+                    || !geckoEngine.isBridgeInstalled()) {
+                return;
+            }
+            target.evaluateJavascript(
+                    "(function(){return 'gpt-mini-alive';})();",
+                    1000L,
+                    result -> {
+                        if (generation != browserHealthCheckGeneration
+                                || !activityInForeground
+                                || target != activeWebView()
+                                || "gpt-mini-alive".equals(result)) {
+                            return;
+                        }
+                        target.recoverContent(reloadFallbackUrl(target));
+                    }
+            );
+        }, RESUME_BRIDGE_RECOVERY_DELAY_MS);
     }
 
     private String normalizeUrl(String rawUrl) {
@@ -5294,6 +5392,13 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityInForeground = true;
+        long backgroundDurationMs = activityBackgroundedAtElapsed <= 0L
+                ? 0L
+                : Math.max(
+                        0L,
+                        SystemClock.elapsedRealtime() - activityBackgroundedAtElapsed
+                );
+        activityBackgroundedAtElapsed = 0L;
         requestInterfaceInsets();
         // The Service may have completed and removed tasks while Gecko/Activity was
         // suspended. Reconcile the in-memory maps before refreshing notifications.
@@ -5307,6 +5412,8 @@ public class MainActivity extends Activity {
             if (externalWebView == visibleBrowser) externalWebView.prepareForForeground();
             else externalWebView.setBrowserActive(false);
         }
+        ensureVisibleBrowserContent(visibleBrowser);
+        scheduleLongBackgroundBrowserRecovery(visibleBrowser, backgroundDurationMs);
         handler.removeCallbacks(backgroundTaskPoller);
         scheduleLocalRouteCheck(900);
         // Let the compositor present the preserved frame before starting
@@ -5346,6 +5453,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         activityInForeground = false;
+        activityBackgroundedAtElapsed = SystemClock.elapsedRealtime();
+        browserHealthCheckGeneration++;
         persistDownloads();
         // Native Service polling owns task completion in the background. Suspending
         // Gecko timers are not used for completion, while leaving the visible
@@ -5364,6 +5473,10 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putString(KEY_LAST_URL, urlInput.getText().toString());
+        outState.putBoolean(
+                KEY_WELCOME_VISIBLE_STATE,
+                welcomeView != null && welcomeView.getVisibility() == View.VISIBLE
+        );
         webView.saveState(outState);
     }
 

@@ -70,6 +70,10 @@ final class AIMiniGeckoEngine {
         return ready;
     }
 
+    boolean isBridgeInstalled() {
+        return extension != null;
+    }
+
     boolean hasBridge(AIMiniGeckoView view) {
         return view != null
                 && (ports.containsKey(view.session()) || viewBridgeIds.containsKey(view));
@@ -122,15 +126,36 @@ final class AIMiniGeckoEngine {
             String script,
             ValueCallback<String> callback
     ) {
+        evaluate(view, script, 0L, callback);
+    }
+
+    void evaluate(
+            AIMiniGeckoView view,
+            String script,
+            long timeoutMs,
+            ValueCallback<String> callback
+    ) {
         WebExtension.Port port = ports.get(view.session());
         String bridgeId = viewBridgeIds.get(view);
         WebExtension.Port targetPort = port != null ? port : backgroundPort;
         if (targetPort == null || (port == null && (bridgeId == null || bridgeId.isEmpty()))) {
+            if (timeoutMs > 0L) {
+                if (callback != null) handler.post(() -> callback.onReceiveValue("null"));
+                return;
+            }
             view.queueEvaluation(script, callback);
             return;
         }
         String id = UUID.randomUUID().toString();
-        if (callback != null) evalCallbacks.put(id, callback);
+        if (callback != null) {
+            evalCallbacks.put(id, callback);
+            if (timeoutMs > 0L) {
+                handler.postDelayed(() -> {
+                    ValueCallback<String> expired = evalCallbacks.remove(id);
+                    if (expired != null) expired.onReceiveValue("null");
+                }, timeoutMs);
+            }
+        }
         try {
             JSONObject command = new JSONObject();
             command.put("type", "eval");
