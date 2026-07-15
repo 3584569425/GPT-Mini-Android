@@ -129,6 +129,7 @@ public class MainActivity extends Activity {
     private static final String FLOAT_MENU_THEME_SYSTEM = "system";
     static final String NOTIFICATION_STATUS_CHANNEL_ID = "ai_mini_task_status_v4";
     static final String NOTIFICATION_ALERT_CHANNEL_ID = "ai_mini_task_alerts_v4";
+    static final String EXTRA_OPEN_THREAD_ID = "open_notification_thread_id";
     private static final String LEGACY_NOTIFICATION_CHANNEL_ID = "gpt_mini_tasks";
     static final int PERSISTENT_NOTIFICATION_ID = 2100;
     private static final long DOWNLOAD_POLL_MS = 800L;
@@ -143,6 +144,7 @@ public class MainActivity extends Activity {
     private static final int DEFAULT_TOP_INSET_DP = 0;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
+    private static final int STATUS_BAR_BACKGROUND_COLOR = 0xFF0D0D0D;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
@@ -162,6 +164,7 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private FrameLayout appHost;
     private LinearLayout appRoot;
+    private View statusBarBackground;
     private View topInsetArea;
     private View welcomeView;
     private FrameLayout browserFrame;
@@ -263,13 +266,14 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String notificationThreadId = notificationThreadId(getIntent());
         migrateTopInsetDefault();
         restoreMonitoredTasks();
         geckoEngine = new AIMiniGeckoEngine(this);
         geckoEngine.setNativeMessageHandler(this::handleGeckoNativeMessage);
 
         Window window = getWindow();
-        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setStatusBarColor(STATUS_BAR_BACKGROUND_COLOR);
         window.setNavigationBarColor(Color.BLACK);
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -304,6 +308,14 @@ public class MainActivity extends Activity {
         buildToolbar(appRoot);
         buildBrowserArea(appRoot);
         buildWelcomeView(appHost);
+        statusBarBackground = new View(this);
+        statusBarBackground.setBackgroundColor(STATUS_BAR_BACKGROUND_COLOR);
+        statusBarBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        appHost.addView(statusBarBackground, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                0,
+                Gravity.TOP
+        ));
         installImeInsetHandling(window.getDecorView());
         configureWebView();
         loadPersistedDownloads();
@@ -321,6 +333,9 @@ public class MainActivity extends Activity {
             showApp();
             webView.restoreState(savedInstanceState);
             urlInput.setText(savedInstanceState.getString(KEY_LAST_URL, preferences.getString(KEY_LAST_URL, "")));
+            if (!notificationThreadId.isEmpty()) {
+                handler.post(() -> openNotificationThread(notificationThreadId));
+            }
         } else {
             String lastUrl = preferences.getString(KEY_LAST_URL, "");
             if (lastUrl.isEmpty()) {
@@ -328,8 +343,49 @@ public class MainActivity extends Activity {
                 showWelcome();
             } else {
                 urlInput.setText(lastUrl);
-                loadUrl(lastUrl);
+                loadUrl(notificationThreadId.isEmpty()
+                        ? lastUrl
+                        : urlWithThread(lastUrl, notificationThreadId));
             }
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String threadId = notificationThreadId(intent);
+        if (!threadId.isEmpty()) openNotificationThread(threadId);
+    }
+
+    private String notificationThreadId(Intent intent) {
+        if (intent == null) return "";
+        String threadId = intent.getStringExtra(EXTRA_OPEN_THREAD_ID);
+        return threadId == null ? "" : threadId.trim();
+    }
+
+    private void openNotificationThread(String threadId) {
+        String savedUrl = preferences == null ? "" : preferences.getString(KEY_LAST_URL, "");
+        if (savedUrl == null || savedUrl.trim().isEmpty()) return;
+        loadUrl(urlWithThread(savedUrl, threadId));
+    }
+
+    private String urlWithThread(String rawUrl, String threadId) {
+        String safeThreadId = threadId == null ? "" : threadId.trim();
+        if (safeThreadId.isEmpty()) return rawUrl == null ? "" : rawUrl;
+        try {
+            Uri source = Uri.parse(rawUrl == null ? "" : rawUrl.trim());
+            Uri.Builder builder = source.buildUpon().clearQuery();
+            for (String name : source.getQueryParameterNames()) {
+                if ("thread".equals(name)) continue;
+                for (String value : source.getQueryParameters(name)) {
+                    builder.appendQueryParameter(name, value);
+                }
+            }
+            builder.appendQueryParameter("thread", safeThreadId);
+            return builder.build().toString();
+        } catch (Exception ignored) {
+            return rawUrl == null ? "" : rawUrl;
         }
     }
 
@@ -1249,29 +1305,22 @@ public class MainActivity extends Activity {
             }
             topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
         }
-        boolean light = isFloatMenuLight();
         Window window = getWindow();
-        // The WebUI must render behind the status bar/cutout. The adjustable
-        // topInsetArea is the only optional safe area and starts at the physical
-        // top edge of the display.
-        window.setStatusBarColor(Color.TRANSPARENT);
+        // Android 15 enforces edge-to-edge for targetSdk 35 and may ignore the
+        // status bar window color. A dedicated scrim matching the WebUI's
+        // #0D0D0D background is drawn while the rest remains edge-to-edge.
+        window.setStatusBarColor(STATUS_BAR_BACKGROUND_COLOR);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             android.view.WindowInsetsController controller = window.getInsetsController();
             if (controller != null) {
                 controller.setSystemBarsAppearance(
-                        light
-                                ? android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                                : 0,
+                        0,
                         android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                 );
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             int flags = window.getDecorView().getSystemUiVisibility();
-            if (light) {
-                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            } else {
-                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            }
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
             window.getDecorView().setSystemUiVisibility(flags);
         }
     }
@@ -2319,6 +2368,17 @@ public class MainActivity extends Activity {
             String status,
             String statusUrl
     ) {
+        handleTaskStateFromWeb(threadId, threadName, status, statusUrl, "", 0L);
+    }
+
+    private void handleTaskStateFromWeb(
+            String threadId,
+            String threadName,
+            String status,
+            String statusUrl,
+            String summary,
+            long durationMs
+    ) {
         String state = normalizeTaskState(status);
         String normalizedName = normalizedTaskName(threadName);
         String taskKey = notificationTaskKey(threadId, normalizedName);
@@ -2347,18 +2407,23 @@ public class MainActivity extends Activity {
                 runningNotificationTasks.add(taskKey);
             }
         }
-        String notificationName = monitoredTaskNames.containsKey(taskKey)
+        String existingName = monitoredTaskNames.containsKey(taskKey)
                 ? monitoredTaskNames.get(taskKey)
-                : previousEndpointName != null && !previousEndpointName.trim().isEmpty()
-                ? previousEndpointName
-                : normalizedName;
+                : previousEndpointName;
+        String notificationName = preferredTaskName(existingName, normalizedName);
+        if (monitoredTaskNames.containsKey(taskKey)
+                && !notificationName.equals(monitoredTaskNames.get(taskKey))) {
+            monitoredTaskNames.put(taskKey, notificationName);
+        }
 
         if ("error".equals(state)) {
             scheduleTaskErrorConfirmation(
                     threadId,
                     taskKey,
                     notificationName,
-                    endpoint
+                    endpoint,
+                    summary,
+                    durationMs
             );
             return;
         }
@@ -2370,7 +2435,9 @@ public class MainActivity extends Activity {
                 taskKey,
                 notificationName,
                 state,
-                endpoint
+                endpoint,
+                summary,
+                durationMs
         );
     }
 
@@ -2454,6 +2521,26 @@ public class MainActivity extends Activity {
             String state,
             String endpoint
     ) {
+        applyResolvedTaskState(
+                threadId,
+                taskKey,
+                notificationName,
+                state,
+                endpoint,
+                "",
+                0L
+        );
+    }
+
+    private void applyResolvedTaskState(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String state,
+            String endpoint,
+            String summary,
+            long durationMs
+    ) {
         boolean running = "running".equals(state);
         boolean terminal = "complete".equals(state)
                 || "completed".equals(state)
@@ -2474,7 +2561,10 @@ public class MainActivity extends Activity {
                 if (!monitoredTaskStartedAt.containsKey(taskKey)) {
                     monitoredTaskStartedAt.put(taskKey, System.currentTimeMillis());
                 }
-                if (!alreadyMonitored || !monitoredTaskNames.containsKey(taskKey)) {
+                if (!alreadyMonitored
+                        || !monitoredTaskNames.containsKey(taskKey)
+                        || (isPlaceholderTaskName(monitoredTaskNames.get(taskKey))
+                        && !isPlaceholderTaskName(notificationName))) {
                     monitoredTaskNames.put(taskKey, notificationName);
                 }
             }
@@ -2488,7 +2578,7 @@ public class MainActivity extends Activity {
         }
         persistMonitoredTasks();
         if (shouldUpdateNotification) {
-            showTaskStateNotification(threadId, notificationName, state);
+            showTaskStateNotification(threadId, notificationName, state, summary, durationMs);
         }
         if (!activityInForeground && !monitoredTaskStatusUrls.isEmpty()) {
             startBackgroundTaskPolling();
@@ -2501,7 +2591,9 @@ public class MainActivity extends Activity {
             String threadId,
             String taskKey,
             String notificationName,
-            String endpoint
+            String endpoint,
+            String summary,
+            long durationMs
     ) {
         long token = ++taskStateSequence;
         pendingTaskErrorTokens.put(taskKey, token);
@@ -2511,6 +2603,8 @@ public class MainActivity extends Activity {
                         taskKey,
                         notificationName,
                         endpoint,
+                        summary,
+                        durationMs,
                         token
                 ),
                 TASK_ERROR_CONFIRM_DELAY_MS
@@ -2522,6 +2616,8 @@ public class MainActivity extends Activity {
             String taskKey,
             String notificationName,
             String endpoint,
+            String summary,
+            long durationMs,
             long token
     ) {
         if (!isPendingTaskError(taskKey, token)) return;
@@ -2532,20 +2628,36 @@ public class MainActivity extends Activity {
                     taskKey,
                     notificationName,
                     "error",
-                    ""
+                    "",
+                    summary,
+                    durationMs
             );
             return;
         }
 
         notificationIoExecutor.execute(() -> {
             String latestState = "";
+            String latestSummary = "";
+            long latestDurationMs = 0L;
             try {
-                latestState = taskStateFromJson(new JSONObject(httpGet(endpoint, 5500)));
+                JSONObject latestStatus = new JSONObject(httpGet(endpoint, 5500));
+                latestState = taskStateFromJson(latestStatus);
+                latestSummary = TaskNotificationStyle.summaryFromStatus(
+                        latestStatus,
+                        "error".equals(latestState)
+                );
+                Long startedAt = monitoredTaskStartedAt.get(taskKey);
+                latestDurationMs = TaskNotificationStyle.durationMsFromStatus(
+                        latestStatus,
+                        startedAt == null ? 0L : startedAt
+                );
             } catch (Exception ignored) {
                 // If confirmation cannot be fetched, retain the original terminal
                 // error after the debounce delay rather than losing a real failure.
             }
             String confirmedState = latestState;
+            String confirmedSummary = latestSummary.isEmpty() ? summary : latestSummary;
+            long confirmedDurationMs = latestDurationMs > 0L ? latestDurationMs : durationMs;
             handler.post(() -> {
                 if (!isPendingTaskError(taskKey, token)) return;
                 pendingTaskErrorTokens.remove(taskKey);
@@ -2554,7 +2666,9 @@ public class MainActivity extends Activity {
                             threadId,
                             notificationName,
                             confirmedState,
-                            endpoint
+                            endpoint,
+                            confirmedSummary,
+                            confirmedDurationMs
                     );
                     return;
                 }
@@ -2563,7 +2677,9 @@ public class MainActivity extends Activity {
                         taskKey,
                         notificationName,
                         "error",
-                        endpoint
+                        endpoint,
+                        confirmedSummary,
+                        confirmedDurationMs
                 );
             });
         });
@@ -2599,6 +2715,7 @@ public class MainActivity extends Activity {
         if (backgroundStatusPollRunning || monitoredTaskStatusUrls.isEmpty()) return;
         Map<String, String> endpoints = new HashMap<>(monitoredTaskStatusUrls);
         Map<String, String> names = new HashMap<>(monitoredTaskNames);
+        Map<String, Long> startedAtByTask = new HashMap<>(monitoredTaskStartedAt);
         backgroundStatusPollRunning = true;
         notificationIoExecutor.execute(() -> {
             try {
@@ -2613,11 +2730,20 @@ public class MainActivity extends Activity {
                         if (state.trim().isEmpty()) continue;
                         String threadId = status.optString("threadId", taskKey);
                         String threadName = names.get(taskKey);
+                        boolean error = "error".equals(state);
+                        String summary = TaskNotificationStyle.summaryFromStatus(status, error);
+                        Long startedAt = startedAtByTask.get(taskKey);
+                        long durationMs = TaskNotificationStyle.durationMsFromStatus(
+                                status,
+                                startedAt == null ? 0L : startedAt
+                        );
                         handler.post(() -> handleTaskStateFromWeb(
                                 threadId,
                                 threadName,
                                 state,
-                                endpoint
+                                endpoint,
+                                summary,
+                                durationMs
                         ));
                     } catch (Exception ignored) {
                         // The WebUI bridge remains as a second polling path. A temporary
@@ -2630,7 +2756,13 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void showTaskStateNotification(String threadId, String threadName, String status) {
+    private void showTaskStateNotification(
+            String threadId,
+            String threadName,
+            String status,
+            String summary,
+            long durationMs
+    ) {
         String state = normalizeTaskState(status);
         boolean running = "running".equals(state);
         boolean connected = "connected".equals(state);
@@ -2671,14 +2803,27 @@ public class MainActivity extends Activity {
         if (manager == null) return;
         ensureNotificationChannels(manager);
 
+        int notificationId = connected ? PERSISTENT_NOTIFICATION_ID : taskNotificationId(threadId, name);
+        if (complete || error) {
+            Notification terminalNotification = TaskNotificationStyle.buildTerminalNotification(
+                    this,
+                    notificationId,
+                    NOTIFICATION_ALERT_CHANNEL_ID,
+                    threadId,
+                    name,
+                    error,
+                    summary,
+                    durationMs
+            );
+            manager.cancel(notificationId);
+            manager.notify(notificationId, terminalNotification);
+            return;
+        }
+
         String title = connected
                 ? getString(R.string.task_connected_title)
-                : running
-                ? getString(R.string.task_running_title)
-                : error ? getString(R.string.task_error_title) : getString(R.string.task_complete_title);
-        int notificationId = connected ? PERSISTENT_NOTIFICATION_ID : taskNotificationId(threadId, name);
+                : getString(R.string.task_running_title);
         boolean ongoing = persistent && (connected || running);
-        boolean headsUpAlert = (complete || error) && !activityInForeground;
 
         Intent intent = new Intent(this, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -2692,7 +2837,7 @@ public class MainActivity extends Activity {
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(
                         this,
-                        headsUpAlert ? NOTIFICATION_ALERT_CHANNEL_ID : NOTIFICATION_STATUS_CHANNEL_ID
+                        NOTIFICATION_STATUS_CHANNEL_ID
                 )
                 : new Notification.Builder(this);
         builder.setSmallIcon(R.drawable.ic_notification)
@@ -2704,22 +2849,13 @@ public class MainActivity extends Activity {
                 .setAutoCancel(!ongoing)
                 .setShowWhen(true)
                 .setCategory(Notification.CATEGORY_MESSAGE)
-                .setOnlyAlertOnce(!headsUpAlert)
+                .setOnlyAlertOnce(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            if (headsUpAlert) {
-                builder.setPriority(Notification.PRIORITY_HIGH)
-                        .setDefaults(Notification.DEFAULT_ALL);
-            } else {
-                builder.setPriority(Notification.PRIORITY_LOW);
-            }
+            builder.setPriority(Notification.PRIORITY_LOW);
         }
 
-        if (headsUpAlert) {
-            // A running notification was posted on the low-importance channel. Replacing it
-            // directly may inherit the old alert behavior on some Android builds.
-            manager.cancel(notificationId);
-        } else if (persistent && running) {
+        if (persistent && running) {
             // The previous state for this conversation may have used the alert channel.
             // Recreate it on the low-importance status channel for the new run.
             manager.cancel(notificationId);
@@ -2913,6 +3049,21 @@ public class MainActivity extends Activity {
             return getString(R.string.task_complete_fallback);
         }
         return name;
+    }
+
+    private boolean isPlaceholderTaskName(String threadName) {
+        String name = threadName == null ? "" : threadName.trim();
+        return name.isEmpty()
+                || "选择线程".equals(name)
+                || getString(R.string.task_complete_fallback).equals(name);
+    }
+
+    private String preferredTaskName(String existing, String candidate) {
+        String current = existing == null ? "" : existing.trim();
+        String next = candidate == null ? "" : candidate.trim();
+        if (isPlaceholderTaskName(current) && !isPlaceholderTaskName(next)) return next;
+        if (!current.isEmpty()) return current;
+        return normalizedTaskName(next);
     }
 
     private void ensureNotificationChannels(NotificationManager manager) {
@@ -3289,6 +3440,7 @@ public class MainActivity extends Activity {
     private void installImeInsetHandling(View root) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             root.setOnApplyWindowInsetsListener((view, insets) -> {
+                applyStatusBarBackground(insets);
                 applySystemBottomInset(insets);
                 applyImeInset(view, imeOverlap(view, insets));
                 return insets;
@@ -3301,6 +3453,7 @@ public class MainActivity extends Activity {
                         WindowInsets insets,
                         List<WindowInsetsAnimation> runningAnimations
                 ) {
+                    applyStatusBarBackground(insets);
                     applySystemBottomInset(insets);
                     applyImeInset(root, imeOverlap(root, insets));
                     return insets;
@@ -3310,6 +3463,7 @@ public class MainActivity extends Activity {
                 public void onEnd(WindowInsetsAnimation animation) {
                     WindowInsets insets = root.getRootWindowInsets();
                     if (insets != null) {
+                        applyStatusBarBackground(insets);
                         applySystemBottomInset(insets);
                         applyImeInset(root, imeOverlap(root, insets));
                     }
@@ -3319,6 +3473,21 @@ public class MainActivity extends Activity {
         }
 
         watchKeyboardLegacy(root);
+    }
+
+    private void applyStatusBarBackground(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R
+                || insets == null
+                || statusBarBackground == null) {
+            return;
+        }
+        int height = Math.max(0, insets.getInsets(WindowInsets.Type.statusBars()).top);
+        ViewGroup.LayoutParams params = statusBarBackground.getLayoutParams();
+        if (params != null && params.height != height) {
+            params.height = height;
+            statusBarBackground.setLayoutParams(params);
+        }
+        statusBarBackground.bringToFront();
     }
 
     private void applySystemBottomInset(WindowInsets insets) {
@@ -4967,20 +5136,8 @@ public class MainActivity extends Activity {
     }
 
     private GradientDrawable topInsetBackground(boolean light) {
-        GradientDrawable drawable = new GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                light
-                        ? new int[]{
-                                Color.rgb(244, 247, 252),
-                                Color.rgb(229, 239, 248),
-                                Color.rgb(241, 247, 245)
-                        }
-                        : new int[]{
-                                Color.rgb(9, 12, 18),
-                                Color.rgb(14, 23, 38),
-                                Color.rgb(8, 24, 28)
-                        }
-        );
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(STATUS_BAR_BACKGROUND_COLOR);
         return drawable;
     }
 
@@ -5059,7 +5216,9 @@ public class MainActivity extends Activity {
                         message.optString("threadId", ""),
                         message.optString("threadName", ""),
                         message.optString("status", ""),
-                        ""
+                        "",
+                        message.optString("summary", ""),
+                        message.optLong("durationMs", 0L)
                 ));
                 break;
             case "notifyTaskStateWithEndpoint":
@@ -5067,7 +5226,9 @@ public class MainActivity extends Activity {
                         message.optString("threadId", ""),
                         message.optString("threadName", ""),
                         message.optString("status", ""),
-                        message.optString("statusUrl", "")
+                        message.optString("statusUrl", ""),
+                        message.optString("summary", ""),
+                        message.optLong("durationMs", 0L)
                 ));
                 break;
             default:

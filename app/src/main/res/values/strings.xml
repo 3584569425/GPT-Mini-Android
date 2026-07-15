@@ -101,7 +101,12 @@
         <item quantity="one">%1$d 个任务运行中</item>
         <item quantity="other">%1$d 个任务运行中</item>
     </plurals>
-    <string name="task_complete_title">GPT Mini 任务已完成</string>
-    <string name="task_error_title">GPT Mini 任务失败/异常</string>
+    <string name="task_complete_title">任务已完成：%1$s</string>
+    <string name="task_error_title">任务执行失败：%1$s</string>
+    <string name="task_complete_summary_fallback">GPT 已完成回复</string>
+    <string name="task_error_summary_fallback">GPT 任务执行失败，请重试</string>
+    <string name="task_duration">用时：%1$s</string>
+    <string name="task_view_reply">查看回复</string>
+    <string name="task_mark_read">标为已读</string>
     <string name="task_complete_fallback">当前会话</string>
 </resources>

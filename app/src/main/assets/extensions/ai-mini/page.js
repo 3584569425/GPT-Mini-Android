@@ -65,19 +65,30 @@
     toast: function (message) {
       send("toast", { message: String(message || "") });
     },
-    notifyTaskState: function (threadId, threadName, status) {
+    notifyTaskState: function (threadId, threadName, status, summary, durationMs) {
       send("notifyTaskState", {
         threadId: String(threadId || ""),
         threadName: String(threadName || ""),
-        status: String(status || "")
+        status: String(status || ""),
+        summary: String(summary || ""),
+        durationMs: Number(durationMs || 0)
       });
     },
-    notifyTaskStateWithEndpoint: function (threadId, threadName, status, statusUrl) {
+    notifyTaskStateWithEndpoint: function (
+      threadId,
+      threadName,
+      status,
+      statusUrl,
+      summary,
+      durationMs
+    ) {
       send("notifyTaskStateWithEndpoint", {
         threadId: String(threadId || ""),
         threadName: String(threadName || ""),
         status: String(status || ""),
-        statusUrl: String(statusUrl || "")
+        statusUrl: String(statusUrl || ""),
+        summary: String(summary || ""),
+        durationMs: Number(durationMs || 0)
       });
     }
   };
@@ -451,8 +462,8 @@
   }
 
   function installTaskHooks() {
-    if (window.__AIMiniTaskHooksVersion === "1.16") return;
-    window.__AIMiniTaskHooksVersion = "1.16";
+    if (window.__AIMiniTaskHooksVersion === "1.20") return;
+    window.__AIMiniTaskHooksVersion = "1.20";
 
     const pendingTaskErrors = Object.create(null);
 
@@ -485,6 +496,11 @@
       return /\/(?:codex|claude)\/send(?:\?|$)/i.test(String(url || ""));
     }
 
+    function isPlaceholderThreadTitle(value) {
+      const title = String(value || "").replace(/\s+/g, " ").trim();
+      return !title || title === "当前会话" || title === "选择线程";
+    }
+
     function currentThreadTitle() {
       const titleNode = document.getElementById("thread-name");
       let title = titleNode
@@ -496,7 +512,32 @@
           && title.slice(0, title.length / 2) === title.slice(title.length / 2)) {
         title = title.slice(0, title.length / 2).trim();
       }
-      return title || "当前会话";
+      if (!isPlaceholderThreadTitle(title)) return title;
+
+      const selectedTitle = document.querySelector(
+        '.thread-option[aria-current="true"] .thread-title-text'
+      );
+      const selected = selectedTitle
+        ? String(selectedTitle.textContent || "").replace(/\s+/g, " ").trim()
+        : "";
+      if (!isPlaceholderThreadTitle(selected)) return selected;
+
+      const documentTitle = String(document.title || "")
+        .replace(/\s*[·|-]\s*GPT Mini\s*$/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return isPlaceholderThreadTitle(documentTitle) ? "当前会话" : documentTitle;
+    }
+
+    function notificationSummary(data, status) {
+      if (!data || (status !== "complete" && status !== "error")) return "";
+      let value = status === "error" && hasMeaningfulError(data.error)
+        ? data.error
+        : (data.final || data.preview || data.summary || data.message || "");
+      if (value && typeof value === "object") {
+        try { value = JSON.stringify(value); } catch (_) { value = String(value); }
+      }
+      return String(value || "").trim();
     }
 
     function normalizedStatusEndpoint(rawUrl) {
@@ -633,17 +674,31 @@
           ? "__aiMiniTaskTitleEndpoint_" + endpoint
           : "";
         const errorKey = endpoint || id;
-        const currentTitle = currentThreadTitle();
-        const title = String(
+        const currentTitle = String(data.title || currentThreadTitle()).replace(/\s+/g, " ").trim()
+          || currentThreadTitle();
+        const storedTitle = String(
           (endpointTitleKey && sessionStorage.getItem(endpointTitleKey))
             || sessionStorage.getItem(titleKey)
-            || currentTitle
+            || ""
         );
+        const title = isPlaceholderThreadTitle(storedTitle)
+            && !isPlaceholderThreadTitle(currentTitle)
+          ? currentTitle
+          : (storedTitle || currentTitle);
+        const summary = notificationSummary(data, status);
+        const durationMs = Math.max(0, Number(data.durationMs || 0));
         const notifyNative = function () {
           if (endpoint) {
-            window.CodexMiniNative.notifyTaskStateWithEndpoint(id, title, status, endpoint);
+            window.CodexMiniNative.notifyTaskStateWithEndpoint(
+              id,
+              title,
+              status,
+              endpoint,
+              summary,
+              durationMs
+            );
           } else {
-            window.CodexMiniNative.notifyTaskState(id, title, status);
+            window.CodexMiniNative.notifyTaskState(id, title, status, summary, durationMs);
           }
         };
 
@@ -654,10 +709,15 @@
           }
           sessionStorage.setItem(runningKey, "1");
           if (endpointRunningKey) sessionStorage.setItem(endpointRunningKey, "1");
-          if (!sessionStorage.getItem(titleKey)) {
+          if (!sessionStorage.getItem(titleKey)
+              || (isPlaceholderThreadTitle(sessionStorage.getItem(titleKey))
+              && !isPlaceholderThreadTitle(currentTitle))) {
             sessionStorage.setItem(titleKey, currentTitle);
           }
-          if (endpointTitleKey && !sessionStorage.getItem(endpointTitleKey)) {
+          if (endpointTitleKey
+              && (!sessionStorage.getItem(endpointTitleKey)
+              || (isPlaceholderThreadTitle(sessionStorage.getItem(endpointTitleKey))
+              && !isPlaceholderThreadTitle(currentTitle)))) {
             sessionStorage.setItem(endpointTitleKey, currentTitle);
           }
           sessionStorage.setItem("__aiMiniState_" + id, status);
@@ -675,7 +735,7 @@
                 || sessionStorage.getItem(endpointRunningKey) !== "1")) {
             return;
           }
-          const at = String(data.completedAt || data.updatedAt || Date.now());
+          const at = String(data.completedAt || data.updatedAt || data.at || Date.now());
           const doneKey = "__aiMiniDone_" + id + "|" + status + "|" + at;
           if (sessionStorage.getItem(doneKey)) return;
           sessionStorage.setItem(doneKey, "1");
@@ -799,6 +859,91 @@
       }
       return originalXhrSend.apply(this, arguments);
     };
+
+    function statusEndpointForStableState(detail) {
+      const id = String(detail && detail.id || "").trim();
+      try {
+        const known = Object.keys(window.__AIMiniStatusPollers || {});
+        const exact = known.find(function (url) {
+          try {
+            return id && new URL(url, location.href).searchParams.get("thread") === id;
+          } catch (_) {
+            return false;
+          }
+        });
+        const preferred = exact
+          || known.find(function (url) { return /\/codex\/status(?:\?|$)/i.test(url); })
+          || known.find(isStatusUrl);
+        if (preferred) {
+          const endpoint = new URL(preferred, location.href);
+          if (id) endpoint.searchParams.set("thread", id);
+          return normalizedStatusEndpoint(endpoint.href);
+        }
+
+        const endpoint = new URL(location.href);
+        let basePath = endpoint.pathname || "/";
+        if (/\/index\.html$/i.test(basePath)) {
+          basePath = basePath.slice(0, -"index.html".length);
+        }
+        if (!basePath.endsWith("/")) basePath += "/";
+        endpoint.pathname = basePath + "codex/status";
+        endpoint.hash = "";
+        const pageParams = new URLSearchParams(location.search || "");
+        if (pageParams.get("token")) endpoint.searchParams.set("token", pageParams.get("token"));
+        if (id) endpoint.searchParams.set("thread", id);
+        return normalizedStatusEndpoint(endpoint.href);
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function handleStableTaskState(detail) {
+      if (!detail || typeof detail !== "object") return;
+      const version = Number(detail.v || 1);
+      if (version !== 1) return;
+      const state = String(detail.state || "").trim().toLowerCase();
+      if ([
+        "running", "completed", "failed", "waiting_input", "cancelled", "canceled"
+      ].indexOf(state) < 0) return;
+      const endpoint = statusEndpointForStableState(detail);
+      const stableData = {
+        id: String(detail.id || "current"),
+        threadId: String(detail.id || "current"),
+        title: String(detail.title || currentThreadTitle()),
+        state: state,
+        at: detail.at || Date.now()
+      };
+      const terminal = state === "completed" || state === "failed";
+      if (!terminal || !endpoint || !originalFetch) {
+        trackTaskState(stableData, endpoint);
+        return;
+      }
+
+      // The stable event is the authoritative foreground signal. Fetch the matching
+      // status once so Android receives the same summary and duration as iOS Bark.
+      originalFetch.call(window, endpoint, {
+        credentials: "include",
+        cache: "no-store"
+      }).then(function (response) {
+        if (!response || !response.ok) throw new Error("status unavailable");
+        return response.json();
+      }).then(function (statusData) {
+        trackTaskState(Object.assign({}, statusData || {}, stableData), endpoint);
+      }).catch(function () {
+        trackTaskState(stableData, endpoint);
+      });
+    }
+
+    try {
+      if (window.__AIMiniStableTaskListener) {
+        window.removeEventListener("codex:taskstate", window.__AIMiniStableTaskListener);
+      }
+      window.__AIMiniStableTaskListener = function (event) {
+        handleStableTaskState(event && event.detail);
+      };
+      window.addEventListener("codex:taskstate", window.__AIMiniStableTaskListener);
+      if (window.__codexTaskState) handleStableTaskState(window.__codexTaskState);
+    } catch (_) {}
 
     function registerStatusPoller(rawUrl) {
       const url = String(rawUrl || "");
