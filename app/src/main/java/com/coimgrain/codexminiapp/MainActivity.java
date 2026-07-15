@@ -1730,6 +1730,22 @@ public class MainActivity extends Activity {
         if (rawUrl == null) return "";
         int hash = rawUrl.indexOf('#');
         String value = hash >= 0 ? rawUrl.substring(0, hash) : rawUrl;
+        Uri uri = Uri.parse(value.trim());
+        if (isHttpScheme(uri.getScheme()) && uri.getEncodedAuthority() != null) {
+            String path = uri.getEncodedPath();
+            if (path == null || path.isEmpty()) path = "/";
+            while (path.endsWith("/") && path.length() > 1) {
+                path = path.substring(0, path.length() - 1);
+            }
+            // Codex Mini changes device/thread/token through query parameters
+            // while staying in the same WebUI document. Keep those navigations
+            // in the primary GeckoView; opening a second GeckoView separates the
+            // IME focus surface from the page that owns the two input patches.
+            return uri.getScheme().toLowerCase(Locale.ROOT)
+                    + "://"
+                    + uri.getEncodedAuthority().toLowerCase(Locale.ROOT)
+                    + path;
+        }
         while (value.endsWith("/") && value.length() > 1) {
             value = value.substring(0, value.length() - 1);
         }
