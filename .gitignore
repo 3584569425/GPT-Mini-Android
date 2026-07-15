@@ -9,5 +9,6 @@ captures/
 outputs/
 *.apk
 *.aab
+*.zip
 keystore/*.jks
 keystore/*.properties

@@ -15,8 +15,8 @@
 当前版本：
 
 - applicationId：`app.gptmini`
-- versionCode：`16`
-- versionName：`1.15`
+- versionCode：`20`
+- versionName：`1.19`
 - App 显示名称：`GPT Mini`
 
 当前定位：
@@ -205,21 +205,22 @@ App 使用侧边悬浮窗作为功能入口，避免顶部工具栏占用 WebUI 
 
 ### 3.8 通知功能
 
-通知模式有两种：
+任务通知模式有两种：
 
-- 任务结束通知。
-- 常驻通知。
+- 实时通知。
+- 仅任务完成时通知。
 
-任务结束通知：
+仅任务完成时通知：
 
-- 只有任务完成、失败或异常时发送通知。
+- 不显示任务运行中的动态状态。
+- 只有任务完成、失败或异常时发送结果通知。
 
-常驻通知：
+实时通知：
 
-- App 连接后常驻显示任务通知。
+- App 打开后使用前台服务维持基础常驻通知。
 - 没有任务时显示空闲状态。
 - 任务运行、完成、失败/异常时更新通知。
-- 选择常驻模式后会立即启动前台通知服务。
+- 原生层会尝试通过任务状态接口轮询后台任务，不应依赖 WebUI 保持前台。
 
 多任务通知：
 
@@ -230,7 +231,9 @@ App 使用侧边悬浮窗作为功能入口，避免顶部工具栏占用 WebUI 
 
 - 任务完成、失败或异常时，如果 App 不在前台，会通过高重要级别通知频道显示类似 QQ/微信的顶部横幅提醒。
 - 如果用户正在 App 界面内，只更新状态栏通知，不显示顶部横幅。
-- 该行为不受“任务结束通知/常驻通知”模式影响，两种模式在后台任务结束时都会触发横幅提醒。
+- “实时通知”和“仅任务完成时通知”两种模式在后台任务结束时都应触发结果提醒。
+
+当前仍需重点验证：部分系统环境下，App 长时间处于后台后原生任务轮询可能停滞，导致必须重新打开 App、等待 WebUI 刷新最终回复后才出现完成通知。后续开发应优先检查 `AIMiniNotificationService`、`TaskMonitorJobService`、持久化任务信息和后台 HTTP 请求日志。
 
 ### 3.9 App 内临时网页
 
@@ -277,7 +280,7 @@ App 不会直接把 WebView 地址栏改成局域网地址。
 - release v1/v2 签名通过。
 - zipalign 通过。
 - 包名：`app.gptmini`
-- 版本：`1.15`
+- 版本：`1.19`
 
 如果用户之前安装的是 debug 包，可能因为签名不同不能直接覆盖安装，需要先卸载 debug 版。
 
@@ -365,6 +368,11 @@ release 签名文件：
 - App 显示名称、首页、悬浮窗和通知文案统一为 GPT Mini。
 - App、首页、悬浮窗与 Launcher 图标统一使用 GPT Mini 图标。
 - 修复 GeckoView 输入框合成层导致液态玻璃丢失的问题，并保持输入框随键盘升降。
+- 完成 WebUI 全屏延伸到状态栏和刘海区域，顶部安全区域继续允许用户自定义。
+- 修复浅色模式下悬浮窗文字对比度。
+- 修复 HTML、Blob、Data URL、APK 等 WebUI 下载处理。
+- 缓解 App 返回前台、页面加载和模式切换时的闪白。
+- 增加原生任务状态轮询、前台服务与任务补充唤醒机制。
 - 修复任务正常完成前短暂误报“失败/异常”的问题。
 - 修复“任务结束通知”与“常驻通知”切换不能立即生效的问题。
 - 新增后台任务完成、失败/异常顶部横幅通知。
@@ -373,7 +381,7 @@ release 签名文件：
 - 新增悬浮窗“关闭当前网页”入口。
 - 新增 release 签名配置。
 - 生成 release 签名证书。
-- 打包 `GPT Mini v1.15 arm64-v8a release`。
+- 打包 `GPT Mini v1.19 arm64-v8a release`。
 - 下载界面新增分享按钮。
 - 下载文件名改为最多两行。
 - 下载完成状态和下载时间合并到一行显示。
@@ -390,7 +398,8 @@ release 签名文件：
 - 下载记录失效时显示“文件不存在”并允许清理记录。
 - 后续升级版本时继续递增 `versionCode`，并保持使用同一个 keystore。
 - 为项目补充 Gradle Wrapper，减少新电脑环境配置成本。
-- 如果要公开仓库，移除 keystore 和签名密码，只保留签名配置模板。
+- 公开仓库不得提交 keystore、签名密码、`local.properties`、真实 WebUI 地址和连接 Token。
+- 优先修复 App 长时间处于后台时任务完成通知延迟的问题。
 - 真机测试覆盖：
   - 覆盖安装后下载记录是否保留。
   - 下载后打开、分享、删除是否正常。
@@ -405,8 +414,11 @@ release 签名文件：
 1. `GPTMini-开发交接说明.md`
 2. `GPTMini-应用介绍与使用帮助.md`
 3. `app/src/main/java/com/coimgrain/codexminiapp/MainActivity.java`
-4. `app/src/main/res/values/strings.xml`
-5. `app/build.gradle`
+4. `app/src/main/java/com/coimgrain/codexminiapp/AIMiniNotificationService.java`
+5. `app/src/main/assets/extensions/ai-mini/page.js`
+6. `输入框液态玻璃补丁说明.md`
+7. `app/src/main/res/values/strings.xml`
+8. `app/build.gradle`
 
 修改 UI 前建议先搜索相关方法：
 
