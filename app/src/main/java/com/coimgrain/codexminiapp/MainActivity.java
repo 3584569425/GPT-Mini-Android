@@ -232,6 +232,10 @@ public class MainActivity extends Activity {
     private boolean keyboardWasOpen;
     private int appliedImeInsetBottom;
     private long lastModernImeUpdateAt;
+    private boolean imeAnimationRunning;
+    private boolean modernImeInsetsReliable;
+    private final Rect visibleDisplayFrame = new Rect();
+    private final int[] rootLocationOnScreen = new int[2];
     private boolean miniDragging;
     private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
@@ -3859,7 +3863,7 @@ public class MainActivity extends Activity {
                 + "}"
                 + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var id=String(data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').trim():'当前会话';var endpoint='';try{endpoint=new URL(String(statusUrl||''),location.href).href;}catch(ignore){}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
                 + "var oldFetch=window.fetch;if(oldFetch&&!window.__AIMiniFetchHooked){window.__AIMiniFetchHooked=true;window.__AIMiniStatusPollers=window.__AIMiniStatusPollers||{};window.__AIMiniPollStatuses=function(){try{Object.keys(window.__AIMiniStatusPollers||{}).forEach(function(key){try{window.__AIMiniStatusPollers[key]();}catch(e){}});}catch(e){}};window.fetch=function(){var ctx=this,args=arguments;var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){try{var savedInput=args[0] instanceof Request?args[0].clone():args[0];var savedInit=args.length>1?args[1]:undefined;window.__AIMiniStatusPollers[u]=function(){try{var input=savedInput instanceof Request?savedInput.clone():savedInput;return oldFetch.call(window,input,savedInit).then(function(pollRes){try{pollRes.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}catch(e){}return pollRes;}).catch(function(){});}catch(e){return Promise.resolve();}};}catch(e){}}return oldFetch.apply(ctx,args).then(function(res){try{if(u.indexOf('/codex/status')>=0){res.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}}catch(e){}return res;});};}"
-                + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));setTimeout(function(){window.dispatchEvent(new Event('resize'));},120);}catch(e){}};}"
+                + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));}catch(e){}};}"
                 + "if(!window.__AIMiniDownloadHooksVersion){"
                 + "var bytesToBase64=function(bytes){var binary='';var step=32768;for(var i=0;i<bytes.length;i+=step){var part=bytes.subarray(i,Math.min(bytes.length,i+step));binary+=String.fromCharCode.apply(null,part);}return btoa(binary);};"
                 + "var sendBlobChunks=async function(blob,fileName,mimeType){var id='dl-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);var chunkSize=196608;CodexMiniNative.beginBlobDownload(id,fileName||'download',mimeType||blob.type||'',blob.size||0);try{var index=0;for(var offset=0;offset<blob.size;offset+=chunkSize){var buffer=await blob.slice(offset,Math.min(blob.size,offset+chunkSize)).arrayBuffer();CodexMiniNative.appendBlobDownload(id,index++,bytesToBase64(new Uint8Array(buffer)));}CodexMiniNative.finishBlobDownload(id);}catch(err){CodexMiniNative.cancelBlobDownload(id);CodexMiniNative.toast('Download failed');}};"
@@ -3925,12 +3929,30 @@ public class MainActivity extends Activity {
     private void installImeInsetHandling(View root) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             root.setOnApplyWindowInsetsListener((view, insets) -> {
-                applyModernImeInsets(view, insets);
+                // Android dispatches the animation's final Insets during the
+                // layout pass between onPrepare() and onStart(). Applying that
+                // value here makes the page jump to the end position before
+                // onProgress() starts, then forces GeckoView to lay out again
+                // for every animated frame. Let the animation callback own the
+                // transition and only use this listener outside an IME animation.
+                if (!imeAnimationRunning) {
+                    applyModernImeInsets(view, insets);
+                } else {
+                    lastModernImeUpdateAt = SystemClock.uptimeMillis();
+                }
                 return insets;
             });
             root.setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
                     WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
             ) {
+                @Override
+                public void onPrepare(WindowInsetsAnimation animation) {
+                    if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                        imeAnimationRunning = true;
+                        lastModernImeUpdateAt = SystemClock.uptimeMillis();
+                    }
+                }
+
                 @Override
                 public WindowInsets onProgress(
                         WindowInsets insets,
@@ -3942,6 +3964,8 @@ public class MainActivity extends Activity {
 
                 @Override
                 public void onEnd(WindowInsetsAnimation animation) {
+                    if ((animation.getTypeMask() & WindowInsets.Type.ime()) == 0) return;
+                    imeAnimationRunning = false;
                     WindowInsets insets = root.getRootWindowInsets();
                     if (insets != null) {
                         applyModernImeInsets(root, insets);
@@ -3965,12 +3989,22 @@ public class MainActivity extends Activity {
         Insets ime = insets.getInsets(WindowInsets.Type.ime());
         int visibleOverlap = visibleKeyboardOverlap(root);
         int openThreshold = Math.max(dp(100), root.getHeight() / 6);
-        boolean imeVisible = insets.isVisible(WindowInsets.Type.ime())
-                || ime.bottom > navigation.bottom
-                || visibleOverlap > openThreshold;
-        int keyboardBottom = imeVisible
-                ? Math.max(ime.bottom, visibleOverlap)
-                : 0;
+        boolean imeReportedVisible = insets.isVisible(WindowInsets.Type.ime())
+                || ime.bottom > navigation.bottom;
+        if (imeReportedVisible) modernImeInsetsReliable = true;
+
+        // Once this ROM has supplied real IME Insets, keep using them as the
+        // animation authority. getWindowVisibleDisplayFrame() commonly trails
+        // the closing animation by several frames; Math.max(ime, overlap) made
+        // the composer descend late and look sluggish on affected devices.
+        // ROMs that never provide usable IME Insets still retain the legacy
+        // visible-frame fallback below.
+        boolean overlapFallbackVisible = !modernImeInsetsReliable
+                && visibleOverlap > openThreshold;
+        boolean imeVisible = imeReportedVisible || overlapFallbackVisible;
+        int keyboardBottom = imeReportedVisible
+                ? Math.max(0, ime.bottom)
+                : (overlapFallbackVisible ? visibleOverlap : 0);
         int contentBottom = imeVisible
                 ? Math.max(navigation.bottom, keyboardBottom)
                 : Math.max(0, navigation.bottom);
@@ -3987,11 +4021,9 @@ public class MainActivity extends Activity {
     }
 
     private int visibleKeyboardOverlap(View root) {
-        Rect rect = new Rect();
-        root.getWindowVisibleDisplayFrame(rect);
-        int[] location = new int[2];
-        root.getLocationOnScreen(location);
-        int visibleBottomInRoot = rect.bottom - location[1];
+        root.getWindowVisibleDisplayFrame(visibleDisplayFrame);
+        root.getLocationOnScreen(rootLocationOnScreen);
+        int visibleBottomInRoot = visibleDisplayFrame.bottom - rootLocationOnScreen[1];
         return Math.max(0, root.getHeight() - visibleBottomInRoot);
     }
 

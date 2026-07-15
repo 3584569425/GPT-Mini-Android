@@ -97,22 +97,29 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.22") return;
-    window.__AIMiniKeyboardHooksVersion = "1.22";
+    if (window.__AIMiniKeyboardHooksVersion === "1.23") return;
+    window.__AIMiniKeyboardHooksVersion = "1.23";
 
     let lastEditable = null;
     let keyboardOpen = false;
     let nativeKeyboardInsetDevicePixels = 0;
     let revealFrame = 0;
+    let revealTimers = new Set();
     let lastKeyboardRequestAt = 0;
     let lastDirectEditableInteractionAt = 0;
     let suppressProgrammaticFocusUntil = 0;
+    let keyboardCssPrepared = false;
+    let viewportClosing = false;
+    let lastVisualViewportHeight = window.visualViewport
+      ? window.visualViewport.height
+      : 0;
     let largestViewportHeight = Math.max(
       window.innerHeight || 0,
       document.documentElement ? document.documentElement.clientHeight : 0
     );
 
-    function applyNativeKeyboardInset() {
+    function applyNativeKeyboardInset(force) {
+      if (keyboardCssPrepared && !force) return;
       // Android uses ADJUST_RESIZE and Gecko's viewport now follows the
       // animated View bounds. Applying the physical IME height again would
       // move the composer twice and leave it near the top of the screen. Also
@@ -132,6 +139,7 @@
           shell.style.removeProperty("bottom");
         }
       });
+      keyboardCssPrepared = true;
     }
 
     function enforceResizeViewport() {
@@ -209,12 +217,15 @@
         !!editableFor(document.activeElement)
         && largestViewportHeight - currentHeight > Math.max(90, largestViewportHeight * 0.16)
       );
-      keyboardOpen = open;
-      document.body && document.body.classList.toggle("keyboard-open", open);
-      applyNativeKeyboardInset();
+      if (keyboardOpen !== open) {
+        keyboardOpen = open;
+        document.body && document.body.classList.toggle("keyboard-open", open);
+        applyNativeKeyboardInset(true);
+      }
     }
 
     function revealEditableNow() {
+      if (viewportClosing) return;
       const editable = activeEditable();
       if (!editable || !document.contains(editable)) return;
       lastEditable = editable;
@@ -223,6 +234,7 @@
       } catch (_) {}
 
       requestAnimationFrame(function () {
+        if (viewportClosing) return;
         const viewport = window.visualViewport;
         if (!viewport) return;
         const rect = editable.getBoundingClientRect();
@@ -235,16 +247,35 @@
       });
     }
 
+    function cancelPendingReveals() {
+      if (revealFrame) {
+        cancelAnimationFrame(revealFrame);
+        revealFrame = 0;
+      }
+      revealTimers.forEach(function (timer) {
+        clearTimeout(timer);
+      });
+      revealTimers.clear();
+    }
+
     function revealEditable(delay) {
       const run = function () {
+        if (viewportClosing) return;
         if (revealFrame) cancelAnimationFrame(revealFrame);
         revealFrame = requestAnimationFrame(function () {
           revealFrame = 0;
           revealEditableNow();
         });
       };
-      if (Number(delay || 0) > 0) setTimeout(run, Number(delay));
-      else run();
+      if (Number(delay || 0) > 0) {
+        const timer = setTimeout(function () {
+          revealTimers.delete(timer);
+          run();
+        }, Number(delay));
+        revealTimers.add(timer);
+      } else {
+        run();
+      }
     }
 
     function sendKeyboardRequest(editable) {
@@ -325,17 +356,21 @@
       nativeKeyboardInsetDevicePixels = Math.max(0, Number(devicePixels) || 0);
       keyboardOpen = nativeKeyboardInsetDevicePixels > 0;
       document.body && document.body.classList.toggle("keyboard-open", keyboardOpen);
-      applyNativeKeyboardInset();
+      applyNativeKeyboardInset(true);
       window.dispatchEvent(new Event("resize"));
       if (keyboardOpen) {
+        viewportClosing = false;
         [0, 64, 160].forEach(revealEditable);
+      } else {
+        cancelPendingReveals();
       }
     };
 
     window.__AIMiniKeyboardOpenedFromNative = function () {
       keyboardOpen = true;
+      viewportClosing = false;
       document.body && document.body.classList.add("keyboard-open");
-      applyNativeKeyboardInset();
+      applyNativeKeyboardInset(true);
       window.dispatchEvent(new Event("resize"));
       [0, 80, 200].forEach(revealEditable);
     };
@@ -343,23 +378,35 @@
     window.__CodexMiniKeyboardClosedFromNative = function () {
       nativeKeyboardInsetDevicePixels = 0;
       keyboardOpen = false;
+      viewportClosing = false;
+      cancelPendingReveals();
       document.body && document.body.classList.remove("keyboard-open");
-      applyNativeKeyboardInset();
+      applyNativeKeyboardInset(true);
       window.dispatchEvent(new Event("resize"));
-      setTimeout(function () {
-        window.dispatchEvent(new Event("resize"));
-      }, 80);
     };
 
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", function () {
+        const currentHeight = window.visualViewport.height || 0;
+        viewportClosing = lastVisualViewportHeight > 0
+          && currentHeight > lastVisualViewportHeight + 1;
+        lastVisualViewportHeight = currentHeight;
+        if (viewportClosing) cancelPendingReveals();
         updateKeyboardState();
-        if (keyboardOpen || editableFor(document.activeElement)) revealEditable();
+        if (!viewportClosing
+            && (keyboardOpen || editableFor(document.activeElement))) {
+          revealEditable();
+        }
       });
       window.visualViewport.addEventListener("scroll", function () {
-        if (keyboardOpen || editableFor(document.activeElement)) revealEditable();
+        if (!viewportClosing
+            && (keyboardOpen || editableFor(document.activeElement))) {
+          revealEditable();
+        }
       });
     }
+
+    applyNativeKeyboardInset(true);
   }
 
   function installGeckoLiquidGlassFallback() {
