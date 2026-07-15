@@ -94,12 +94,14 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.16") return;
-    window.__AIMiniKeyboardHooksVersion = "1.16";
+    if (window.__AIMiniKeyboardHooksVersion === "1.21") return;
+    window.__AIMiniKeyboardHooksVersion = "1.21";
 
     let lastEditable = null;
     let keyboardOpen = false;
     let nativeKeyboardInsetDevicePixels = 0;
+    let revealFrame = 0;
+    let lastKeyboardRequestAt = 0;
     let largestViewportHeight = Math.max(
       window.innerHeight || 0,
       document.documentElement ? document.documentElement.clientHeight : 0
@@ -152,17 +154,22 @@
     }
 
     enforceResizeViewport();
-    try {
-      const viewportObserver = new MutationObserver(enforceResizeViewport);
-      viewportObserver.observe(document.documentElement, {
-        subtree: true,
-        childList: true,
-        attributes: true,
-        attributeFilter: ["content"]
-      });
-      window.__AIMiniKeyboardViewportObserver = viewportObserver;
-    } catch (_) {}
+    function observeViewportMeta() {
+      if (!document.head || window.__AIMiniKeyboardViewportObserver) return;
+      try {
+        const viewportObserver = new MutationObserver(enforceResizeViewport);
+        viewportObserver.observe(document.head, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ["content"]
+        });
+        window.__AIMiniKeyboardViewportObserver = viewportObserver;
+      } catch (_) {}
+    }
+    observeViewportMeta();
     document.addEventListener("DOMContentLoaded", enforceResizeViewport, { once: true });
+    document.addEventListener("DOMContentLoaded", observeViewportMeta, { once: true });
 
     function editableFor(target) {
       if (!target) return null;
@@ -179,12 +186,17 @@
 
     function updateKeyboardState() {
       const viewport = window.visualViewport;
-      const currentHeight = Math.max(
+      const layoutHeight = Math.max(
         1,
-        viewport ? viewport.height : 0,
         window.innerHeight || 0,
         document.documentElement ? document.documentElement.clientHeight : 0
       );
+      // visualViewport is the authoritative visible height while the IME is
+      // open. Taking Math.max with innerHeight hid the keyboard on browsers
+      // where innerHeight intentionally remains the full layout viewport.
+      const currentHeight = viewport && viewport.height > 0
+        ? viewport.height
+        : layoutHeight;
       if (!editableFor(document.activeElement)) {
         largestViewportHeight = Math.max(largestViewportHeight, currentHeight);
       }
@@ -197,7 +209,7 @@
       applyNativeKeyboardInset();
     }
 
-    function revealEditable() {
+    function revealEditableNow() {
       const editable = activeEditable();
       if (!editable || !document.contains(editable)) return;
       lastEditable = editable;
@@ -218,10 +230,25 @@
       });
     }
 
+    function revealEditable(delay) {
+      const run = function () {
+        if (revealFrame) cancelAnimationFrame(revealFrame);
+        revealFrame = requestAnimationFrame(function () {
+          revealFrame = 0;
+          revealEditableNow();
+        });
+      };
+      if (Number(delay || 0) > 0) setTimeout(run, Number(delay));
+      else run();
+    }
+
     function requestKeyboard(event) {
       const editable = editableFor(event && event.target);
       if (!editable) return;
       lastEditable = editable;
+      const now = Date.now();
+      if (now - lastKeyboardRequestAt < 120) return;
+      lastKeyboardRequestAt = now;
       setTimeout(function () {
         try { window.CodexMiniNative.showKeyboard(); } catch (_) {}
       }, 24);
@@ -234,7 +261,7 @@
       if (!editable) return;
       lastEditable = editable;
       requestKeyboard(event);
-      [30, 100, 220].forEach(function (delay) {
+      [32, 120, 240].forEach(function (delay) {
         setTimeout(function () {
           updateKeyboardState();
           revealEditable();
@@ -249,9 +276,7 @@
       applyNativeKeyboardInset();
       window.dispatchEvent(new Event("resize"));
       if (keyboardOpen) {
-        [0, 32, 80].forEach(function (delay) {
-          setTimeout(revealEditable, delay);
-        });
+        [0, 64, 160].forEach(revealEditable);
       }
     };
 
@@ -260,9 +285,7 @@
       document.body && document.body.classList.add("keyboard-open");
       applyNativeKeyboardInset();
       window.dispatchEvent(new Event("resize"));
-      [0, 48, 120, 240].forEach(function (delay) {
-        setTimeout(revealEditable, delay);
-      });
+      [0, 80, 200].forEach(revealEditable);
     };
 
     window.__CodexMiniKeyboardClosedFromNative = function () {

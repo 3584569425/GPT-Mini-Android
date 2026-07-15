@@ -34,6 +34,9 @@ final class AIMiniGeckoView extends GeckoView {
         default void onLocationChange(AIMiniGeckoView view, String uri) {
         }
 
+        default void onPageStarted(AIMiniGeckoView view, String uri) {
+        }
+
         default void onPageFinished(AIMiniGeckoView view, String uri, boolean success) {
         }
 
@@ -80,6 +83,7 @@ final class AIMiniGeckoView extends GeckoView {
     private String desktopUserAgent = "";
     private View compositorCover;
     private boolean suspendedForBackground;
+    private long compositorCoverGeneration;
 
     AIMiniGeckoView(Context context, AIMiniGeckoEngine engine) {
         super(context);
@@ -132,6 +136,7 @@ final class AIMiniGeckoView extends GeckoView {
     void loadUrl(String url) {
         if (destroyed) return;
         applyNativeDesktopModeIfNeeded();
+        showCompositorCover(1800L);
         pendingUrl = url == null ? "" : url;
         // The first navigation must wait until the built-in WebExtension has been
         // installed. Navigating earlier creates a race where document_start scripts
@@ -141,7 +146,10 @@ final class AIMiniGeckoView extends GeckoView {
     }
 
     void reload() {
-        if (!destroyed && engine.isReady()) session.reload();
+        if (!destroyed && engine.isReady()) {
+            showCompositorCover(1800L);
+            session.reload();
+        }
     }
 
     void stopLoading() {
@@ -166,11 +174,17 @@ final class AIMiniGeckoView extends GeckoView {
     }
 
     void goBack() {
-        if (!destroyed) session.goBack();
+        if (!destroyed) {
+            showCompositorCover(1800L);
+            session.goBack();
+        }
     }
 
     void goForward() {
-        if (!destroyed) session.goForward();
+        if (!destroyed) {
+            showCompositorCover(1800L);
+            session.goForward();
+        }
     }
 
     void evaluateJavascript(String script, ValueCallback<String> callback) {
@@ -220,7 +234,9 @@ final class AIMiniGeckoView extends GeckoView {
 
     void prepareForForeground() {
         if (destroyed) return;
-        if (suspendedForBackground) showCompositorCover();
+        if (!currentUrl.isEmpty() || suspendedForBackground) {
+            showCompositorCover(650L);
+        }
         // coverUntilFirstPaint() is only for the initial navigation. Re-applying it
         // to an already painted session can leave a permanent black cover because a
         // static restored page is not guaranteed to emit another first-paint event.
@@ -233,21 +249,25 @@ final class AIMiniGeckoView extends GeckoView {
             requestLayout();
             invalidate();
         });
-        postDelayed(this::hideCompositorCover, 520L);
     }
 
     void prepareForBackground(boolean keepRunning) {
         if (destroyed) return;
         if (!keepRunning && !currentUrl.isEmpty()) {
             suspendedForBackground = true;
-            showCompositorCover();
+            showCompositorCover(1800L);
         }
         session.setFocused(false);
         session.setActive(keepRunning);
     }
 
     private void showCompositorCover() {
+        showCompositorCover(1800L);
+    }
+
+    private void showCompositorCover(long fallbackDelayMs) {
         if (destroyed) return;
+        long generation = ++compositorCoverGeneration;
         if (compositorCover == null || compositorCover.getParent() != this) {
             compositorCover = new View(getContext());
             compositorCover.setBackgroundColor(Color.BLACK);
@@ -261,15 +281,24 @@ final class AIMiniGeckoView extends GeckoView {
         compositorCover.setAlpha(1f);
         compositorCover.setVisibility(VISIBLE);
         compositorCover.bringToFront();
+        if (fallbackDelayMs > 0L) {
+            postDelayed(() -> {
+                if (generation == compositorCoverGeneration) hideCompositorCover();
+            }, fallbackDelayMs);
+        }
     }
 
     private void hideCompositorCover() {
         if (compositorCover == null || compositorCover.getVisibility() != VISIBLE) return;
+        long hideGeneration = ++compositorCoverGeneration;
         compositorCover.animate()
                 .alpha(0f)
                 .setDuration(120L)
                 .withEndAction(() -> {
-                    if (compositorCover == null) return;
+                    if (compositorCover == null
+                            || hideGeneration != compositorCoverGeneration) {
+                        return;
+                    }
                     compositorCover.setVisibility(GONE);
                     compositorCover.setAlpha(1f);
                 })
@@ -403,10 +432,24 @@ final class AIMiniGeckoView extends GeckoView {
     private final GeckoSession.ProgressDelegate progressDelegate =
             new GeckoSession.ProgressDelegate() {
                 @Override
+                public void onPageStart(GeckoSession session, String url) {
+                    post(() -> showCompositorCover(1800L));
+                    if (delegate != null) {
+                        delegate.onPageStarted(AIMiniGeckoView.this, url);
+                    }
+                }
+
+                @Override
                 public void onPageStop(GeckoSession session, boolean success) {
                     if (delegate != null) {
                         delegate.onPageFinished(AIMiniGeckoView.this, getUrl(), success);
                     }
+                    long coverGenerationAtStop = compositorCoverGeneration;
+                    postDelayed(() -> {
+                        if (coverGenerationAtStop == compositorCoverGeneration) {
+                            hideCompositorCover();
+                        }
+                    }, success ? 900L : 180L);
                 }
             };
 
@@ -434,7 +477,7 @@ final class AIMiniGeckoView extends GeckoView {
 
                 @Override
                 public void onPaintStatusReset(GeckoSession session) {
-                    post(AIMiniGeckoView.this::showCompositorCover);
+                    post(() -> showCompositorCover(1800L));
                 }
 
                 @Override

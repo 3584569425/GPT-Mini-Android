@@ -43,6 +43,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.text.InputType;
@@ -144,7 +145,7 @@ public class MainActivity extends Activity {
     private static final int DEFAULT_TOP_INSET_DP = 0;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
-    private static final int STATUS_BAR_BACKGROUND_COLOR = 0xFF0D0D0D;
+    private static final String NAVIGATION_LOG_TAG = "GPTMiniNavigation";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
@@ -164,7 +165,6 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private FrameLayout appHost;
     private LinearLayout appRoot;
-    private View statusBarBackground;
     private View topInsetArea;
     private View welcomeView;
     private FrameLayout browserFrame;
@@ -218,6 +218,7 @@ public class MainActivity extends Activity {
     private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> pendingFilePromptResult;
     private boolean keyboardWasOpen;
     private int appliedImeInsetBottom;
+    private long lastModernImeUpdateAt;
     private boolean miniDragging;
     private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
@@ -273,7 +274,7 @@ public class MainActivity extends Activity {
         geckoEngine.setNativeMessageHandler(this::handleGeckoNativeMessage);
 
         Window window = getWindow();
-        window.setStatusBarColor(STATUS_BAR_BACKGROUND_COLOR);
+        window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.BLACK);
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -308,14 +309,6 @@ public class MainActivity extends Activity {
         buildToolbar(appRoot);
         buildBrowserArea(appRoot);
         buildWelcomeView(appHost);
-        statusBarBackground = new View(this);
-        statusBarBackground.setBackgroundColor(STATUS_BAR_BACKGROUND_COLOR);
-        statusBarBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        appHost.addView(statusBarBackground, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                0,
-                Gravity.TOP
-        ));
         installImeInsetHandling(window.getDecorView());
         configureWebView();
         loadPersistedDownloads();
@@ -1305,22 +1298,39 @@ public class MainActivity extends Activity {
             }
             topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
         }
+        boolean light = isFloatMenuLight();
         Window window = getWindow();
-        // Android 15 enforces edge-to-edge for targetSdk 35 and may ignore the
-        // status bar window color. A dedicated scrim matching the WebUI's
-        // #0D0D0D background is drawn while the rest remains edge-to-edge.
-        window.setStatusBarColor(STATUS_BAR_BACKGROUND_COLOR);
+        // WebUI content must always render behind the status bar and cutout.
+        // topInsetArea is the only optional safe area, and a value of 0 means
+        // that no native view is allowed to cover the top of the page.
+        window.setStatusBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(attributes);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             android.view.WindowInsetsController controller = window.getInsetsController();
             if (controller != null) {
                 controller.setSystemBarsAppearance(
-                        0,
+                        light
+                                ? android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                : 0,
                         android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                 );
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             int flags = window.getDecorView().getSystemUiVisibility();
-            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            flags |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+            if (light) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            } else {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            }
             window.getDecorView().setSystemUiVisibility(flags);
         }
     }
@@ -1750,6 +1760,76 @@ public class MainActivity extends Activity {
             value = value.substring(0, value.length() - 1);
         }
         return value.trim();
+    }
+
+    private String inheritMainNavigationToken(String candidateUrl) {
+        String rawCandidate = candidateUrl == null ? "" : candidateUrl.trim();
+        if (rawCandidate.isEmpty() || !isSameMainDocument(rawCandidate)) return rawCandidate;
+        try {
+            Uri candidate = Uri.parse(rawCandidate);
+            if (!isHttpScheme(candidate.getScheme())) return rawCandidate;
+            String candidateToken = encodedQueryParameter(candidate, "token");
+            if (candidateToken != null && !candidateToken.isEmpty()) return rawCandidate;
+
+            String currentUrl = webView == null ? "" : webView.getUrl();
+            String savedUrl = preferences == null ? "" : preferences.getString(KEY_LAST_URL, "");
+            String inheritedToken = encodedQueryParameter(Uri.parse(currentUrl), "token");
+            if (inheritedToken == null || inheritedToken.isEmpty()) {
+                inheritedToken = encodedQueryParameter(Uri.parse(savedUrl), "token");
+            }
+            if (inheritedToken == null || inheritedToken.isEmpty()) return rawCandidate;
+
+            String encodedQuery = candidate.getEncodedQuery();
+            String tokenQuery = "token=" + inheritedToken;
+            Uri.Builder builder = candidate.buildUpon();
+            builder.encodedQuery(encodedQuery == null || encodedQuery.isEmpty()
+                    ? tokenQuery
+                    : encodedQuery + "&" + tokenQuery);
+            return builder.build().toString();
+        } catch (Exception ignored) {
+            return rawCandidate;
+        }
+    }
+
+    private String encodedQueryParameter(Uri uri, String requestedName) {
+        if (uri == null || requestedName == null) return null;
+        String encodedQuery = uri.getEncodedQuery();
+        if (encodedQuery == null || encodedQuery.isEmpty()) return null;
+        for (String pair : encodedQuery.split("&")) {
+            int separator = pair.indexOf('=');
+            String encodedName = separator >= 0 ? pair.substring(0, separator) : pair;
+            if (!requestedName.equals(Uri.decode(encodedName))) continue;
+            return separator >= 0 ? pair.substring(separator + 1) : "";
+        }
+        return null;
+    }
+
+    private String navigationUrlForLog(String rawUrl) {
+        try {
+            Uri uri = Uri.parse(rawUrl == null ? "" : rawUrl);
+            StringBuilder safe = new StringBuilder();
+            if (uri.getScheme() != null) safe.append(uri.getScheme()).append("://");
+            if (uri.getEncodedAuthority() != null) safe.append(uri.getEncodedAuthority());
+            if (uri.getEncodedPath() != null) safe.append(uri.getEncodedPath());
+            Set<String> names = uri.getQueryParameterNames();
+            if (!names.isEmpty()) safe.append("?params=").append(names);
+            return safe.toString();
+        } catch (Exception ignored) {
+            return "<invalid>";
+        }
+    }
+
+    private String navigationTokenFingerprint(String rawUrl) {
+        try {
+            String encoded = encodedQueryParameter(
+                    Uri.parse(rawUrl == null ? "" : rawUrl),
+                    "token"
+            );
+            if (encoded == null) return "none";
+            return encoded.length() + ":" + Integer.toHexString(encoded.hashCode());
+        } catch (Exception ignored) {
+            return "invalid";
+        }
     }
 
     private void openSystemLink(Uri uri) {
@@ -3152,6 +3232,14 @@ public class MainActivity extends Activity {
 
     private void tryUpgradeToLocalRoute(String pageUrl) {
         Uri uri = Uri.parse(pageUrl);
+        // A multi-device page resolves the selected profile's base URL and token
+        // from its own persisted device profile. Reusing the primary device's
+        // native local route here sends the secondary token to the wrong computer
+        // and produces a misleading "访问令牌不正确" error.
+        if (hasDeviceProfileSelection(uri)) {
+            availableLocalApiBase = null;
+            return;
+        }
         String token = uri.getQueryParameter("token");
         if (token == null || token.isEmpty() || isPrivateHost(uri.getHost())) return;
         if (localRouteProbeRunning) return;
@@ -3186,7 +3274,9 @@ public class MainActivity extends Activity {
     private void applyLocalRouteToPage(String localBase, int attempt) {
         if (webView == null || localBase == null || localBase.trim().isEmpty()) return;
         String current = webView.getUrl();
-        if (current == null || current.trim().isEmpty() || isPrivateHost(Uri.parse(current).getHost())) return;
+        if (current == null || current.trim().isEmpty()) return;
+        Uri currentUri = Uri.parse(current);
+        if (isPrivateHost(currentUri.getHost()) || hasDeviceProfileSelection(currentUri)) return;
         String baseLiteral = JSONObject.quote(normalizeBase(localBase));
         String script = "(function(){try{"
                 + "var base=" + baseLiteral + ";"
@@ -3225,9 +3315,20 @@ public class MainActivity extends Activity {
         String normalized = normalizeUrl(current);
         if (normalized.isEmpty()) return "";
         Uri uri = Uri.parse(normalized);
+        if (hasDeviceProfileSelection(uri)) return "";
         String token = uri.getQueryParameter("token");
         if (token == null || token.isEmpty() || isPrivateHost(uri.getHost())) return "";
         return normalized;
+    }
+
+    private boolean hasDeviceProfileSelection(Uri uri) {
+        if (uri == null || !uri.isHierarchical()) return false;
+        try {
+            String deviceId = uri.getQueryParameter("device");
+            return deviceId != null && !deviceId.trim().isEmpty();
+        } catch (UnsupportedOperationException ignored) {
+            return false;
+        }
     }
 
     private void registerNetworkRouteWatcher() {
@@ -3456,9 +3557,7 @@ public class MainActivity extends Activity {
     private void installImeInsetHandling(View root) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             root.setOnApplyWindowInsetsListener((view, insets) -> {
-                applyStatusBarBackground(insets);
-                applySystemBottomInset(insets);
-                applyImeInset(view, imeOverlap(view, insets));
+                applyModernImeInsets(view, insets);
                 return insets;
             });
             root.setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
@@ -3469,9 +3568,7 @@ public class MainActivity extends Activity {
                         WindowInsets insets,
                         List<WindowInsetsAnimation> runningAnimations
                 ) {
-                    applyStatusBarBackground(insets);
-                    applySystemBottomInset(insets);
-                    applyImeInset(root, imeOverlap(root, insets));
+                    applyModernImeInsets(root, insets);
                     return insets;
                 }
 
@@ -3479,9 +3576,7 @@ public class MainActivity extends Activity {
                 public void onEnd(WindowInsetsAnimation animation) {
                     WindowInsets insets = root.getRootWindowInsets();
                     if (insets != null) {
-                        applyStatusBarBackground(insets);
-                        applySystemBottomInset(insets);
-                        applyImeInset(root, imeOverlap(root, insets));
+                        applyModernImeInsets(root, insets);
                     }
                 }
             });
@@ -3491,48 +3586,36 @@ public class MainActivity extends Activity {
         watchKeyboardLegacy(root);
     }
 
-    private void applyStatusBarBackground(WindowInsets insets) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R
-                || insets == null
-                || statusBarBackground == null) {
-            return;
-        }
-        int height = Math.max(0, insets.getInsets(WindowInsets.Type.statusBars()).top);
-        ViewGroup.LayoutParams params = statusBarBackground.getLayoutParams();
-        if (params != null && params.height != height) {
-            params.height = height;
-            statusBarBackground.setLayoutParams(params);
-        }
-        statusBarBackground.bringToFront();
-    }
-
-    private void applySystemBottomInset(WindowInsets insets) {
+    private void applyModernImeInsets(View root, WindowInsets insets) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R
                 || insets == null
                 || appHost == null) {
             return;
         }
+        lastModernImeUpdateAt = SystemClock.uptimeMillis();
         Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
         Insets ime = insets.getInsets(WindowInsets.Type.ime());
-        // Edge-to-edge removes Android's automatic system-bar padding. Apply only
-        // the bottom inset ourselves so the top remains truly full-screen, while
-        // GeckoView still resizes continuously with the IME animation.
-        int bottom = Math.max(0, Math.max(navigation.bottom, ime.bottom));
-        if (appHost.getPaddingBottom() != bottom) {
-            appHost.setPadding(0, 0, 0, bottom);
-        }
+        int visibleOverlap = visibleKeyboardOverlap(root);
+        int openThreshold = Math.max(dp(100), root.getHeight() / 6);
+        boolean imeVisible = insets.isVisible(WindowInsets.Type.ime())
+                || ime.bottom > navigation.bottom
+                || visibleOverlap > openThreshold;
+        int keyboardBottom = imeVisible
+                ? Math.max(ime.bottom, visibleOverlap)
+                : 0;
+        int contentBottom = imeVisible
+                ? Math.max(navigation.bottom, keyboardBottom)
+                : Math.max(0, navigation.bottom);
+        applyHostBottomInset(contentBottom);
+        applyImeInset(root, imeVisible ? keyboardBottom : 0);
     }
 
-    private int imeOverlap(View root, WindowInsets insets) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || insets == null) return 0;
-        Insets ime = insets.getInsets(WindowInsets.Type.ime());
-        Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
-        // appHost keeps content above the navigation bar while the status bar is
-        // edge-to-edge. Only compensate the part of the IME beyond that bottom inset.
-        return Math.max(
-                visibleKeyboardOverlap(root),
-                Math.max(0, ime.bottom - navigation.bottom)
-        );
+    private void applyHostBottomInset(int bottom) {
+        if (appHost == null) return;
+        int safeBottom = Math.max(0, bottom);
+        if (appHost.getPaddingBottom() != safeBottom) {
+            appHost.setPadding(0, 0, 0, safeBottom);
+        }
     }
 
     private int visibleKeyboardOverlap(View root) {
@@ -3551,9 +3634,11 @@ public class MainActivity extends Activity {
         // the IME closing animation. Never expose that residual value to the
         // page, otherwise it can leave the WebUI in its keyboard-open state.
         int effectiveInset = isOpen ? safeInset : 0;
-        if (appliedImeInsetBottom == effectiveInset && keyboardWasOpen == isOpen) return;
         appliedImeInsetBottom = effectiveInset;
-
+        // The page patch only needs the open/closed transition. Dispatching
+        // JavaScript for every IME animation pixel caused avoidable jank and, on
+        // some ROMs, let stale legacy callbacks race the modern Insets callback.
+        if (keyboardWasOpen == isOpen) return;
         keyboardWasOpen = isOpen;
         notifyKeyboardInsetToWeb(effectiveInset, isOpen);
     }
@@ -3563,8 +3648,24 @@ public class MainActivity extends Activity {
             int hidden = visibleKeyboardOverlap(root);
             int totalHeight = root.getHeight();
             boolean keyboardOpen = hidden > Math.max(dp(140), totalHeight / 5);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowInsets insets = root.getRootWindowInsets();
+                boolean modernImeVisible = insets != null
+                        && insets.isVisible(WindowInsets.Type.ime());
+                long sinceModernUpdate = SystemClock.uptimeMillis() - lastModernImeUpdateAt;
+                if (modernImeVisible || sinceModernUpdate < 350L) return;
+
+                // Fallback for ROMs that stop dispatching IME Insets in an
+                // edge-to-edge window. It only takes over after modern Insets
+                // have gone quiet, so it cannot overwrite an active animation.
+                int navigationBottom = insets == null
+                        ? 0
+                        : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                applyHostBottomInset(keyboardOpen
+                        ? Math.max(navigationBottom, hidden)
+                        : navigationBottom);
+            }
             applyImeInset(root, keyboardOpen ? hidden : 0);
-            keyboardWasOpen = keyboardOpen;
         });
     }
 
@@ -4727,6 +4828,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         activityInForeground = true;
+        requestInterfaceInsets();
         // The Service may have completed and removed tasks while Gecko/Activity was
         // suspended. Reconcile the in-memory maps before refreshing notifications.
         restoreMonitoredTasks();
@@ -4754,6 +4856,12 @@ public class MainActivity extends Activity {
         super.onConfigurationChanged(newConfig);
         refreshMiniMenuTheme();
         requestInterfaceInsets();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) requestInterfaceInsets();
     }
 
     @Override
@@ -5152,8 +5260,20 @@ public class MainActivity extends Activity {
     }
 
     private GradientDrawable topInsetBackground(boolean light) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(STATUS_BAR_BACKGROUND_COLOR);
+        GradientDrawable drawable = new GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                light
+                        ? new int[]{
+                                Color.rgb(244, 247, 252),
+                                Color.rgb(229, 239, 248),
+                                Color.rgb(241, 247, 245)
+                        }
+                        : new int[]{
+                                Color.rgb(9, 12, 18),
+                                Color.rgb(14, 23, 38),
+                                Color.rgb(8, 24, 28)
+                        }
+        );
         return drawable;
     }
 
@@ -5261,11 +5381,31 @@ public class MainActivity extends Activity {
                     boolean hasUserGesture,
                     int target
             ) {
-                Uri uri = Uri.parse(rawUri == null ? "" : rawUri);
+                String candidate = rawUri == null ? "" : rawUri;
+                Uri uri = Uri.parse(candidate);
                 String scheme = uri.getScheme();
                 if (isHttpScheme(scheme)) {
-                    if (hasUserGesture && !isSameMainDocument(uri.toString())) {
-                        openExternalPage(uri.toString());
+                    if (hasDeviceProfileSelection(uri)) {
+                        availableLocalApiBase = null;
+                        handler.removeCallbacks(localRouteRetryer);
+                    }
+                    String repaired = inheritMainNavigationToken(candidate);
+                    Log.d(
+                            NAVIGATION_LOG_TAG,
+                            "load gesture=" + hasUserGesture
+                                    + " target=" + target
+                                    + " sameMain=" + isSameMainDocument(candidate)
+                                    + " repaired=" + !repaired.equals(candidate)
+                                    + " token=" + navigationTokenFingerprint(candidate)
+                                    + " currentToken=" + navigationTokenFingerprint(view.getUrl())
+                                    + " url=" + navigationUrlForLog(candidate)
+                    );
+                    if (!repaired.equals(candidate)) {
+                        view.loadUrl(repaired);
+                        return true;
+                    }
+                    if (hasUserGesture && !isSameMainDocument(candidate)) {
+                        openExternalPage(candidate);
                         return true;
                     }
                     return false;
@@ -5278,7 +5418,18 @@ public class MainActivity extends Activity {
             @Override
             public void onNewWindow(AIMiniGeckoView view, String uri) {
                 Uri target = Uri.parse(uri == null ? "" : uri);
-                if (isHttpScheme(target.getScheme())) openExternalPage(uri);
+                if (!isHttpScheme(target.getScheme())) return;
+                if (isSameMainDocument(uri)) {
+                    String repaired = inheritMainNavigationToken(uri);
+                    Log.d(
+                            NAVIGATION_LOG_TAG,
+                            "new-window kept-main repaired=" + !repaired.equals(uri)
+                                    + " url=" + navigationUrlForLog(uri)
+                    );
+                    view.loadUrl(repaired);
+                    return;
+                }
+                openExternalPage(uri);
             }
 
             @Override
@@ -5286,8 +5437,18 @@ public class MainActivity extends Activity {
                 if (url != null
                         && (url.startsWith("http://") || url.startsWith("https://"))
                         && !urlInput.hasFocus()) {
-                    urlInput.setText(url);
-                    preferences.edit().putString(KEY_LAST_URL, url).apply();
+                    if (hasDeviceProfileSelection(Uri.parse(url))) {
+                        availableLocalApiBase = null;
+                        handler.removeCallbacks(localRouteRetryer);
+                    }
+                    String persistedUrl = inheritMainNavigationToken(url);
+                    Log.d(
+                            NAVIGATION_LOG_TAG,
+                            "location repaired=" + !persistedUrl.equals(url)
+                                    + " url=" + navigationUrlForLog(url)
+                    );
+                    urlInput.setText(persistedUrl);
+                    preferences.edit().putString(KEY_LAST_URL, persistedUrl).apply();
                 }
             }
 
@@ -5301,9 +5462,12 @@ public class MainActivity extends Activity {
                 pendingConnectionUrl = null;
                 injectMobileFixes();
                 adaptPlainTextPageForMobile();
-                if (availableLocalApiBase != null && !availableLocalApiBase.isEmpty()) {
+                boolean nativeRouteAllowed = !hasDeviceProfileSelection(Uri.parse(url == null ? "" : url));
+                if (nativeRouteAllowed
+                        && availableLocalApiBase != null
+                        && !availableLocalApiBase.isEmpty()) {
                     applyLocalRouteToPage(availableLocalApiBase, 0);
-                } else {
+                } else if (nativeRouteAllowed) {
                     scheduleLocalRouteCheck(350);
                 }
                 applyBrowserViewport(view, mainDesktopMode);
