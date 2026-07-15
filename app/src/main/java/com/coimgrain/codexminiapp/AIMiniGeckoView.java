@@ -492,11 +492,6 @@ final class AIMiniGeckoView extends GeckoView {
                 }
 
                 @Override
-                public void onFirstContentfulPaint(GeckoSession session) {
-                    post(AIMiniGeckoView.this::hideCompositorCoverAfterStableFrame);
-                }
-
-                @Override
                 public void onPaintStatusReset(GeckoSession session) {
                     post(() -> showCompositorCover(1800L));
                 }

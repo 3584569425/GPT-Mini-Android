@@ -193,8 +193,10 @@ public class MainActivity extends Activity {
     private String pendingConnectionUrl;
     private boolean waitingForMainPageReveal;
     private ImageView mainNavigationCover;
+    private View browserTransitionCover;
     private Bitmap mainNavigationSnapshot;
     private long mainNavigationTransitionGeneration;
+    private long browserTransitionGeneration;
     private boolean mainNavigationCaptureRunning;
     private String pendingMainNavigationUrl;
     private volatile String availableLocalApiBase;
@@ -939,7 +941,10 @@ public class MainActivity extends Activity {
         miniMenu.addView(miniMenuButton(R.string.refresh_page, view -> {
             hideMiniMenu();
             AIMiniGeckoView activeWebView = activeWebView();
-            if (activeWebView != null) activeWebView.reload();
+            if (activeWebView != null) {
+                showBrowserTransitionCover(2400L);
+                activeWebView.reload();
+            }
         }));
         miniMenu.addView(miniMenuButton(R.string.interface_settings, view -> toggleFloatSettings()));
         buildFloatSettingsPanel();
@@ -1502,7 +1507,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.25";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.25.1";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1525,6 +1530,7 @@ public class MainActivity extends Activity {
 
         showApp();
         hideDownloadsPanel();
+        showBrowserTransitionCover(2400L);
         boolean creatingBrowser = externalWebView == null;
         if (externalWebView == null) {
             externalWebView = new AIMiniGeckoView(this, geckoEngine);
@@ -1540,7 +1546,7 @@ public class MainActivity extends Activity {
 
         if (creatingBrowser) externalDesktopMode = false;
         applyBrowserMode(externalWebView, externalDesktopMode, externalMobileUserAgent);
-        if (webView != null) webView.setBrowserActive(false);
+        if (webView != null) webView.prepareForBackground(false);
         externalWebView.setBrowserActive(true);
         externalBrowserContainer.setVisibility(View.VISIBLE);
         updateExternalBrowserMenu();
@@ -1875,6 +1881,78 @@ public class MainActivity extends Activity {
         mainNavigationCover.setImageDrawable(null);
     }
 
+    private void showBrowserTransitionCover(long fallbackDelayMs) {
+        if (browserFrame == null) return;
+        long generation = ++browserTransitionGeneration;
+        if (browserTransitionCover == null) {
+            browserTransitionCover = new View(this);
+            browserTransitionCover.setBackgroundColor(WEB_CONTENT_BACKGROUND_COLOR);
+            browserTransitionCover.setClickable(true);
+            browserTransitionCover.setFocusable(false);
+        } else if (browserTransitionCover.getParent() instanceof ViewGroup
+                && browserTransitionCover.getParent() != browserFrame) {
+            ((ViewGroup) browserTransitionCover.getParent()).removeView(browserTransitionCover);
+        }
+        if (browserTransitionCover.getParent() != browserFrame) {
+            browserFrame.addView(browserTransitionCover, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+            ));
+        }
+        browserTransitionCover.animate().cancel();
+        browserTransitionCover.setAlpha(1f);
+        browserTransitionCover.setVisibility(View.VISIBLE);
+        browserTransitionCover.bringToFront();
+        if (fallbackDelayMs > 0L) {
+            handler.postDelayed(
+                    () -> hideBrowserTransitionCover(generation),
+                    fallbackDelayMs
+            );
+        }
+    }
+
+    private void scheduleBrowserTransitionReveal(
+            AIMiniGeckoView target,
+            boolean success
+    ) {
+        scheduleBrowserTransitionReveal(target, success ? 180L : 80L);
+    }
+
+    private void scheduleBrowserTransitionReveal(
+            AIMiniGeckoView target,
+            long delayMs
+    ) {
+        if (browserTransitionCover == null
+                || browserTransitionCover.getVisibility() != View.VISIBLE
+                || target == null
+                || target != activeWebView()) {
+            return;
+        }
+        long generation = browserTransitionGeneration;
+        handler.postDelayed(() -> {
+            if (generation != browserTransitionGeneration
+                    || browserTransitionCover == null
+                    || browserTransitionCover.getVisibility() != View.VISIBLE) {
+                return;
+            }
+            browserTransitionCover.postOnAnimation(
+                    () -> browserTransitionCover.postOnAnimation(
+                            () -> hideBrowserTransitionCover(generation)
+                    )
+            );
+        }, Math.max(0L, delayMs));
+    }
+
+    private void hideBrowserTransitionCover(long generation) {
+        if (generation != browserTransitionGeneration
+                || browserTransitionCover == null) {
+            return;
+        }
+        browserTransitionCover.animate().cancel();
+        browserTransitionCover.setVisibility(View.GONE);
+        browserTransitionCover.setAlpha(1f);
+    }
+
     private boolean sameVisibleNavigation(String firstUrl, String secondUrl) {
         String first = firstUrl == null ? "" : firstUrl.trim();
         String second = secondUrl == null ? "" : secondUrl.trim();
@@ -1900,7 +1978,7 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.25";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.25.1";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -1976,6 +2054,11 @@ public class MainActivity extends Activity {
     }
 
     private void closeExternalPage() {
+        boolean wasVisible = externalWebView != null
+                && externalBrowserContainer != null
+                && externalBrowserContainer.getVisibility() == View.VISIBLE;
+        if (wasVisible) showBrowserTransitionCover(900L);
+        if (webView != null) webView.prepareForForeground();
         if (externalBrowserContainer != null) externalBrowserContainer.setVisibility(View.GONE);
         if (externalWebView != null) {
             try {
@@ -1988,10 +2071,10 @@ public class MainActivity extends Activity {
             }
             externalWebView = null;
         }
-        if (webView != null) webView.setBrowserActive(true);
         externalMobileUserAgent = null;
         externalDesktopMode = false;
         updateExternalBrowserMenu();
+        if (wasVisible) scheduleBrowserTransitionReveal(webView, 140L);
     }
 
     private boolean isHttpScheme(String scheme) {
@@ -3748,8 +3831,8 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.25'){return;}"
-                + "window.__AIMiniFixVersion='1.25';"
+                + "if(window.__AIMiniFixVersion==='1.25.1'){return;}"
+                + "window.__AIMiniFixVersion='1.25.1';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
@@ -3762,12 +3845,18 @@ public class MainActivity extends Activity {
                 + "var style=document.createElement('style');"
                 + "style.textContent=" + JSONObject.quote(androidWebViewCss()) + ";"
                 + "document.head.appendChild(style);"
+                + "if(!window.__AIMiniKeyboardHooksVersion&&!window.__AIMiniKeyboardFallbackInstalled){"
+                + "window.__AIMiniKeyboardFallbackInstalled=true;"
                 + "var editable=function(el){return !!(el&&el.closest&&el.closest('textarea,input:not([type=button]):not([type=submit]):not([type=file]),[contenteditable=true]'));};"
-                + "var lastEditableTouchAt=0;"
-                + "var show=function(e){if(editable(e.target)&&window.CodexMiniNative){lastEditableTouchAt=Date.now();setTimeout(function(){CodexMiniNative.showKeyboard();},40);}};"
+                + "var lastEditableTouchAt=0,suppressFocusUntil=0;"
+                + "var intent=function(e){var now=Date.now();if(editable(e.target)){lastEditableTouchAt=now;suppressFocusUntil=0;}else{suppressFocusUntil=now+900;}};"
+                + "var show=function(e){if(editable(e.target)&&window.CodexMiniNative){lastEditableTouchAt=Date.now();suppressFocusUntil=0;setTimeout(function(){CodexMiniNative.showKeyboard();},40);}};"
+                + "document.addEventListener('pointerdown',intent,true);"
+                + "document.addEventListener('touchstart',intent,true);"
                 + "document.addEventListener('touchend',show,true);"
                 + "document.addEventListener('click',show,true);"
-                + "document.addEventListener('focusin',function(e){if(editable(e.target)&&Date.now()-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(function(){CodexMiniNative.showKeyboard();},40);}},true);"
+                + "document.addEventListener('focusin',function(e){if(!editable(e.target)){return;}var now=Date.now();if(now-lastEditableTouchAt>=900&&now<suppressFocusUntil){setTimeout(function(){try{e.target.blur();if(CodexMiniNative.hideKeyboard){CodexMiniNative.hideKeyboard();}}catch(ignore){}},0);return;}if(now-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(function(){CodexMiniNative.showKeyboard();},40);}},true);"
+                + "}"
                 + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var id=String(data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').trim():'当前会话';var endpoint='';try{endpoint=new URL(String(statusUrl||''),location.href).href;}catch(ignore){}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
                 + "var oldFetch=window.fetch;if(oldFetch&&!window.__AIMiniFetchHooked){window.__AIMiniFetchHooked=true;window.__AIMiniStatusPollers=window.__AIMiniStatusPollers||{};window.__AIMiniPollStatuses=function(){try{Object.keys(window.__AIMiniStatusPollers||{}).forEach(function(key){try{window.__AIMiniStatusPollers[key]();}catch(e){}});}catch(e){}};window.fetch=function(){var ctx=this,args=arguments;var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){try{var savedInput=args[0] instanceof Request?args[0].clone():args[0];var savedInit=args.length>1?args[1]:undefined;window.__AIMiniStatusPollers[u]=function(){try{var input=savedInput instanceof Request?savedInput.clone():savedInput;return oldFetch.call(window,input,savedInit).then(function(pollRes){try{pollRes.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}catch(e){}return pollRes;}).catch(function(){});}catch(e){return Promise.resolve();}};}catch(e){}}return oldFetch.apply(ctx,args).then(function(res){try{if(u.indexOf('/codex/status')>=0){res.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}}catch(e){}return res;});};}"
                 + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));setTimeout(function(){window.dispatchEvent(new Event('resize'));},120);}catch(e){}};}"
@@ -5603,6 +5692,9 @@ public class MainActivity extends Activity {
             case "showKeyboard":
                 handler.post(() -> showKeyboardForBrowser(source));
                 break;
+            case "hideKeyboard":
+                handler.post(() -> hideSoftKeyboard(source));
+                break;
             case "saveDataUrlDownload":
                 handler.post(() -> saveDataUrlDownload(
                         message.optString("fileName", "download"),
@@ -5757,6 +5849,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(AIMiniGeckoView view, String url, boolean success) {
                 scheduleMainNavigationReveal(view, success);
+                scheduleBrowserTransitionReveal(view, success);
                 if (!success) {
                     pendingConnectionUrl = null;
                     waitingForMainPageReveal = false;
@@ -5830,6 +5923,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(AIMiniGeckoView view, String url, boolean success) {
+                scheduleBrowserTransitionReveal(view, success);
                 if (success) applyBrowserViewport(view, externalDesktopMode);
             }
 
