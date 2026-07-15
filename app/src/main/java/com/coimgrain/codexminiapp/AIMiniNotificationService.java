@@ -15,6 +15,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.service.notification.StatusBarNotification;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -25,9 +26,11 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -40,12 +43,20 @@ public final class AIMiniNotificationService extends Service {
 
     private static final long POLL_INTERVAL_MS = 2500L;
     private static final long IDLE_DISCOVERY_INTERVAL_MS = 5000L;
+    private static final long ACTIVE_THREAD_DISCOVERY_INTERVAL_MS = 5000L;
     private static final long EARLY_TERMINAL_GRACE_MS = 8000L;
     private static final long WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1000L;
+    private static final String KEY_THREAD_RUNTIME_SNAPSHOTS =
+            "notification_thread_runtime_snapshots_v1";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private final Set<String> endpointsObservedRunning = new HashSet<>();
+    private final Map<String, String> threadTitleCache = new HashMap<>();
+    private final Map<String, JSONObject> threadRuntimeSnapshots = new HashMap<>();
+    private long threadTitleCacheAt;
+    private long activeThreadDiscoveryAt;
+    private boolean threadRuntimeBaselineReady;
     private volatile boolean pollRunning;
     private SharedPreferences preferences;
     private PowerManager.WakeLock taskWakeLock;
@@ -61,6 +72,7 @@ public final class AIMiniNotificationService extends Service {
     public void onCreate() {
         super.onCreate();
         preferences = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
+        restoreThreadRuntimeSnapshots();
         ensureChannels();
         PowerManager powerManager = getSystemService(PowerManager.class);
         if (powerManager != null) {
@@ -138,6 +150,7 @@ public final class AIMiniNotificationService extends Service {
         ioExecutor.execute(() -> {
             List<TerminalResult> terminals = new ArrayList<>();
             try {
+                terminals.addAll(discoverActiveThreads());
                 CurrentStatusResult currentStatus = fetchCurrentStatus();
                 if (currentStatus != null && "running".equals(currentStatus.state)) {
                     upsertDiscoveredTask(currentStatus.toMonitoredTask());
@@ -177,10 +190,12 @@ public final class AIMiniNotificationService extends Service {
                         boolean observedRunning = endpointsObservedRunning.contains(task.endpoint)
                                 || endpointsObservedRunning.contains(effectiveEndpoint);
                         if (!observedRunning && now - task.startedAt < EARLY_TERMINAL_GRACE_MS) {
+                            Log.d(TAG, "terminal deferred until running is observed thread=" + task.threadId);
                             continue;
                         }
                         String threadId = status.optString("threadId", task.threadId);
-                        terminals.add(new TerminalResult(task, threadId, state));
+                        String threadName = resolveThreadName(threadId, task.name, status);
+                        terminals.add(new TerminalResult(task, threadId, threadName, state, status));
                     } catch (Exception error) {
                         Log.w(TAG, "task poll temporarily failed", error);
                         // Keep the monitor registered. Temporary local-route or network
@@ -204,11 +219,7 @@ public final class AIMiniNotificationService extends Service {
         pollRunning = false;
         for (TerminalResult terminal : terminals) {
             endpointsObservedRunning.remove(terminal.task.endpoint);
-            showTerminalNotification(
-                    terminal.threadId,
-                    terminal.task.name,
-                    terminal.state
-            );
+            showTerminalNotification(terminal);
         }
         List<MonitoredTask> remaining = readTasks();
         refreshPersistentNotification(remaining.size());
@@ -242,6 +253,201 @@ public final class AIMiniNotificationService extends Service {
         }
     }
 
+    private List<TerminalResult> discoverActiveThreads() {
+        List<TerminalResult> missedTerminals = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        if (now - activeThreadDiscoveryAt < ACTIVE_THREAD_DISCOVERY_INTERVAL_MS) {
+            return missedTerminals;
+        }
+        activeThreadDiscoveryAt = now;
+        ConnectionInfo connection = connectionInfo();
+        if (connection == null) return missedTerminals;
+        try {
+            JSONObject response = new JSONObject(httpGet(connection.threadsUrl(), 9000));
+            if (!response.optBoolean("ok", false)) return missedTerminals;
+            JSONArray threads = response.optJSONArray("threads");
+            if (threads == null) return missedTerminals;
+            updateThreadTitleCache(threads);
+            boolean baselineWasReady = threadRuntimeBaselineReady;
+            Map<String, JSONObject> nextSnapshots = new HashMap<>(threadRuntimeSnapshots);
+            Set<String> registeredThreadIds = monitoredThreadIds(readTasks());
+            int discoveredCount = 0;
+            for (int index = 0; index < threads.length(); index++) {
+                JSONObject item = threads.optJSONObject(index);
+                if (item == null) continue;
+                String threadId = item.optString("id", "").trim();
+                if (!usableThreadId(threadId)) continue;
+                String runtimeStatus = item.optString("runtimeStatus", "").trim();
+                boolean runtimeActive = item.optBoolean("runtimeActive", false);
+                JSONObject runtime = new JSONObject();
+                runtime.put("status", runtimeStatus);
+                runtime.put("active", runtimeActive);
+                String state = taskStateFromJson(runtime);
+                JSONObject currentSnapshot = runtimeSnapshot(item, state);
+                JSONObject previousSnapshot = threadRuntimeSnapshots.get(threadId);
+                String name = item.optString("name", "").trim();
+                if (name.isEmpty()) name = item.optString("title", "").trim();
+                long startedAt = TaskNotificationStyle.timestampMillis(
+                        item.opt("runtimeStartedAt")
+                );
+                if (startedAt <= 0L) startedAt = now;
+                String endpoint = connection.statusForThread(threadId);
+                if ("running".equals(state)) {
+                    upsertDiscoveredTask(new MonitoredTask(
+                            threadId,
+                            threadId,
+                            name,
+                            endpoint,
+                            startedAt
+                    ));
+                    registeredThreadIds.add(threadId);
+                    discoveredCount += 1;
+                } else if (baselineWasReady
+                        && ("complete".equals(state) || "error".equals(state))
+                        && isNewRuntimeTerminal(previousSnapshot, currentSnapshot)) {
+                    boolean alreadyTracked = registeredThreadIds.contains(threadId);
+                    boolean alreadyPosted = hasTerminalNotificationSince(threadId, startedAt);
+                    if (!alreadyTracked && !alreadyPosted) {
+                        try {
+                            JSONObject status = new JSONObject(httpGet(endpoint, 6000));
+                            String confirmedState = taskStateFromJson(status);
+                            if (!"complete".equals(confirmedState)
+                                    && !"error".equals(confirmedState)) {
+                                if (previousSnapshot != null) {
+                                    nextSnapshots.put(threadId, previousSnapshot);
+                                }
+                                continue;
+                            }
+                            missedTerminals.add(new TerminalResult(
+                                    new MonitoredTask(
+                                            threadId,
+                                            threadId,
+                                            name,
+                                            endpoint,
+                                            startedAt
+                                    ),
+                                    threadId,
+                                    name,
+                                    confirmedState,
+                                    status
+                            ));
+                            Log.i(
+                                    TAG,
+                                    "short task terminal recovered thread=" + threadId
+                            );
+                        } catch (Exception error) {
+                            if (previousSnapshot != null) {
+                                nextSnapshots.put(threadId, previousSnapshot);
+                            }
+                            Log.w(TAG, "short task terminal recovery temporarily failed", error);
+                            continue;
+                        }
+                    }
+                }
+                nextSnapshots.put(threadId, currentSnapshot);
+            }
+            threadRuntimeSnapshots.clear();
+            threadRuntimeSnapshots.putAll(nextSnapshots);
+            threadRuntimeBaselineReady = true;
+            persistThreadRuntimeSnapshots();
+            Log.d(TAG, "active thread discovery count=" + discoveredCount);
+        } catch (Exception error) {
+            Log.w(TAG, "active thread discovery temporarily failed", error);
+        }
+        return missedTerminals;
+    }
+
+    private Set<String> monitoredThreadIds(List<MonitoredTask> tasks) {
+        Set<String> ids = new HashSet<>();
+        if (tasks == null) return ids;
+        for (MonitoredTask task : tasks) {
+            if (task == null) continue;
+            if (usableThreadId(task.threadId)) ids.add(task.threadId.trim());
+            if (usableThreadId(task.key)) ids.add(task.key.trim());
+        }
+        return ids;
+    }
+
+    private JSONObject runtimeSnapshot(JSONObject item, String state) throws Exception {
+        String turnId = item.optString("runtimeTurnId", "").trim();
+        String startedAt = item.optString("runtimeStartedAt", "").trim();
+        String updatedAt = item.optString("runtimeUpdatedAt", "").trim();
+        String marker = turnId;
+        if (marker.isEmpty()) marker = startedAt;
+        if (marker.isEmpty()) marker = updatedAt;
+        JSONObject snapshot = new JSONObject();
+        snapshot.put("id", item.optString("id", "").trim());
+        snapshot.put("marker", marker);
+        snapshot.put("state", state == null ? "" : state);
+        snapshot.put("startedAt", startedAt);
+        snapshot.put("completedAt", item.optString("runtimeCompletedAt", "").trim());
+        snapshot.put("updatedAt", updatedAt);
+        return snapshot;
+    }
+
+    private boolean isNewRuntimeTerminal(JSONObject previous, JSONObject current) {
+        if (previous == null || current == null) return false;
+        String previousMarker = previous.optString("marker", "").trim();
+        String currentMarker = current.optString("marker", "").trim();
+        if (!currentMarker.isEmpty() && !currentMarker.equals(previousMarker)) return true;
+        String previousState = previous.optString("state", "").trim();
+        return "running".equals(previousState)
+                && (currentMarker.isEmpty() || currentMarker.equals(previousMarker));
+    }
+
+    private void restoreThreadRuntimeSnapshots() {
+        threadRuntimeSnapshots.clear();
+        threadRuntimeBaselineReady = preferences.contains(KEY_THREAD_RUNTIME_SNAPSHOTS);
+        String raw = preferences.getString(KEY_THREAD_RUNTIME_SNAPSHOTS, "[]");
+        try {
+            JSONArray array = new JSONArray(raw == null ? "[]" : raw);
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject snapshot = array.optJSONObject(index);
+                if (snapshot == null) continue;
+                String id = snapshot.optString("id", "").trim();
+                if (!id.isEmpty()) threadRuntimeSnapshots.put(id, snapshot);
+            }
+        } catch (Exception error) {
+            threadRuntimeSnapshots.clear();
+            threadRuntimeBaselineReady = false;
+        }
+    }
+
+    private void persistThreadRuntimeSnapshots() {
+        JSONArray array = new JSONArray();
+        int count = 0;
+        for (JSONObject snapshot : threadRuntimeSnapshots.values()) {
+            if (snapshot == null || count >= 240) continue;
+            array.put(snapshot);
+            count += 1;
+        }
+        preferences.edit()
+                .putString(KEY_THREAD_RUNTIME_SNAPSHOTS, array.toString())
+                .commit();
+    }
+
+    private boolean hasTerminalNotificationSince(String threadId, long startedAt) {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return false;
+        int expectedId = terminalNotificationId(threadId);
+        try {
+            for (StatusBarNotification notification : manager.getActiveNotifications()) {
+                if (notification == null || notification.getId() != expectedId) continue;
+                if (startedAt <= 0L || notification.getPostTime() + 1500L >= startedAt) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private int terminalNotificationId(String threadId) {
+        String key = threadId == null ? "" : threadId.trim();
+        if (key.isEmpty()) key = getString(R.string.task_complete_fallback);
+        return 10000 + Math.abs(key.hashCode() % 20000);
+    }
+
     private void upsertDiscoveredTask(MonitoredTask discovered) {
         if (discovered == null) return;
         List<MonitoredTask> existingTasks = readTasks();
@@ -272,9 +478,7 @@ public final class AIMiniNotificationService extends Service {
                 changed = true;
                 continue;
             }
-            String name = existing.name == null || existing.name.trim().isEmpty()
-                    ? discovered.name
-                    : existing.name;
+            String name = preferredThreadName(existing.name, discovered.name);
             long startedAt = Math.min(existing.startedAt, discovered.startedAt);
             MonitoredTask replacement = new MonitoredTask(
                     discovered.key,
@@ -319,6 +523,72 @@ public final class AIMiniNotificationService extends Service {
                 && (task.key.startsWith("pending-")
                 || "current".equals(task.key)
                 || !usableThreadId(task.threadId));
+    }
+
+    private boolean isPlaceholderThreadName(String name) {
+        String value = name == null ? "" : name.trim();
+        return value.isEmpty()
+                || "当前会话".equals(value)
+                || "选择线程".equals(value);
+    }
+
+    private String preferredThreadName(String existing, String candidate) {
+        String current = existing == null ? "" : existing.trim();
+        String next = candidate == null ? "" : candidate.trim();
+        if (isPlaceholderThreadName(current) && !isPlaceholderThreadName(next)) return next;
+        if (!current.isEmpty()) return current;
+        return next;
+    }
+
+    private String resolveThreadName(String threadId, String fallback, JSONObject status) {
+        String statusName = status == null ? "" : status.optString("threadName", "").trim();
+        String preferred = preferredThreadName(fallback, statusName);
+        if (!isPlaceholderThreadName(preferred) || !usableThreadId(threadId)) return preferred;
+
+        String id = threadId.trim();
+        String cached = threadTitleCache.get(id);
+        if (!isPlaceholderThreadName(cached)) return cached;
+
+        long now = System.currentTimeMillis();
+        boolean missingFromCache = !threadTitleCache.containsKey(id);
+        if (threadTitleCache.isEmpty()
+                || now - threadTitleCacheAt > 30000L
+                || (missingFromCache && now - threadTitleCacheAt > 5000L)) {
+            refreshThreadTitleCache();
+            cached = threadTitleCache.get(id);
+            if (!isPlaceholderThreadName(cached)) return cached;
+        }
+        return preferred;
+    }
+
+    private void refreshThreadTitleCache() {
+        ConnectionInfo connection = connectionInfo();
+        if (connection == null) return;
+        try {
+            JSONObject response = new JSONObject(httpGet(connection.threadsUrl(), 9000));
+            if (!response.optBoolean("ok", false)) return;
+            JSONArray threads = response.optJSONArray("threads");
+            if (threads == null) return;
+            updateThreadTitleCache(threads);
+        } catch (Exception error) {
+            Log.w(TAG, "thread title lookup temporarily failed", error);
+        }
+    }
+
+    private void updateThreadTitleCache(JSONArray threads) {
+        if (threads == null) return;
+        Map<String, String> refreshed = new HashMap<>();
+        for (int index = 0; index < threads.length(); index++) {
+            JSONObject item = threads.optJSONObject(index);
+            if (item == null) continue;
+            String id = item.optString("id", "").trim();
+            String name = item.optString("name", "").trim();
+            if (name.isEmpty()) name = item.optString("title", "").trim();
+            if (!id.isEmpty() && !isPlaceholderThreadName(name)) refreshed.put(id, name);
+        }
+        threadTitleCache.clear();
+        threadTitleCache.putAll(refreshed);
+        threadTitleCacheAt = System.currentTimeMillis();
     }
 
     private void writeTasks(List<MonitoredTask> tasks) {
@@ -489,7 +759,7 @@ public final class AIMiniNotificationService extends Service {
         return builder.build();
     }
 
-    private void showTerminalNotification(String threadId, String taskName, String state) {
+    private void showTerminalNotification(TerminalResult terminal) {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -499,45 +769,34 @@ public final class AIMiniNotificationService extends Service {
         if (manager == null) return;
         ensureChannels();
 
-        boolean error = "error".equals(state);
-        String name = taskName == null || taskName.trim().isEmpty()
+        boolean error = "error".equals(terminal.state);
+        String name = terminal.threadName == null || terminal.threadName.trim().isEmpty()
                 ? getString(R.string.task_complete_fallback)
-                : taskName.trim();
-        String key = threadId == null || threadId.trim().isEmpty()
-                ? name
-                : threadId.trim();
-        int notificationId = 10000 + Math.abs(key.hashCode() % 20000);
-
-        Intent launchIntent = new Intent(this, MainActivity.class);
-        launchIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pendingIntent = PendingIntent.getActivity(
+                : terminal.threadName.trim();
+        int notificationId = terminalNotificationId(terminal.threadId);
+        String summary = TaskNotificationStyle.summaryFromStatus(terminal.status, error);
+        long durationMs = TaskNotificationStyle.durationMsFromStatus(
+                terminal.status,
+                terminal.task.startedAt
+        );
+        Notification notification = TaskNotificationStyle.buildTerminalNotification(
                 this,
                 notificationId,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                MainActivity.NOTIFICATION_ALERT_CHANNEL_ID,
+                terminal.threadId,
+                name,
+                error,
+                summary,
+                durationMs
         );
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, MainActivity.NOTIFICATION_ALERT_CHANNEL_ID)
-                : new Notification.Builder(this);
-        builder.setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(getString(
-                        error ? R.string.task_error_title : R.string.task_complete_title
-                ))
-                .setContentText(name)
-                .setStyle(new Notification.BigTextStyle().bigText(name))
-                .setContentIntent(pendingIntent)
-                .setOngoing(false)
-                .setAutoCancel(true)
-                .setOnlyAlertOnce(false)
-                .setShowWhen(true)
-                .setCategory(Notification.CATEGORY_MESSAGE)
-                .setVisibility(Notification.VISIBILITY_PUBLIC);
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            builder.setPriority(Notification.PRIORITY_HIGH)
-                    .setDefaults(Notification.DEFAULT_ALL);
-        }
         manager.cancel(notificationId);
-        manager.notify(notificationId, builder.build());
+        manager.notify(notificationId, notification);
+        Log.i(
+                TAG,
+                "terminal notification posted thread=" + terminal.threadId
+                        + " state=" + terminal.state
+                        + " name=" + name
+        );
     }
 
     private void stopForegroundNotification() {
@@ -733,7 +992,11 @@ public final class AIMiniNotificationService extends Service {
             return new MonitoredTask(
                     threadId,
                     threadId,
-                    getString(R.string.task_complete_fallback),
+                    resolveThreadName(
+                            threadId,
+                            getString(R.string.task_complete_fallback),
+                            status
+                    ),
                     connection.statusForThread(threadId),
                     System.currentTimeMillis()
             );
@@ -771,17 +1034,37 @@ public final class AIMiniNotificationService extends Service {
                     .build()
                     .toString();
         }
+
+        String threadsUrl() {
+            return Uri.parse(base + "/codex/threads")
+                    .buildUpon()
+                    .appendQueryParameter("limit", "200")
+                    .appendQueryParameter("currentAccountOnly", "1")
+                    .appendQueryParameter("token", token)
+                    .build()
+                    .toString();
+        }
     }
 
     private static final class TerminalResult {
         final MonitoredTask task;
         final String threadId;
+        final String threadName;
         final String state;
+        final JSONObject status;
 
-        TerminalResult(MonitoredTask task, String threadId, String state) {
+        TerminalResult(
+                MonitoredTask task,
+                String threadId,
+                String threadName,
+                String state,
+                JSONObject status
+        ) {
             this.task = task;
             this.threadId = threadId;
+            this.threadName = threadName;
             this.state = state;
+            this.status = status;
         }
     }
 }

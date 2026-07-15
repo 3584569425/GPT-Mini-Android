@@ -48,6 +48,10 @@
             android:theme="@style/ScanTheme"
             android:windowSoftInputMode="stateAlwaysHidden" />
 
+        <receiver
+            android:name=".TaskNotificationActionReceiver"
+            android:exported="false" />
+
         <service
             android:name=".AIMiniNotificationService"
             android:exported="false"

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "GPTMini Native Bridge",
-  "version": "1.15.0",
+  "version": "1.20.1",
   "applications": {
     "gecko": {
       "id": "ai-mini-bridge@app"
