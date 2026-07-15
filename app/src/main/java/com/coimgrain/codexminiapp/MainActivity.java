@@ -1502,7 +1502,7 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.19";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.25";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1900,7 +1900,7 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.19";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.25";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -3748,8 +3748,8 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.19'){return;}"
-                + "window.__AIMiniFixVersion='1.19';"
+                + "if(window.__AIMiniFixVersion==='1.25'){return;}"
+                + "window.__AIMiniFixVersion='1.25';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"

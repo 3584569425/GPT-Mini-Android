@@ -15,8 +15,8 @@
 当前版本：
 
 - applicationId：`app.gptmini`
-- versionCode：`20`
-- versionName：`1.19`
+- versionCode：`21`
+- versionName：`1.25`
 - App 显示名称：`GPT Mini`
 
 当前定位：
@@ -280,7 +280,7 @@ App 不会直接把 WebView 地址栏改成局域网地址。
 - release v1/v2 签名通过。
 - zipalign 通过。
 - 包名：`app.gptmini`
-- 版本：`1.19`
+- 版本：`1.25`
 
 如果用户之前安装的是 debug 包，可能因为签名不同不能直接覆盖安装，需要先卸载 debug 版。
 
@@ -381,7 +381,7 @@ release 签名文件：
 - 新增悬浮窗“关闭当前网页”入口。
 - 新增 release 签名配置。
 - 生成 release 签名证书。
-- 打包 `GPT Mini v1.19 arm64-v8a release`。
+- 打包 `GPT Mini v1.25 arm64-v8a release`。
 - 下载界面新增分享按钮。
 - 下载文件名改为最多两行。
 - 下载完成状态和下载时间合并到一行显示。
