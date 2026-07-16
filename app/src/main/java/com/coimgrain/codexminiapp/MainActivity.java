@@ -250,6 +250,10 @@ public class MainActivity extends Activity {
     private final int[] rootLocationOnScreen = new int[2];
     private final Runnable conversationFontScaleApplier =
             () -> applyConversationFontScale(webView);
+    private final Runnable webTopInsetApplier = () -> {
+        applyWebTopSafeArea(webView);
+        if (externalWebView != null) applyWebTopSafeArea(externalWebView);
+    };
     private boolean miniDragging;
     private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
@@ -1378,6 +1382,8 @@ public class MainActivity extends Activity {
 
     private void requestInterfaceInsets() {
         updateTopInsetArea();
+        handler.removeCallbacks(webTopInsetApplier);
+        handler.postDelayed(webTopInsetApplier, 16L);
         if (appHost == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             appHost.requestApplyInsets();
@@ -1387,18 +1393,18 @@ public class MainActivity extends Activity {
     private void updateTopInsetArea() {
         if (topInsetArea != null) {
             ViewGroup.LayoutParams params = topInsetArea.getLayoutParams();
-            int height = dp(topInsetDp());
-            if (params != null && params.height != height) {
-                params.height = height;
+            if (params != null && params.height != 0) {
+                params.height = 0;
                 topInsetArea.setLayoutParams(params);
             }
-            topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
+            topInsetArea.setBackgroundColor(Color.TRANSPARENT);
+            topInsetArea.setVisibility(View.GONE);
         }
         boolean light = isFloatMenuLight();
         Window window = getWindow();
         // WebUI content must always render behind the status bar and cutout.
-        // topInsetArea is the only optional safe area, and a value of 0 means
-        // that no native view is allowed to cover the top of the page.
+        // The adjustable safe area now lives inside the WebUI itself, so no
+        // native black/white strip is allowed to consume layout space here.
         window.setStatusBarColor(Color.TRANSPARENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
@@ -1583,7 +1589,7 @@ public class MainActivity extends Activity {
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
         mainMobileUserAgent = GeckoSession.getDefaultUserAgent()
-                + " GPTMiniAndroidApp/1.25.3";
+                + " GPTMiniAndroidApp/1.25.4";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -2055,7 +2061,7 @@ public class MainActivity extends Activity {
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/"
-                + "1.25.3";
+                + "1.25.4";
     }
 
     private void applyConversationFontScale(AIMiniGeckoView target) {
@@ -2071,6 +2077,140 @@ public class MainActivity extends Activity {
                         + "}catch(e){}})();",
                 null
         );
+    }
+
+    private void applyWebTopSafeArea(AIMiniGeckoView target) {
+        if (target == null) return;
+        int inset = topInsetDp();
+        String script = "(function(){try{"
+                + "var inset=" + inset + ";"
+                + "var root=document.documentElement;"
+                + "if(!root){return false;}"
+                + "if(window.__AIMiniSetTopInset){"
+                + "window.__AIMiniSetTopInset(inset);return true;}"
+                + "root.classList.add('gpt-mini-edge-to-edge-top');"
+                + "root.style.setProperty('--gpt-mini-top-inset',inset+'px');"
+                + "var style=document.getElementById('gpt-mini-top-safe-style');"
+                + "if(!style){style=document.createElement('style');"
+                + "style.id='gpt-mini-top-safe-style';"
+                + "(document.head||root).appendChild(style);}"
+                + "style.textContent="
+                + JSONObject.quote(
+                        "html.gpt-mini-edge-to-edge-top body{"
+                                + "padding-top:calc(var(--gpt-mini-original-body-top,0px) "
+                                + "+ var(--gpt-mini-top-inset,0px))!important;"
+                                + "box-sizing:border-box!important;"
+                                + "min-height:100dvh!important;"
+                                + "background-clip:border-box!important;}"
+                                + "#gpt-mini-status-extension{"
+                                + "position:fixed!important;top:0!important;left:0!important;"
+                                + "right:0!important;height:var(--gpt-mini-top-inset,0px)!important;"
+                                + "margin:0!important;padding:0!important;border:0!important;"
+                                + "pointer-events:none!important;z-index:2147483000!important;"
+                                + "background-position:top left!important;"
+                                + "background-repeat:no-repeat!important;"
+                                + "background-size:100% auto!important;}"
+                                + ".gpt-mini-native-top-fixed{"
+                                + "top:calc(var(--gpt-mini-original-fixed-top,0px) "
+                                + "+ var(--gpt-mini-top-inset,0px))!important;}"
+                )
+                + ";"
+                + "function ensureBody(){"
+                + "var body=document.body;if(!body){return false;}"
+                + "if(!body.hasAttribute('data-gpt-mini-top-ready')){"
+                + "var edgeEnabled=root.classList.contains('gpt-mini-edge-to-edge-top');"
+                + "if(edgeEnabled){root.classList.remove('gpt-mini-edge-to-edge-top');}"
+                + "var original=getComputedStyle(body).paddingTop||'0px';"
+                + "if(edgeEnabled){root.classList.add('gpt-mini-edge-to-edge-top');}"
+                + "body.style.setProperty('--gpt-mini-original-body-top',original);"
+                + "body.setAttribute('data-gpt-mini-top-ready','1');}"
+                + "var extension=document.getElementById('gpt-mini-status-extension');"
+                + "if(!extension){extension=document.createElement('div');"
+                + "extension.id='gpt-mini-status-extension';"
+                + "extension.setAttribute('aria-hidden','true');"
+                + "body.appendChild(extension);}"
+                + "extension.style.display=inset>0?'block':'none';"
+                + "return true;"
+                + "}"
+                + "function visibleTopBar(){"
+                + "var body=document.body;if(!body){return null;}"
+                + "var title=document.getElementById('thread-name');"
+                + "var node=title,best=null;"
+                + "while(node&&node!==body){"
+                + "if(node.nodeType===1){var rect=node.getBoundingClientRect();"
+                + "if(rect.width>=innerWidth*.55&&rect.height>=28&&rect.height<=150"
+                + "&&rect.top<=inset+24){best=node;}}"
+                + "node=node.parentElement;}"
+                + "if(best){return best;}"
+                + "var selectors='header,[role=\"banner\"],.topbar,.top-bar,"
+                + ".app-header,.mobile-header,.toolbar';"
+                + "var candidates=document.querySelectorAll(selectors);"
+                + "for(var i=0;i<candidates.length;i++){"
+                + "var rect=candidates[i].getBoundingClientRect();"
+                + "if(rect.width>=innerWidth*.55&&rect.height>=28&&rect.height<=150"
+                + "&&rect.top<=inset+24){return candidates[i];}}"
+                + "return null;"
+                + "}"
+                + "function surfaceStyle(element){"
+                + "var body=document.body;"
+                + "var source=element||body||root;"
+                + "var computed=getComputedStyle(source);"
+                + "var transparent=(computed.backgroundColor==='rgba(0, 0, 0, 0)'"
+                + "||computed.backgroundColor==='transparent');"
+                + "if(transparent&&computed.backgroundImage==='none'&&body&&source!==body){"
+                + "computed=getComputedStyle(body);"
+                + "transparent=(computed.backgroundColor==='rgba(0, 0, 0, 0)'"
+                + "||computed.backgroundColor==='transparent');}"
+                + "if(transparent&&computed.backgroundImage==='none'){"
+                + "computed=getComputedStyle(root);}"
+                + "return computed;"
+                + "}"
+                + "function syncSurface(){"
+                + "if(!ensureBody()){return;}"
+                + "var extension=document.getElementById('gpt-mini-status-extension');"
+                + "if(!extension||inset<=0){return;}"
+                + "var bar=visibleTopBar();"
+                + "var computed=surfaceStyle(bar);"
+                + "var barComputed=bar?getComputedStyle(bar):null;"
+                + "extension.style.backgroundColor=computed.backgroundColor||'transparent';"
+                + "extension.style.backgroundImage=computed.backgroundImage||'none';"
+                + "extension.style.backdropFilter="
+                + "(barComputed&&barComputed.backdropFilter)||computed.backdropFilter||'none';"
+                + "extension.style.webkitBackdropFilter="
+                + "(barComputed&&(barComputed.webkitBackdropFilter"
+                + "||barComputed.backdropFilter))||computed.webkitBackdropFilter"
+                + "||computed.backdropFilter||'none';"
+                + "if(bar){"
+                + "var barStyle=getComputedStyle(bar);"
+                + "var rect=bar.getBoundingClientRect();"
+                + "var positioned=barStyle.position==='fixed'||barStyle.position==='sticky';"
+                + "if(positioned&&rect.top<Math.max(2,inset*.55)){"
+                + "if(!bar.classList.contains('gpt-mini-native-top-fixed')){"
+                + "bar.style.setProperty('--gpt-mini-original-fixed-top',"
+                + "(barStyle.top==='auto'?'0px':barStyle.top));"
+                + "bar.classList.add('gpt-mini-native-top-fixed');}"
+                + "}"
+                + "}"
+                + "}"
+                + "window.__AIMiniSetTopInset=function(next){"
+                + "inset=Math.max(0,Math.min(64,Number(next)||0));"
+                + "root.style.setProperty('--gpt-mini-top-inset',inset+'px');"
+                + "syncSurface();"
+                + "requestAnimationFrame(syncSurface);"
+                + "};"
+                + "if(document.body){syncSurface();}"
+                + "else{document.addEventListener('DOMContentLoaded',syncSurface,{once:true});}"
+                + "requestAnimationFrame(syncSurface);"
+                + "[80,240,700,1600].forEach(function(delay){setTimeout(syncSurface,delay);});"
+                + "if(!window.__AIMiniTopSafeEvents){"
+                + "window.__AIMiniTopSafeEvents=true;"
+                + "addEventListener('resize',function(){requestAnimationFrame(syncSurface);});"
+                + "addEventListener('hashchange',function(){setTimeout(syncSurface,60);});"
+                + "addEventListener('popstate',function(){setTimeout(syncSurface,60);});"
+                + "}"
+                + "return true;"
+                + "}catch(e){return false;}})();";
+        target.evaluateJavascript(script, null);
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -5931,12 +6071,6 @@ public class MainActivity extends Activity {
         return drawable;
     }
 
-    private GradientDrawable topInsetBackground(boolean light) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(light ? Color.WHITE : Color.BLACK);
-        return drawable;
-    }
-
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -5961,6 +6095,7 @@ public class MainActivity extends Activity {
         switch (type) {
             case "bridgeReady":
                 handler.post(() -> applyConversationFontScale(source));
+                handler.post(() -> applyWebTopSafeArea(source));
                 handler.postDelayed(
                         () -> requestImmediateTaskStatusRefresh(source),
                         350
@@ -6136,6 +6271,7 @@ public class MainActivity extends Activity {
                 injectMobileFixes();
                 adaptPlainTextPageForMobile();
                 applyConversationFontScale(view);
+                applyWebTopSafeArea(view);
                 boolean nativeRouteAllowed = !hasDeviceProfileSelection(Uri.parse(url == null ? "" : url));
                 if (nativeRouteAllowed
                         && availableLocalApiBase != null
@@ -6202,7 +6338,10 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(AIMiniGeckoView view, String url, boolean success) {
                 scheduleBrowserTransitionReveal(view, success);
-                if (success) applyBrowserViewport(view, externalDesktopMode);
+                if (success) {
+                    applyWebTopSafeArea(view);
+                    applyBrowserViewport(view, externalDesktopMode);
+                }
             }
 
             @Override
