@@ -1585,7 +1585,7 @@ public class MainActivity extends Activity {
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
         mainMobileUserAgent = GeckoSession.getDefaultUserAgent()
-                + " GPTMiniAndroidApp/1.25.7";
+                + " GPTMiniAndroidApp/1.25.8";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -2057,7 +2057,7 @@ public class MainActivity extends Activity {
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/"
-                + "1.25.7";
+                + "1.25.8";
     }
 
     private void applyConversationFontScale(AIMiniGeckoView target) {
@@ -4067,15 +4067,17 @@ public class MainActivity extends Activity {
         String script = "(function(){"
                 + "try{"
                 + "var detectLegacyComposer=function(){"
-                + "var legacy=!!document.querySelector("
-                + "'footer.composer-shell form#composer textarea#text,"
-                + "form#composer>textarea#text');"
+                + "var form=document.querySelector("
+                + "'footer.composer-shell form#composer.composer');"
+                + "var legacy=!!(form&&form.querySelector('textarea#text')"
+                + "&&!form.classList.contains('codex-liquid-glass-original')"
+                + "&&!form.classList.contains('liquid-glass-react-surface'));"
                 + "document.documentElement.classList.toggle("
                 + "'ai-mini-legacy-composer',legacy);"
                 + "return legacy;};"
                 + "var legacyComposer=detectLegacyComposer();"
-                + "if(window.__AIMiniFixVersion==='1.25.7'){return legacyComposer;}"
-                + "window.__AIMiniFixVersion='1.25.7';"
+                + "if(window.__AIMiniFixVersion==='1.25.8'){return legacyComposer;}"
+                + "window.__AIMiniFixVersion='1.25.8';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
@@ -4089,9 +4091,12 @@ public class MainActivity extends Activity {
                 + "'--keyboard-shift',cssValue,'important');"
                 + "document.documentElement.style.setProperty("
                 + "'--keyboard-inset',cssValue,'important');"
+                + "var isOpen=cssPx>0;"
+                + "var changed=window.__AIMiniLegacyKeyboardWasOpen!==isOpen;"
+                + "window.__AIMiniLegacyKeyboardWasOpen=isOpen;"
                 + "if(document.body){document.body.classList.toggle("
-                + "'keyboard-open',cssPx>0);}"
-                + "window.dispatchEvent(new Event('resize'));"
+                + "'keyboard-open',isOpen);}"
+                + "if(changed){window.dispatchEvent(new Event('resize'));}"
                 + "return true;}catch(ignore){return false;}};"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(meta){"
@@ -4157,7 +4162,7 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread{"
                 + "transform:translate3d(0,calc(-1 * "
                 + "var(--ai-mini-native-keyboard-shift,0px)),0)!important;"
-                + "transition:transform .2s cubic-bezier(.22,.61,.36,1)!important;"
+                + "transition:none!important;"
                 + "will-change:transform!important;}"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) "
                 + ".composer.codex-liquid-glass-original{"
@@ -4275,9 +4280,17 @@ public class MainActivity extends Activity {
         int keyboardBottom = imeReportedVisible
                 ? Math.max(0, ime.bottom)
                 : (overlapFallbackVisible ? visibleOverlap : 0);
-        int contentBottom = imeVisible
-                ? Math.max(navigation.bottom, keyboardBottom)
-                : Math.max(0, navigation.bottom);
+        // The modern glass composer follows the resized native host and must
+        // not receive a second CSS translation. The legacy composer was built
+        // for an overlaid visual viewport, so keep its Gecko surface full
+        // height and let the dedicated --ai-mini-native-keyboard-shift
+        // transform follow the IME instead. This keeps both variants on one
+        // movement path and prevents a double-keyboard-height offset.
+        int contentBottom = legacyComposerImeBridgeEnabled
+                ? Math.max(0, navigation.bottom)
+                : (imeVisible
+                        ? Math.max(navigation.bottom, keyboardBottom)
+                        : Math.max(0, navigation.bottom));
         applyHostBottomInset(contentBottom);
         applyImeInset(root, imeVisible ? keyboardBottom : 0);
     }
@@ -4340,9 +4353,11 @@ public class MainActivity extends Activity {
                 int navigationBottom = insets == null
                         ? 0
                         : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
-                applyHostBottomInset(keyboardOpen
-                        ? Math.max(navigationBottom, hidden)
-                        : navigationBottom);
+                applyHostBottomInset(legacyComposerImeBridgeEnabled
+                        ? navigationBottom
+                        : (keyboardOpen
+                                ? Math.max(navigationBottom, hidden)
+                                : navigationBottom));
             }
             applyImeInset(root, keyboardOpen ? hidden : 0);
         });

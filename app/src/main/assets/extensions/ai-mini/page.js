@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.24") return;
-    window.__AIMiniKeyboardHooksVersion = "1.24";
+    if (window.__AIMiniKeyboardHooksVersion === "1.25") return;
+    window.__AIMiniKeyboardHooksVersion = "1.25";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -119,9 +119,14 @@
     );
 
     function usesLegacyKeyboardShift() {
-      const legacy = !!document.querySelector(
-        "footer.composer-shell form#composer textarea#text,"
-          + "form#composer > textarea#text"
+      const composer = document.querySelector(
+        "footer.composer-shell form#composer.composer"
+      );
+      const legacy = !!(
+        composer
+        && composer.querySelector("textarea#text")
+        && !composer.classList.contains("codex-liquid-glass-original")
+        && !composer.classList.contains("liquid-glass-react-surface")
       );
       document.documentElement.classList.toggle(
         "ai-mini-legacy-composer",
@@ -173,6 +178,7 @@
         }
       });
       keyboardCssPrepared = true;
+      return legacyComposer;
     }
 
     function enforceResizeViewport() {
@@ -386,16 +392,24 @@
     }, true);
 
     window.__AIMiniKeyboardInsetFromNative = function (devicePixels) {
+      const wasOpen = keyboardOpen;
       nativeKeyboardInsetDevicePixels = Math.max(0, Number(devicePixels) || 0);
       keyboardOpen = nativeKeyboardInsetDevicePixels > 0;
       document.body && document.body.classList.toggle("keyboard-open", keyboardOpen);
-      applyNativeKeyboardInset(true);
-      window.dispatchEvent(new Event("resize"));
-      if (keyboardOpen) {
-        viewportClosing = false;
-        [0, 64, 160].forEach(revealEditable);
-      } else {
-        cancelPendingReveals();
+      const legacyComposer = applyNativeKeyboardInset(true);
+      // The legacy composer receives native inset values on every animation
+      // frame. Re-dispatching resize and queuing reveal timers for every pixel
+      // makes the keyboard look delayed and can cause repeated scrolling.
+      // Its transform already follows the IME frame directly, so only run the
+      // heavier open/close work when the state actually changes.
+      if (!legacyComposer || wasOpen !== keyboardOpen) {
+        window.dispatchEvent(new Event("resize"));
+        if (keyboardOpen) {
+          viewportClosing = false;
+          [0, 64, 160].forEach(revealEditable);
+        } else {
+          cancelPendingReveals();
+        }
       }
     };
 
