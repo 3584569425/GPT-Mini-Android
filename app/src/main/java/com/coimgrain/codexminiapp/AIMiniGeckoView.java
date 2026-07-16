@@ -8,6 +8,7 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ValueCallback;
+import android.widget.ImageView;
 
 import org.mozilla.geckoview.AllowOrDeny;
 import org.mozilla.geckoview.GeckoResult;
@@ -21,7 +22,6 @@ import java.util.List;
 
 final class AIMiniGeckoView extends GeckoView {
     private static final int PAGE_BACKGROUND_COLOR = 0xFF0D0D0D;
-    private static final long RELOAD_START_TIMEOUT_MS = 1500L;
 
     interface Delegate {
         default boolean onLoadRequest(
@@ -82,12 +82,16 @@ final class AIMiniGeckoView extends GeckoView {
     private boolean canGoForward;
     private boolean destroyed;
     private boolean contentRecoveryRunning;
+    private boolean contentProcessTerminated;
+    private boolean hostInForeground;
     private long pageStartGeneration;
+    private long contentRecoveryGeneration;
     private boolean desktopMode;
     private boolean nativeDesktopMode;
     private String mobileUserAgent = "";
     private String desktopUserAgent = "";
-    private View compositorCover;
+    private ImageView compositorCover;
+    private Bitmap recoveryFrame;
     private boolean suspendedForBackground;
     private long compositorCoverGeneration;
 
@@ -164,19 +168,7 @@ final class AIMiniGeckoView extends GeckoView {
         }
         if (!destroyed && engine.isReady()) {
             showCompositorCover(1800L);
-            long generation = pageStartGeneration;
             session.reload();
-            postDelayed(() -> {
-                if (destroyed
-                        || contentRecoveryRunning
-                        || pageStartGeneration != generation) {
-                    return;
-                }
-                // A healthy GeckoSession always emits onPageStart for reload().
-                // If the content process or its session became detached while the
-                // app was in the background, recreate the session and load the URL.
-                recoverContentProcess(current);
-            }, RELOAD_START_TIMEOUT_MS);
         }
     }
 
@@ -268,8 +260,12 @@ final class AIMiniGeckoView extends GeckoView {
 
     void setBrowserActive(boolean active) {
         if (destroyed) return;
+        hostInForeground = active;
         session.setActive(active);
         session.setFocused(active);
+        if (active && contentProcessTerminated && !contentRecoveryRunning) {
+            post(() -> recoverContentProcess(getUrl(), true));
+        }
     }
 
     boolean copyVisibleTextureTo(Bitmap destination) {
@@ -294,8 +290,40 @@ final class AIMiniGeckoView extends GeckoView {
         return null;
     }
 
+    void cacheVisibleFrameForRecovery() {
+        if (destroyed || getWidth() <= 0 || getHeight() <= 0) return;
+        if (compositorCover != null && compositorCover.getVisibility() == VISIBLE) return;
+        Bitmap target = recoveryFrame;
+        if (target == null
+                || target.isRecycled()
+                || target.getWidth() != getWidth()
+                || target.getHeight() != getHeight()) {
+            if (target != null && !target.isRecycled()) target.recycle();
+            try {
+                target = Bitmap.createBitmap(
+                        getWidth(),
+                        getHeight(),
+                        Bitmap.Config.ARGB_8888
+                );
+            } catch (Throwable ignored) {
+                recoveryFrame = null;
+                return;
+            }
+        }
+        if (copyVisibleTextureTo(target)) {
+            recoveryFrame = target;
+        } else if (target != recoveryFrame && !target.isRecycled()) {
+            target.recycle();
+        }
+    }
+
+    long pageStartGeneration() {
+        return pageStartGeneration;
+    }
+
     void prepareForForeground() {
         if (destroyed) return;
+        hostInForeground = true;
         boolean restoringSuspendedSurface = suspendedForBackground;
         if (restoringSuspendedSurface) showCompositorCover(420L);
         // coverUntilFirstPaint() is only for the initial navigation. Re-applying it
@@ -312,10 +340,15 @@ final class AIMiniGeckoView extends GeckoView {
                 invalidate();
             });
         }
+        if (contentProcessTerminated && !contentRecoveryRunning) {
+            post(() -> recoverContentProcess(getUrl(), true));
+        }
     }
 
     void prepareForBackground(boolean keepRunning) {
         if (destroyed) return;
+        hostInForeground = false;
+        cacheVisibleFrameForRecovery();
         if (!keepRunning && !currentUrl.isEmpty()) {
             suspendedForBackground = true;
             showCompositorCover(1800L);
@@ -324,8 +357,8 @@ final class AIMiniGeckoView extends GeckoView {
         session.setActive(keepRunning);
     }
 
-    void recoverContent(String fallbackUrl) {
-        recoverContentProcess(fallbackUrl);
+    boolean recoverContent(String fallbackUrl) {
+        return recoverContentProcess(fallbackUrl, true);
     }
 
     private void showCompositorCover() {
@@ -336,13 +369,19 @@ final class AIMiniGeckoView extends GeckoView {
         if (destroyed) return;
         long generation = ++compositorCoverGeneration;
         if (compositorCover == null || compositorCover.getParent() != this) {
-            compositorCover = new View(getContext());
+            compositorCover = new ImageView(getContext());
             compositorCover.setBackgroundColor(PAGE_BACKGROUND_COLOR);
+            compositorCover.setScaleType(ImageView.ScaleType.FIT_XY);
             compositorCover.setClickable(false);
             addView(compositorCover, new LayoutParams(
                     LayoutParams.MATCH_PARENT,
                     LayoutParams.MATCH_PARENT
             ));
+        }
+        if (recoveryFrame != null && !recoveryFrame.isRecycled()) {
+            compositorCover.setImageBitmap(recoveryFrame);
+        } else {
+            compositorCover.setImageDrawable(null);
         }
         if (compositorCover.getVisibility() != VISIBLE
                 || compositorCover.getAlpha() < 0.99f) {
@@ -364,6 +403,8 @@ final class AIMiniGeckoView extends GeckoView {
         compositorCover.animate().cancel();
         compositorCover.setVisibility(GONE);
         compositorCover.setAlpha(1f);
+        compositorCover.setImageDrawable(null);
+        postOnAnimation(this::cacheVisibleFrameForRecovery);
     }
 
     private void hideCompositorCoverAfterStableFrame() {
@@ -393,16 +434,24 @@ final class AIMiniGeckoView extends GeckoView {
             session.close();
         } catch (Exception ignored) {
         }
+        if (recoveryFrame != null && !recoveryFrame.isRecycled()) {
+            recoveryFrame.recycle();
+        }
+        recoveryFrame = null;
         removeAllViews();
     }
 
-    private void recoverContentProcess() {
-        recoverContentProcess("");
-    }
-
-    private void recoverContentProcess(String fallbackUrl) {
-        if (destroyed || contentRecoveryRunning) return;
+    private boolean recoverContentProcess(String fallbackUrl, boolean requireForeground) {
+        if (destroyed || contentRecoveryRunning) return false;
+        if (requireForeground
+                && (!hostInForeground
+                || !isAttachedToWindow()
+                || getWindowToken() == null
+                || getWindowVisibility() != VISIBLE)) {
+            return false;
+        }
         contentRecoveryRunning = true;
+        long recoveryGeneration = ++contentRecoveryGeneration;
         post(() -> {
             if (destroyed) {
                 contentRecoveryRunning = false;
@@ -410,26 +459,65 @@ final class AIMiniGeckoView extends GeckoView {
             }
             String reloadUrl = usablePageUrl(getUrl()) ? getUrl() : fallbackUrl;
             GeckoSession previous = session;
+            cacheVisibleFrameForRecovery();
+            showCompositorCover(3000L);
+            try {
+                previous.setFocused(false);
+                previous.setActive(false);
+                previous.stop();
+            } catch (Exception ignored) {
+            }
             try {
                 releaseSession();
             } catch (Exception ignored) {
             }
-            try {
-                previous.close();
-            } catch (Exception ignored) {
-            }
-            session = createSession();
-            setSession(session);
-            engine.onSessionReplaced(this, previous, session);
-            contentRecoveryRunning = false;
-            setVisibility(VISIBLE);
-            setAlpha(1f);
-            showCompositorCover(1800L);
-            if (usablePageUrl(reloadUrl)) {
-                pendingUrl = reloadUrl;
-                consumePendingUrl();
-            }
+            postOnAnimation(() -> {
+                if (destroyed || recoveryGeneration != contentRecoveryGeneration) {
+                    contentRecoveryRunning = false;
+                    return;
+                }
+                GeckoSession replacement = null;
+                try {
+                    replacement = createSession();
+                    session = replacement;
+                    setSession(replacement);
+                } catch (Throwable creationError) {
+                    if (replacement != null) {
+                        try {
+                            replacement.close();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    try {
+                        session = previous;
+                        setSession(previous);
+                        previous.setActive(hostInForeground);
+                        previous.setFocused(hostInForeground);
+                    } catch (Throwable ignored) {
+                    }
+                    contentRecoveryRunning = false;
+                    return;
+                }
+                engine.onSessionReplaced(this, previous, replacement);
+                try {
+                    previous.close();
+                } catch (Exception ignored) {
+                }
+                contentProcessTerminated = false;
+                contentRecoveryRunning = false;
+                currentUrl = "";
+                canGoBack = false;
+                canGoForward = false;
+                setVisibility(VISIBLE);
+                setAlpha(1f);
+                showCompositorCover(3000L);
+                if (usablePageUrl(reloadUrl)) {
+                    pendingUrl = reloadUrl;
+                    consumePendingUrl();
+                }
+            });
         });
+        return true;
     }
 
     private boolean usablePageUrl(String url) {
@@ -469,30 +557,36 @@ final class AIMiniGeckoView extends GeckoView {
             new GeckoSession.NavigationDelegate() {
                 @Override
                 public void onLocationChange(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         String url,
                         List<GeckoSession.PermissionDelegate.ContentPermission> permissions,
                         Boolean hasUserGesture
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     currentUrl = url == null ? "" : url;
                     if (delegate != null) delegate.onLocationChange(AIMiniGeckoView.this, currentUrl);
                 }
 
                 @Override
-                public void onCanGoBack(GeckoSession session, boolean value) {
+                public void onCanGoBack(GeckoSession callbackSession, boolean value) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     canGoBack = value;
                 }
 
                 @Override
-                public void onCanGoForward(GeckoSession session, boolean value) {
+                public void onCanGoForward(GeckoSession callbackSession, boolean value) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     canGoForward = value;
                 }
 
                 @Override
                 public GeckoResult<AllowOrDeny> onLoadRequest(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         LoadRequest request
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) {
+                        return GeckoResult.deny();
+                    }
                     boolean handled = delegate != null && delegate.onLoadRequest(
                             AIMiniGeckoView.this,
                             request.uri,
@@ -504,9 +598,12 @@ final class AIMiniGeckoView extends GeckoView {
 
                 @Override
                 public GeckoResult<GeckoSession> onNewSession(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         String uri
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) {
+                        return GeckoResult.fromValue(null);
+                    }
                     if (delegate != null) delegate.onNewWindow(AIMiniGeckoView.this, uri);
                     return GeckoResult.fromValue(null);
                 }
@@ -515,7 +612,8 @@ final class AIMiniGeckoView extends GeckoView {
     private final GeckoSession.ProgressDelegate progressDelegate =
             new GeckoSession.ProgressDelegate() {
                 @Override
-                public void onPageStart(GeckoSession session, String url) {
+                public void onPageStart(GeckoSession callbackSession, String url) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     pageStartGeneration++;
                     post(() -> showCompositorCover(1800L));
                     if (delegate != null) {
@@ -524,7 +622,8 @@ final class AIMiniGeckoView extends GeckoView {
                 }
 
                 @Override
-                public void onPageStop(GeckoSession session, boolean success) {
+                public void onPageStop(GeckoSession callbackSession, boolean success) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     if (delegate != null) {
                         delegate.onPageFinished(AIMiniGeckoView.this, getUrl(), success);
                     }
@@ -540,7 +639,11 @@ final class AIMiniGeckoView extends GeckoView {
     private final GeckoSession.ContentDelegate contentDelegate =
             new GeckoSession.ContentDelegate() {
                 @Override
-                public void onExternalResponse(GeckoSession session, WebResponse response) {
+                public void onExternalResponse(
+                        GeckoSession callbackSession,
+                        WebResponse response
+                ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     if (delegate != null && response != null) {
                         delegate.onExternalResponse(
                                 AIMiniGeckoView.this,
@@ -550,23 +653,29 @@ final class AIMiniGeckoView extends GeckoView {
                 }
 
                 @Override
-                public void onPaintStatusReset(GeckoSession session) {
+                public void onPaintStatusReset(GeckoSession callbackSession) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     post(() -> showCompositorCover(1800L));
                 }
 
                 @Override
-                public void onCloseRequest(GeckoSession session) {
+                public void onCloseRequest(GeckoSession callbackSession) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
                     if (delegate != null) delegate.onCloseRequest(AIMiniGeckoView.this);
                 }
 
                 @Override
-                public void onCrash(GeckoSession session) {
-                    recoverContentProcess();
+                public void onCrash(GeckoSession callbackSession) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
+                    contentProcessTerminated = true;
+                    if (hostInForeground) recoverContentProcess("", true);
                 }
 
                 @Override
-                public void onKill(GeckoSession session) {
-                    recoverContentProcess();
+                public void onKill(GeckoSession callbackSession) {
+                    if (callbackSession != AIMiniGeckoView.this.session) return;
+                    contentProcessTerminated = true;
+                    if (hostInForeground) recoverContentProcess("", true);
                 }
             };
 
@@ -574,9 +683,12 @@ final class AIMiniGeckoView extends GeckoView {
             new GeckoSession.PromptDelegate() {
                 @Override
                 public GeckoResult<PromptResponse> onFilePrompt(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         FilePrompt prompt
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) {
+                        return GeckoResult.fromValue(prompt.dismiss());
+                    }
                     return delegate == null
                             ? GeckoResult.fromValue(prompt.dismiss())
                             : delegate.onFilePrompt(AIMiniGeckoView.this, prompt);
@@ -584,7 +696,7 @@ final class AIMiniGeckoView extends GeckoView {
 
                 @Override
                 public GeckoResult<PromptResponse> onAlertPrompt(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         AlertPrompt prompt
                 ) {
                     return GeckoResult.fromValue(prompt.dismiss());
@@ -595,29 +707,40 @@ final class AIMiniGeckoView extends GeckoView {
             new GeckoSession.PermissionDelegate() {
                 @Override
                 public void onAndroidPermissionsRequest(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         String[] permissions,
                         Callback callback
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) {
+                        callback.reject();
+                        return;
+                    }
                     callback.grant();
                 }
 
                 @Override
                 public GeckoResult<Integer> onContentPermissionRequest(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         ContentPermission permission
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) {
+                        return GeckoResult.fromValue(ContentPermission.VALUE_DENY);
+                    }
                     return GeckoResult.fromValue(ContentPermission.VALUE_ALLOW);
                 }
 
                 @Override
                 public void onMediaPermissionRequest(
-                        GeckoSession session,
+                        GeckoSession callbackSession,
                         String uri,
                         MediaSource[] video,
                         MediaSource[] audio,
                         MediaCallback callback
                 ) {
+                    if (callbackSession != AIMiniGeckoView.this.session) {
+                        callback.reject();
+                        return;
+                    }
                     MediaSource selectedVideo = video != null && video.length > 0 ? video[0] : null;
                     MediaSource selectedAudio = audio != null && audio.length > 0 ? audio[0] : null;
                     callback.grant(selectedVideo, selectedAudio);

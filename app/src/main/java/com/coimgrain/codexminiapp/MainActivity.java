@@ -158,7 +158,11 @@ public class MainActivity extends Activity {
     private static final long MAIN_NAVIGATION_REVEAL_POLL_MS = 100L;
     private static final long MAIN_NAVIGATION_FALLBACK_MS = 2200L;
     private static final long LONG_BACKGROUND_HEALTH_CHECK_MS = 60_000L;
-    private static final long RESUME_BRIDGE_RECOVERY_DELAY_MS = 1200L;
+    private static final long RESUME_BRIDGE_RECOVERY_DELAY_MS = 700L;
+    private static final long RESUME_BRIDGE_PROBE_TIMEOUT_MS = 900L;
+    private static final long RESUME_BRIDGE_PROBE_RETRY_MS = 320L;
+    private static final int RESUME_BRIDGE_PROBE_ATTEMPTS = 3;
+    private static final long RESUME_RELOAD_START_TIMEOUT_MS = 2600L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
@@ -1578,7 +1582,8 @@ public class MainActivity extends Activity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        mainMobileUserAgent = GeckoSession.getDefaultUserAgent() + " GPTMiniAndroidApp/1.25.2";
+        mainMobileUserAgent = GeckoSession.getDefaultUserAgent()
+                + " GPTMiniAndroidApp/1.25.3";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1618,7 +1623,7 @@ public class MainActivity extends Activity {
         if (creatingBrowser) externalDesktopMode = false;
         applyBrowserMode(externalWebView, externalDesktopMode, externalMobileUserAgent);
         if (webView != null) webView.prepareForBackground(false);
-        externalWebView.setBrowserActive(true);
+        externalWebView.prepareForForeground();
         externalBrowserContainer.setVisibility(View.VISIBLE);
         updateExternalBrowserMenu();
         externalWebView.loadUrl(url);
@@ -2049,7 +2054,8 @@ public class MainActivity extends Activity {
 
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/1.25.2";
+                + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/"
+                + "1.25.3";
     }
 
     private void applyConversationFontScale(AIMiniGeckoView target) {
@@ -3725,30 +3731,89 @@ public class MainActivity extends Activity {
             return;
         }
         handler.postDelayed(() -> {
-            if (generation != browserHealthCheckGeneration
-                    || !activityInForeground
-                    || target != activeWebView()) {
-                return;
-            }
+            if (!browserRecoveryStillValid(target, generation)) return;
             ensureVisibleBrowserContent(target);
-            if (geckoEngine == null
-                    || !geckoEngine.isBridgeInstalled()) {
+            probeResumedBrowser(target, generation, 0);
+        }, RESUME_BRIDGE_RECOVERY_DELAY_MS);
+    }
+
+    private boolean browserRecoveryStillValid(
+            AIMiniGeckoView target,
+            long generation
+    ) {
+        return generation == browserHealthCheckGeneration
+                && activityInForeground
+                && !isFinishing()
+                && !isDestroyed()
+                && target != null
+                && target == activeWebView()
+                && target.isAttachedToWindow()
+                && target.getWindowToken() != null
+                && target.getWindowVisibility() == View.VISIBLE;
+    }
+
+    private void probeResumedBrowser(
+            AIMiniGeckoView target,
+            long generation,
+            int attempt
+    ) {
+        if (!browserRecoveryStillValid(target, generation)) return;
+        if (geckoEngine == null || !geckoEngine.isBridgeInstalled()) {
+            retryOrReloadResumedBrowser(target, generation, attempt);
+            return;
+        }
+        target.evaluateJavascript(
+                "(function(){return 'gpt-mini-alive';})();",
+                RESUME_BRIDGE_PROBE_TIMEOUT_MS,
+                result -> {
+                    if (!browserRecoveryStillValid(target, generation)) return;
+                    if ("gpt-mini-alive".equals(result)) {
+                        Log.d(NAVIGATION_LOG_TAG, "resume-recovery bridge healthy");
+                        return;
+                    }
+                    retryOrReloadResumedBrowser(target, generation, attempt);
+                }
+        );
+    }
+
+    private void retryOrReloadResumedBrowser(
+            AIMiniGeckoView target,
+            long generation,
+            int attempt
+    ) {
+        int nextAttempt = attempt + 1;
+        if (nextAttempt < RESUME_BRIDGE_PROBE_ATTEMPTS) {
+            handler.postDelayed(
+                    () -> probeResumedBrowser(target, generation, nextAttempt),
+                    RESUME_BRIDGE_PROBE_RETRY_MS
+            );
+            return;
+        }
+        beginResumedBrowserReload(target, generation);
+    }
+
+    private void beginResumedBrowserReload(
+            AIMiniGeckoView target,
+            long generation
+    ) {
+        if (!browserRecoveryStillValid(target, generation)) return;
+        Log.w(NAVIGATION_LOG_TAG, "resume-recovery bridge unavailable; trying reload");
+        target.cacheVisibleFrameForRecovery();
+        long pageStartBeforeReload = target.pageStartGeneration();
+        target.reload(reloadFallbackUrl(target));
+        handler.postDelayed(() -> {
+            if (!browserRecoveryStillValid(target, generation)) return;
+            if (target.pageStartGeneration() != pageStartBeforeReload) {
+                Log.d(NAVIGATION_LOG_TAG, "resume-recovery reload started");
                 return;
             }
-            target.evaluateJavascript(
-                    "(function(){return 'gpt-mini-alive';})();",
-                    1000L,
-                    result -> {
-                        if (generation != browserHealthCheckGeneration
-                                || !activityInForeground
-                                || target != activeWebView()
-                                || "gpt-mini-alive".equals(result)) {
-                            return;
-                        }
-                        target.recoverContent(reloadFallbackUrl(target));
-                    }
-            );
-        }, RESUME_BRIDGE_RECOVERY_DELAY_MS);
+            // Rebuilding the GeckoSession is the final fallback only. The Activity
+            // must still own a visible, attached browser after several bridge
+            // probes and a reload that failed to start.
+            Log.e(NAVIGATION_LOG_TAG, "resume-recovery reload stalled; rebuilding session");
+            target.cacheVisibleFrameForRecovery();
+            target.recoverContent(reloadFallbackUrl(target));
+        }, RESUME_RELOAD_START_TIMEOUT_MS);
     }
 
     private String normalizeUrl(String rawUrl) {
