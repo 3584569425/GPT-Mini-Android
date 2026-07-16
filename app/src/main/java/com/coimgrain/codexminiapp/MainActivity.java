@@ -243,9 +243,11 @@ public class MainActivity extends Activity {
     private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> pendingFilePromptResult;
     private boolean keyboardWasOpen;
     private int appliedImeInsetBottom;
+    private int lastLegacyImeInsetBottom = -1;
     private long lastModernImeUpdateAt;
     private boolean imeAnimationRunning;
     private boolean modernImeInsetsReliable;
+    private boolean legacyComposerImeBridgeEnabled;
     private final Rect visibleDisplayFrame = new Rect();
     private final int[] rootLocationOnScreen = new int[2];
     private final Runnable conversationFontScaleApplier =
@@ -1583,7 +1585,7 @@ public class MainActivity extends Activity {
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
         mainMobileUserAgent = GeckoSession.getDefaultUserAgent()
-                + " GPTMiniAndroidApp/1.25.6";
+                + " GPTMiniAndroidApp/1.25.7";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -2055,7 +2057,7 @@ public class MainActivity extends Activity {
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/"
-                + "1.25.6";
+                + "1.25.7";
     }
 
     private void applyConversationFontScale(AIMiniGeckoView target) {
@@ -4064,10 +4066,33 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__AIMiniFixVersion==='1.25.1'){return;}"
-                + "window.__AIMiniFixVersion='1.25.1';"
+                + "var detectLegacyComposer=function(){"
+                + "var legacy=!!document.querySelector("
+                + "'footer.composer-shell form#composer textarea#text,"
+                + "form#composer>textarea#text');"
+                + "document.documentElement.classList.toggle("
+                + "'ai-mini-legacy-composer',legacy);"
+                + "return legacy;};"
+                + "var legacyComposer=detectLegacyComposer();"
+                + "if(window.__AIMiniFixVersion==='1.25.7'){return legacyComposer;}"
+                + "window.__AIMiniFixVersion='1.25.7';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
+                + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
+                + "try{if(!detectLegacyComposer()){return false;}"
+                + "var density=Math.max(1,Number(window.devicePixelRatio)||1);"
+                + "var cssPx=Math.max(0,Number(devicePixels)||0)/density;"
+                + "var cssValue=cssPx.toFixed(2)+'px';"
+                + "document.documentElement.style.setProperty("
+                + "'--ai-mini-native-keyboard-shift',cssValue,'important');"
+                + "document.documentElement.style.setProperty("
+                + "'--keyboard-shift',cssValue,'important');"
+                + "document.documentElement.style.setProperty("
+                + "'--keyboard-inset',cssValue,'important');"
+                + "if(document.body){document.body.classList.toggle("
+                + "'keyboard-open',cssPx>0);}"
+                + "window.dispatchEvent(new Event('resize'));"
+                + "return true;}catch(ignore){return false;}};"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(meta){"
                 + "var c=meta.getAttribute('content')||'';"
@@ -4092,7 +4117,7 @@ public class MainActivity extends Activity {
                 + "}"
                 + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var id=String(data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').trim():'当前会话';var endpoint='';try{endpoint=new URL(String(statusUrl||''),location.href).href;}catch(ignore){}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
                 + "var oldFetch=window.fetch;if(oldFetch&&!window.__AIMiniFetchHooked){window.__AIMiniFetchHooked=true;window.__AIMiniStatusPollers=window.__AIMiniStatusPollers||{};window.__AIMiniPollStatuses=function(){try{Object.keys(window.__AIMiniStatusPollers||{}).forEach(function(key){try{window.__AIMiniStatusPollers[key]();}catch(e){}});}catch(e){}};window.fetch=function(){var ctx=this,args=arguments;var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){try{var savedInput=args[0] instanceof Request?args[0].clone():args[0];var savedInit=args.length>1?args[1]:undefined;window.__AIMiniStatusPollers[u]=function(){try{var input=savedInput instanceof Request?savedInput.clone():savedInput;return oldFetch.call(window,input,savedInit).then(function(pollRes){try{pollRes.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}catch(e){}return pollRes;}).catch(function(){});}catch(e){return Promise.resolve();}};}catch(e){}}return oldFetch.apply(ctx,args).then(function(res){try{if(u.indexOf('/codex/status')>=0){res.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}}catch(e){}return res;});};}"
-                + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));}catch(e){}};}"
+                + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{if(window.__AIMiniApplyLegacyKeyboardInset&&window.__AIMiniApplyLegacyKeyboardInset(0)){return;}document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));}catch(e){}};}"
                 + "if(!window.__AIMiniDownloadHooksVersion){"
                 + "var bytesToBase64=function(bytes){var binary='';var step=32768;for(var i=0;i<bytes.length;i+=step){var part=bytes.subarray(i,Math.min(bytes.length,i+step));binary+=String.fromCharCode.apply(null,part);}return btoa(binary);};"
                 + "var sendBlobChunks=async function(blob,fileName,mimeType){var id='dl-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);var chunkSize=196608;CodexMiniNative.beginBlobDownload(id,fileName||'download',mimeType||blob.type||'',blob.size||0);try{var index=0;for(var offset=0;offset<blob.size;offset+=chunkSize){var buffer=await blob.slice(offset,Math.min(blob.size,offset+chunkSize)).arrayBuffer();CodexMiniNative.appendBlobDownload(id,index++,bytesToBase64(new Uint8Array(buffer)));}CodexMiniNative.finishBlobDownload(id);}catch(err){CodexMiniNative.cancelBlobDownload(id);CodexMiniNative.toast('Download failed');}};"
@@ -4103,9 +4128,19 @@ public class MainActivity extends Activity {
                 + "}"
                 + "var fire=function(){window.dispatchEvent(new Event('resize'));};"
                 + "fire();setTimeout(fire,60);setTimeout(fire,180);setTimeout(fire,420);"
-                + "}catch(e){}"
+                + "return legacyComposer;"
+                + "}catch(e){return false;}"
                 + "})();";
-        webView.evaluateJavascript(script, null);
+        webView.evaluateJavascript(script, result -> {
+            boolean enabled = "true".equalsIgnoreCase(
+                    result == null ? "" : result.replace("\"", "").trim()
+            );
+            legacyComposerImeBridgeEnabled = enabled;
+            lastLegacyImeInsetBottom = -1;
+            if (enabled) {
+                notifyKeyboardInsetToWeb(appliedImeInsetBottom, keyboardWasOpen);
+            }
+        });
     }
 
     private String androidWebViewCss() {
@@ -4115,9 +4150,15 @@ public class MainActivity extends Activity {
                 // ancestor is permanently promoted by translate3d/will-change.
                 // ADJUST_RESIZE already moves the visual viewport, so the WebUI's
                 // extra keyboard transform is unnecessary in the app.
-                + "html.ai-mini-geckoview .composer-shell{"
+                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell{"
                 + "transform:none!important;transition:none!important;"
                 + "will-change:auto!important;}"
+                + "html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,"
+                + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread{"
+                + "transform:translate3d(0,calc(-1 * "
+                + "var(--ai-mini-native-keyboard-shift,0px)),0)!important;"
+                + "transition:transform .2s cubic-bezier(.22,.61,.36,1)!important;"
+                + "will-change:transform!important;}"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) "
                 + ".composer.codex-liquid-glass-original{"
                 + "background:rgba(255,255,255,.06)!important;"
@@ -4264,6 +4305,15 @@ public class MainActivity extends Activity {
         // page, otherwise it can leave the WebUI in its keyboard-open state.
         int effectiveInset = isOpen ? safeInset : 0;
         appliedImeInsetBottom = effectiveInset;
+        if (legacyComposerImeBridgeEnabled) {
+            keyboardWasOpen = isOpen;
+            if (lastLegacyImeInsetBottom != effectiveInset) {
+                lastLegacyImeInsetBottom = effectiveInset;
+                notifyKeyboardInsetToWeb(effectiveInset, isOpen);
+            }
+            return;
+        }
+        lastLegacyImeInsetBottom = -1;
         // The page patch only needs the open/closed transition. Dispatching
         // JavaScript for every IME animation pixel caused avoidable jank and, on
         // some ROMs, let stale legacy callbacks race the modern Insets callback.
@@ -4306,6 +4356,8 @@ public class MainActivity extends Activity {
                         + "var px=" + Math.max(0, insetDevicePixels) + ";"
                         + "if(window.__AIMiniKeyboardInsetFromNative){"
                         + "window.__AIMiniKeyboardInsetFromNative(px);return;}"
+                        + "if(window.__AIMiniApplyLegacyKeyboardInset"
+                        + "&&window.__AIMiniApplyLegacyKeyboardInset(px)){return;}"
                         + "var cssPx=0;"
                         + "document.body&&document.body.classList."
                         + (open ? "add" : "remove")

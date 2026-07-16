@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.23") return;
-    window.__AIMiniKeyboardHooksVersion = "1.23";
+    if (window.__AIMiniKeyboardHooksVersion === "1.24") return;
+    window.__AIMiniKeyboardHooksVersion = "1.24";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -118,6 +118,18 @@
       document.documentElement ? document.documentElement.clientHeight : 0
     );
 
+    function usesLegacyKeyboardShift() {
+      const legacy = !!document.querySelector(
+        "footer.composer-shell form#composer textarea#text,"
+          + "form#composer > textarea#text"
+      );
+      document.documentElement.classList.toggle(
+        "ai-mini-legacy-composer",
+        legacy
+      );
+      return legacy;
+    }
+
     function applyNativeKeyboardInset(force) {
       if (keyboardCssPrepared && !force) return;
       // Android uses ADJUST_RESIZE and Gecko's viewport now follows the
@@ -125,12 +137,33 @@
       // move the composer twice and leave it near the top of the screen. Also
       // avoid mutating bottom/transform on the fixed shell: Gecko may stop
       // compositing backdrop-filter descendants after that layer mutation.
-      const cssValue = "0px";
+      //
+      // An older Codex mini WebUI uses a textarea#text inside form#composer
+      // and intentionally keeps the visual viewport overlaid. That variant
+      // requires its original --keyboard-shift transform, so only restore the
+      // native inset for that exact DOM signature.
+      const legacyComposer = usesLegacyKeyboardShift();
+      const density = Math.max(1, Number(window.devicePixelRatio) || 1);
+      const cssPixels = legacyComposer
+        ? nativeKeyboardInsetDevicePixels / density
+        : 0;
+      const cssValue = cssPixels.toFixed(2) + "px";
+      const priority = legacyComposer ? "important" : "";
+      document.documentElement.style.setProperty(
+        "--ai-mini-native-keyboard-shift",
+        cssValue,
+        priority
+      );
       document.documentElement.style.setProperty(
         "--keyboard-inset",
-        cssValue
+        cssValue,
+        priority
       );
-      document.documentElement.style.setProperty("--keyboard-shift", cssValue);
+      document.documentElement.style.setProperty(
+        "--keyboard-shift",
+        cssValue,
+        priority
+      );
       const staleStyle = document.getElementById("ai-mini-keyboard-inset-style");
       if (staleStyle) staleStyle.remove();
       document.querySelectorAll(".composer-shell").forEach(function (shell) {
