@@ -22,6 +22,7 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -110,6 +111,7 @@ public class MainActivity extends Activity {
     private static final int CAMERA_PERMISSION_REQUEST = 1003;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1004;
     private static final int QR_SCAN_REQUEST = 1005;
+    private static final int CHAT_BACKGROUND_REQUEST = 1006;
     static final String PREFS_NAME = "codex_mini_android";
     static final String KEY_LAST_URL = "last_url";
     private static final String KEY_WELCOME_VISIBLE_STATE = "welcome_visible_state";
@@ -120,6 +122,9 @@ public class MainActivity extends Activity {
     private static final String KEY_FLOAT_Y = "float_y";
     private static final String KEY_TOP_INSET_DP = "top_inset_dp";
     private static final String KEY_CONVERSATION_FONT_SCALE = "conversation_font_scale";
+    private static final String KEY_CHAT_BACKGROUND_ENABLED = "chat_background_enabled";
+    private static final String KEY_CHAT_BACKGROUND_DIM_PERCENT = "chat_background_dim_percent";
+    private static final String CHAT_BACKGROUND_FILE = "chat-background.webp";
     private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
     private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
@@ -178,6 +183,7 @@ public class MainActivity extends Activity {
     private final ExecutorService downloadIoExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService uploadIoExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService notificationIoExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService chatBackgroundIoExecutor = Executors.newSingleThreadExecutor();
 
     private SharedPreferences preferences;
     private FrameLayout appHost;
@@ -231,6 +237,9 @@ public class MainActivity extends Activity {
     private TextView floatAlphaValue;
     private TextView topInsetValue;
     private TextView conversationFontScaleValue;
+    private TextView chatBackgroundValue;
+    private TextView chatBackgroundChooseButton;
+    private TextView chatBackgroundResetButton;
     private TextView notificationModeValue;
     private TextView notificationEndOption;
     private TextView notificationPersistentOption;
@@ -250,6 +259,9 @@ public class MainActivity extends Activity {
     private final int[] rootLocationOnScreen = new int[2];
     private final Runnable conversationFontScaleApplier =
             () -> applyConversationFontScale(webView);
+    private volatile String chatBackgroundDataUrl = "";
+    private volatile long chatBackgroundCacheStamp = Long.MIN_VALUE;
+    private volatile boolean chatBackgroundLoadRunning;
     private boolean miniDragging;
     private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
@@ -1073,6 +1085,35 @@ public class MainActivity extends Activity {
         );
         floatSettingsPanel.addView(conversationFontScaleBar);
 
+        chatBackgroundValue = settingsLabel("");
+        LinearLayout.LayoutParams chatBackgroundLabelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        chatBackgroundLabelParams.setMargins(0, dp(8), 0, 0);
+        floatSettingsPanel.addView(chatBackgroundValue, chatBackgroundLabelParams);
+
+        LinearLayout chatBackgroundRow = new LinearLayout(this);
+        chatBackgroundRow.setOrientation(LinearLayout.HORIZONTAL);
+        chatBackgroundRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams chatBackgroundRowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(38)
+        );
+        chatBackgroundRowParams.setMargins(0, dp(6), 0, 0);
+        floatSettingsPanel.addView(chatBackgroundRow, chatBackgroundRowParams);
+
+        chatBackgroundChooseButton = compactSettingsButton(
+                R.string.chat_background_choose,
+                view -> chooseChatBackground()
+        );
+        chatBackgroundRow.addView(chatBackgroundChooseButton, compactSegmentParams(0));
+        chatBackgroundResetButton = compactSettingsButton(
+                R.string.chat_background_reset,
+                view -> removeChatBackground()
+        );
+        chatBackgroundRow.addView(chatBackgroundResetButton, compactSegmentParams(dp(5)));
+
         floatThemeValue = settingsLabel("");
         floatSettingsPanel.addView(floatThemeValue);
         LinearLayout themeRow = new LinearLayout(this);
@@ -1189,6 +1230,17 @@ public class MainActivity extends Activity {
             refreshMiniMenuTheme();
             updateFloatSettingsLabels();
         });
+        button.setTag(textRes);
+        return button;
+    }
+
+    private TextView compactSettingsButton(int textRes, View.OnClickListener listener) {
+        TextView button = new TextView(this);
+        button.setText(textRes);
+        button.setTextSize(12);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(5), 0, dp(5), 0);
+        button.setOnClickListener(listener);
         button.setTag(textRes);
         return button;
     }
@@ -1486,6 +1538,14 @@ public class MainActivity extends Activity {
                     conversationFontScalePercent()
             ));
         }
+        if (chatBackgroundValue != null) {
+            chatBackgroundValue.setText(getString(
+                    R.string.chat_background_value,
+                    hasChatBackground()
+                            ? getString(R.string.chat_background_set)
+                            : getString(R.string.chat_background_not_set)
+            ));
+        }
         if (floatThemeValue != null) {
             int label = FLOAT_MENU_THEME_LIGHT.equals(floatMenuTheme())
                     ? R.string.float_theme_light
@@ -1532,6 +1592,12 @@ public class MainActivity extends Activity {
         button.setBackground(selected ? optionSelectedBackground(light) : optionBackground(light));
     }
 
+    private void styleSettingsActionButton(TextView button, boolean light) {
+        if (button == null) return;
+        button.setTextColor(light ? Color.rgb(72, 76, 86) : Color.rgb(218, 222, 230));
+        button.setBackground(optionBackground(light));
+    }
+
     private void refreshMiniMenuTheme() {
         boolean light = isFloatMenuLight();
         updateTopInsetArea();
@@ -1560,6 +1626,8 @@ public class MainActivity extends Activity {
         for (TextView label : settingsLabels) {
             label.setTextColor(labelColor);
         }
+        styleSettingsActionButton(chatBackgroundChooseButton, light);
+        styleSettingsActionButton(chatBackgroundResetButton, light);
         updateFloatSettingsLabels();
         updateNotificationSettingsLabels();
         refreshDownloadsTheme();
@@ -1583,7 +1651,7 @@ public class MainActivity extends Activity {
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
         mainMobileUserAgent = GeckoSession.getDefaultUserAgent()
-                + " GPTMiniAndroidApp/1.25.3";
+                + " GPTMiniAndroidApp/1.25.4";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -2055,7 +2123,7 @@ public class MainActivity extends Activity {
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/"
-                + "1.25.3";
+                + "1.25.4";
     }
 
     private void applyConversationFontScale(AIMiniGeckoView target) {
@@ -2071,6 +2139,257 @@ public class MainActivity extends Activity {
                         + "}catch(e){}})();",
                 null
         );
+    }
+
+    private boolean hasChatBackground() {
+        File file = chatBackgroundFile();
+        return preferences.getBoolean(KEY_CHAT_BACKGROUND_ENABLED, false)
+                && file.isFile()
+                && file.length() > 0;
+    }
+
+    private File chatBackgroundFile() {
+        return new File(getFilesDir(), CHAT_BACKGROUND_FILE);
+    }
+
+    private void chooseChatBackground() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, CHAT_BACKGROUND_REQUEST);
+        } catch (ActivityNotFoundException error) {
+            Toast.makeText(this, R.string.no_file_picker, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void removeChatBackground() {
+        preferences.edit()
+                .putBoolean(KEY_CHAT_BACKGROUND_ENABLED, false)
+                .apply();
+        chatBackgroundFile().delete();
+        chatBackgroundDataUrl = "";
+        chatBackgroundCacheStamp = Long.MIN_VALUE;
+        chatBackgroundLoadRunning = false;
+        applyChatBackgroundToWebView();
+        updateFloatSettingsLabels();
+        Toast.makeText(this, R.string.chat_background_removed, Toast.LENGTH_SHORT).show();
+    }
+
+    private void handleChatBackgroundResult(int resultCode, Intent data) {
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri source = data.getData();
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT
+                    && (data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            source,
+                            data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
+                } catch (Exception ignored) {
+                    // The image is copied into internal storage below, so a
+                    // persistable grant is only an optimization.
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        chatBackgroundIoExecutor.execute(() -> {
+            try {
+                saveChatBackgroundImage(source);
+                handler.post(() -> {
+                    preferences.edit()
+                            .putBoolean(KEY_CHAT_BACKGROUND_ENABLED, true)
+                            .apply();
+                    chatBackgroundDataUrl = "";
+                    chatBackgroundCacheStamp = Long.MIN_VALUE;
+                    chatBackgroundLoadRunning = false;
+                    updateFloatSettingsLabels();
+                    refreshChatBackgroundCacheAndApply();
+                    Toast.makeText(
+                            MainActivity.this,
+                            R.string.chat_background_saved,
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+            } catch (Exception error) {
+                handler.post(() -> Toast.makeText(
+                        MainActivity.this,
+                        R.string.chat_background_failed,
+                        Toast.LENGTH_SHORT
+                ).show());
+            }
+        });
+    }
+
+    private void saveChatBackgroundImage(Uri sourceUri) throws Exception {
+        Bitmap source;
+        try (InputStream input = getContentResolver().openInputStream(sourceUri)) {
+            source = BitmapFactory.decodeStream(input);
+        }
+        if (source == null) throw new IllegalStateException("Unable to decode image");
+
+        Bitmap scaled = source;
+        int maxEdge = Math.max(source.getWidth(), source.getHeight());
+        if (maxEdge > 1600) {
+            float ratio = 1600f / maxEdge;
+            scaled = Bitmap.createScaledBitmap(
+                    source,
+                    Math.max(1, Math.round(source.getWidth() * ratio)),
+                    Math.max(1, Math.round(source.getHeight() * ratio)),
+                    true
+            );
+        }
+
+        byte[] compressed = null;
+        for (int quality : new int[]{84, 76, 68, 60}) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (!scaled.compress(Bitmap.CompressFormat.WEBP, quality, output)) {
+                throw new IllegalStateException("Unable to encode image");
+            }
+            compressed = output.toByteArray();
+            if (compressed.length <= 3 * 1024 * 1024) break;
+        }
+        if (compressed == null || compressed.length == 0) {
+            throw new IllegalStateException("Empty image");
+        }
+
+        File target = chatBackgroundFile();
+        File temp = new File(getFilesDir(), CHAT_BACKGROUND_FILE + ".tmp");
+        try (OutputStream output = new FileOutputStream(temp, false)) {
+            output.write(compressed);
+            output.flush();
+        }
+        if (target.exists() && !target.delete()) {
+            throw new IllegalStateException("Unable to replace image");
+        }
+        if (!temp.renameTo(target)) {
+            temp.delete();
+            throw new IllegalStateException("Unable to save image");
+        }
+
+        if (scaled != source && !scaled.isRecycled()) scaled.recycle();
+        if (!source.isRecycled()) source.recycle();
+    }
+
+    private void refreshChatBackgroundCacheAndApply() {
+        if (webView == null) return;
+        File file = chatBackgroundFile();
+        if (!hasChatBackground()) {
+            chatBackgroundDataUrl = "";
+            chatBackgroundCacheStamp = Long.MIN_VALUE;
+            applyChatBackgroundToWebView();
+            return;
+        }
+
+        long stamp = file.lastModified() ^ file.length();
+        if (stamp == chatBackgroundCacheStamp && !chatBackgroundDataUrl.isEmpty()) {
+            applyChatBackgroundToWebView();
+            return;
+        }
+        if (chatBackgroundLoadRunning) return;
+        chatBackgroundLoadRunning = true;
+        chatBackgroundIoExecutor.execute(() -> {
+            String encoded = "";
+            try (InputStream input = new FileInputStream(file)) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                byte[] buffer = new byte[16 * 1024];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    output.write(buffer, 0, read);
+                }
+                encoded = "data:image/webp;base64,"
+                        + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            } catch (Exception ignored) {
+            }
+            String dataUrl = encoded;
+            handler.post(() -> {
+                chatBackgroundLoadRunning = false;
+                if (!dataUrl.isEmpty() && hasChatBackground()) {
+                    chatBackgroundDataUrl = dataUrl;
+                    chatBackgroundCacheStamp = stamp;
+                } else {
+                    chatBackgroundDataUrl = "";
+                    chatBackgroundCacheStamp = Long.MIN_VALUE;
+                }
+                applyChatBackgroundToWebView();
+            });
+        });
+    }
+
+    private void applyChatBackgroundToWebView() {
+        if (webView == null) return;
+        String dataUrl = chatBackgroundDataUrl;
+        if (dataUrl.isEmpty() && hasChatBackground()) {
+            refreshChatBackgroundCacheAndApply();
+            return;
+        }
+        int dimPercent = Math.max(
+                0,
+                Math.min(90, preferences.getInt(KEY_CHAT_BACKGROUND_DIM_PERCENT, 35))
+        );
+        String script = "(function(){try{"
+                + "var id='gpt-mini-chat-background';"
+                + "var styleId='gpt-mini-chat-background-style';"
+                + "var layer=document.getElementById(id);"
+                + "var style=document.getElementById(styleId);"
+                + "var enabled=" + (!dataUrl.isEmpty() ? "true" : "false") + ";"
+                + "if(enabled){"
+                + "if(!document.body){return;}"
+                + "if(!layer){layer=document.createElement('div');layer.id=id;"
+                + "document.body.insertBefore(layer,document.body.firstChild);}"
+                + "if(!style){style=document.createElement('style');style.id=styleId;"
+                + "(document.head||document.documentElement).appendChild(style);}"
+                + "style.textContent=" + JSONObject.quote(chatBackgroundCss()) + ";"
+                + "layer.style.backgroundImage='url(\"'+"
+                + JSONObject.quote(dataUrl)
+                + "+'\")';"
+                + "layer.style.setProperty('--ai-mini-chat-background-dim',"
+                + JSONObject.quote(String.format(Locale.ROOT, "%.2f", dimPercent / 100f))
+                + ");"
+                + "document.documentElement.classList.add('ai-mini-chat-background-enabled');"
+                + "var reveal=function(){var composer=document.querySelector('.composer-shell');"
+                + "var node=composer&&composer.parentElement;var steps=0;"
+                + "while(node&&node!==document.body&&steps++<8){"
+                + "node.classList.add('gpt-mini-chat-background-surface');"
+                + "node=node.parentElement;}};"
+                + "reveal();setTimeout(reveal,260);setTimeout(reveal,900);"
+                + "}else{"
+                + "if(layer)layer.remove();if(style)style.remove();"
+                + "document.documentElement.classList.remove('ai-mini-chat-background-enabled');"
+                + "document.querySelectorAll('.gpt-mini-chat-background-surface').forEach("
+                + "function(node){node.classList.remove('gpt-mini-chat-background-surface');});"
+                + "}"
+                + "}catch(e){}})();";
+        webView.evaluateJavascript(script, null);
+    }
+
+    private String chatBackgroundCss() {
+        return "#gpt-mini-chat-background{position:fixed;inset:0;z-index:0;"
+                + "pointer-events:none;background-repeat:no-repeat;background-position:center;"
+                + "background-size:cover;overflow:hidden;}"
+                + "#gpt-mini-chat-background::after{content:'';position:absolute;inset:0;"
+                + "background:rgba(0,0,0,var(--ai-mini-chat-background-dim,.35));}"
+                + "html.ai-mini-chat-background-enabled body{background-color:transparent!important;"
+                + "background-image:none!important;}"
+                + "html.ai-mini-chat-background-enabled body>"
+                + ":not(#gpt-mini-chat-background){position:relative;z-index:1;}"
+                + "html.ai-mini-chat-background-enabled main,"
+                + "html.ai-mini-chat-background-enabled [role='main'],"
+                + "html.ai-mini-chat-background-enabled .chat-shell,"
+                + "html.ai-mini-chat-background-enabled .conversation,"
+                + "html.ai-mini-chat-background-enabled .conversation-view,"
+                + "html.ai-mini-chat-background-enabled .thread-view,"
+                + "html.ai-mini-chat-background-enabled .messages,"
+                + "html.ai-mini-chat-background-enabled .messages-container{"
+                + "background-color:transparent!important;background-image:none!important;}"
+                + "html.ai-mini-chat-background-enabled .gpt-mini-chat-background-surface{"
+                + "background-color:transparent!important;background-image:none!important;}"
+                + "html.ai-mini-chat-background-enabled .composer-shell,"
+                + "html.ai-mini-chat-background-enabled .composer{"
+                + "position:relative;z-index:3;}";
     }
 
     private void applyBrowserViewport(AIMiniGeckoView target, boolean desktopMode) {
@@ -5576,6 +5895,10 @@ public class MainActivity extends Activity {
             else Toast.makeText(this, R.string.scan_cancelled, Toast.LENGTH_SHORT).show();
             return;
         }
+        if (requestCode == CHAT_BACKGROUND_REQUEST) {
+            handleChatBackgroundResult(resultCode, data);
+            return;
+        }
 
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != FILE_CHOOSER_REQUEST) return;
@@ -5687,6 +6010,7 @@ public class MainActivity extends Activity {
         downloadIoExecutor.shutdownNow();
         uploadIoExecutor.shutdownNow();
         notificationIoExecutor.shutdownNow();
+        chatBackgroundIoExecutor.shutdownNow();
         for (PendingBlobDownload pending : pendingBlobDownloads.values()) {
             try {
                 pending.output.close();
@@ -5961,6 +6285,9 @@ public class MainActivity extends Activity {
         switch (type) {
             case "bridgeReady":
                 handler.post(() -> applyConversationFontScale(source));
+                if (source == webView) {
+                    handler.post(MainActivity.this::refreshChatBackgroundCacheAndApply);
+                }
                 handler.postDelayed(
                         () -> requestImmediateTaskStatusRefresh(source),
                         350
@@ -6136,6 +6463,7 @@ public class MainActivity extends Activity {
                 injectMobileFixes();
                 adaptPlainTextPageForMobile();
                 applyConversationFontScale(view);
+                refreshChatBackgroundCacheAndApply();
                 boolean nativeRouteAllowed = !hasDeviceProfileSelection(Uri.parse(url == null ? "" : url));
                 if (nativeRouteAllowed
                         && availableLocalApiBase != null
