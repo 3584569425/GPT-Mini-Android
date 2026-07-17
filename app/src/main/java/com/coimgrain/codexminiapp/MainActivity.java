@@ -122,6 +122,7 @@ public class MainActivity extends Activity {
     private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
     private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
     private static final String KEY_TOP_INSET_PAGE_MODE_MIGRATED = "top_inset_page_mode_migrated";
+    private static final String KEY_TOP_INSET_DEFAULT_V113_MIGRATED = "top_inset_default_v113_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
     static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
     static final String NOTIFICATION_MODE_END = "end";
@@ -145,9 +146,7 @@ public class MainActivity extends Activity {
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
-    private static final int DEFAULT_TOP_INSET_DP = 0;
-    // 默认比完整状态栏略收紧，避免 0 档时顶部功能栏视觉偏下。
-    private static final int TOP_INSET_STATUS_PULL_UP_DP = 12;
+    private static final int DEFAULT_TOP_INSET_DP = 20;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
     private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
@@ -1354,20 +1353,11 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 页面实际顶部 inset：收紧后的状态栏/刘海高度 + 用户额外间距。
-     * 默认 0 档时比完整状态栏略靠上，避免功能栏初始偏下；滑条仍可再往下加。
+     * 页面顶部 inset 直接等于用户「顶部区域高度」。
+     * 0 = 贴屏幕最顶（可与状态栏重叠）；默认 20dp。
      */
     private int resolvedPageTopInsetPx() {
-        return Math.max(0, tightenedStatusBarTopPx() + dp(topInsetDp()));
-    }
-
-    /** 状态栏基准略上收，给默认 0 档更紧凑的顶部位置。 */
-    private int tightenedStatusBarTopPx() {
-        int statusPx = Math.max(0, currentStatusBarTopPx());
-        int pullUp = dp(TOP_INSET_STATUS_PULL_UP_DP);
-        // 至少保留一部分避让，避免完全顶进状态栏图标。
-        int minKeep = Math.min(statusPx, dp(8));
-        return Math.max(minKeep, statusPx - pullUp);
+        return Math.max(0, dp(topInsetDp()));
     }
 
     private int currentStatusBarTopPx() {
@@ -1430,10 +1420,18 @@ public class MainActivity extends Activity {
         if (!preferences.getBoolean(KEY_TOP_INSET_PAGE_MODE_MIGRATED, false)) {
             editor.putBoolean(KEY_TOP_INSET_PAGE_MODE_MIGRATED, true);
             changed = true;
-            // 顶部黑块改为页面 inset：状态栏高度由系统自动计入，
-            // 滑条表示状态栏下的额外间距。旧默认 20dp 黑块改成 0 额外间距。
-            int current = preferences.getInt(KEY_TOP_INSET_DP, 20);
-            if (!preferences.contains(KEY_TOP_INSET_DP) || current == 20) {
+            // 页面 inset 模式首次迁移标记；具体默认值由后续 v113 统一到 20。
+            if (!preferences.contains(KEY_TOP_INSET_DP)) {
+                editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            }
+        }
+        if (!preferences.getBoolean(KEY_TOP_INSET_DEFAULT_V113_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_DEFAULT_V113_MIGRATED, true);
+            changed = true;
+            // 0 档=贴屏幕最顶；默认顶部区域高度 20dp。
+            // 将此前页面模式默认 0，以及未设置值，统一到 20。
+            int current = preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            if (!preferences.contains(KEY_TOP_INSET_DP) || current == 0) {
                 editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
             }
         }
@@ -1503,32 +1501,26 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 将「状态栏 + 用户额外间距」注入页面 CSS 变量，并只给靠近顶部的
-     * fixed/sticky 功能栏加 padding-top。body 不整体下移，页面背景可延伸进状态栏。
+     * 将用户设定的顶部区域高度注入页面 CSS 变量，并只给靠近顶部的
+     * fixed/sticky 功能栏加 padding-top。0 = 贴屏幕最顶；body 不整体下移，
+     * 页面背景可延伸进状态栏。
      */
     private void applyPageTopInsetToWeb() {
         if (webView == null) return;
-        int rawStatusPx = Math.max(0, currentStatusBarTopPx());
-        int statusPx = Math.max(0, tightenedStatusBarTopPx());
-        int extraPx = Math.max(0, dp(topInsetDp()));
-        int totalPx = Math.max(0, statusPx + extraPx);
+        int statusPx = Math.max(0, currentStatusBarTopPx());
+        int totalPx = Math.max(0, resolvedPageTopInsetPx());
         float density = getResources().getDisplayMetrics().density;
         if (density <= 0f) density = 1f;
         String totalCss = String.format(Locale.US, "%.2fpx", totalPx / density);
         String statusCss = String.format(Locale.US, "%.2fpx", statusPx / density);
-        String rawStatusCss = String.format(Locale.US, "%.2fpx", rawStatusPx / density);
-        String extraCss = String.format(Locale.US, "%.2fpx", extraPx / density);
         String script = "(function(){try{"
                 + "var total=" + JSONObject.quote(totalCss) + ";"
                 + "var status=" + JSONObject.quote(statusCss) + ";"
-                + "var rawStatus=" + JSONObject.quote(rawStatusCss) + ";"
-                + "var extra=" + JSONObject.quote(extraCss) + ";"
                 + "var root=document.documentElement;if(!root){return false;}"
                 + "root.classList.add('ai-mini-geckoview','ai-mini-webview','android-keyboard-mode');"
                 + "root.style.setProperty('--ai-mini-top-inset',total,'important');"
                 + "root.style.setProperty('--ai-mini-status-inset',status,'important');"
-                + "root.style.setProperty('--ai-mini-status-raw',rawStatus,'important');"
-                + "root.style.setProperty('--ai-mini-top-extra',extra,'important');"
+                + "root.style.setProperty('--ai-mini-top-extra',total,'important');"
                 + "root.style.setProperty('--ai-mini-safe-top',total,'important');"
                 + "root.style.setProperty('--sat',total,'important');"
                 + "root.style.setProperty('padding-top','0px','important');"
@@ -1561,7 +1553,7 @@ public class MainActivity extends Activity {
                                 + "html.ai-mini-geckoview [class*='ModelBar'],"
                                 + "html.ai-mini-webview [class*='ModelBar']{"
                                 + "top:0!important;"
-                                + "padding-top:var(--ai-mini-top-inset,env(safe-area-inset-top,0px))!important;"
+                                + "padding-top:var(--ai-mini-top-inset,0px)!important;"
                                 + "box-sizing:border-box!important;}"
                 )
                 + ";"
@@ -4326,7 +4318,7 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-geckoview [class*='model-bar'],html.ai-mini-webview [class*='model-bar'],"
                 + "html.ai-mini-geckoview [class*='ModelBar'],html.ai-mini-webview [class*='ModelBar']{"
                 + "top:0!important;"
-                + "padding-top:var(--ai-mini-top-inset,env(safe-area-inset-top,0px))!important;"
+                + "padding-top:var(--ai-mini-top-inset,0px)!important;"
                 + "box-sizing:border-box!important;}"
                 + ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
                 + "'Apple Chancery','Segoe Script',cursive!important;}"
