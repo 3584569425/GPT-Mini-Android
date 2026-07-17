@@ -312,7 +312,8 @@ public class MainActivity extends Activity {
         Window window = getWindow();
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.BLACK);
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        // 边缘到边缘下由 IME insets + host padding 单独抬高输入区，避免与 ADJUST_RESIZE 叠成双倍高度。
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
             window.setStatusBarContrastEnforced(false);
@@ -792,7 +793,7 @@ public class MainActivity extends Activity {
         ));
 
         externalBrowserContainer = new FrameLayout(this);
-        externalBrowserContainer.setBackgroundColor(Color.BLACK);
+        externalBrowserContainer.setBackgroundColor(Color.WHITE);
         externalBrowserContainer.setVisibility(View.GONE);
         browserFrame.addView(externalBrowserContainer, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -1766,6 +1767,9 @@ public class MainActivity extends Activity {
         boolean creatingBrowser = externalWebView == null;
         if (externalWebView == null) {
             externalWebView = new AIMiniBrowserView(this, browserEngine);
+            // 外链页：浅色底 + 不注入 WebUI bridge，避免顶部透黑、脚本干扰。
+            externalWebView.setPageBridgeEnabled(false);
+            externalWebView.setContentBackgroundColor(Color.WHITE);
             externalBrowserContainer.removeAllViews();
             externalBrowserContainer.addView(externalWebView, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -1777,6 +1781,8 @@ public class MainActivity extends Activity {
         }
 
         if (creatingBrowser) externalDesktopMode = false;
+        externalBrowserContainer.setBackgroundColor(Color.WHITE);
+        externalWebView.setContentBackgroundColor(Color.WHITE);
         applyBrowserMode(externalWebView, externalDesktopMode, externalMobileUserAgent);
         if (webView != null) webView.prepareForBackground(false);
         externalWebView.prepareForForeground();
@@ -2234,7 +2240,7 @@ public class MainActivity extends Activity {
         String content = desktopMode
                 ? "width=1280, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes"
                 : "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, "
-                        + "interactive-widget=resizes-content";
+                        + "interactive-widget=overlays-content";
         String script = "(function(){try{"
                 + "var desired=" + JSONObject.quote(content) + ";"
                 + "var desktop=" + (desktopMode ? "true" : "false") + ";"
@@ -2442,12 +2448,105 @@ public class MainActivity extends Activity {
     }
 
     private void openSystemLink(Uri uri) {
-        if (uri == null || isInternalBrowserScheme(uri.getScheme())) return;
+        if (uri == null) return;
+        String scheme = uri.getScheme();
+        if (isInternalBrowserScheme(scheme)) return;
+
+        // 无 scheme 的 //host 链接，优先应用内打开。
+        if (scheme == null || scheme.isEmpty()) {
+            String raw = uri.toString();
+            if (raw.startsWith("//")) {
+                openExternalPage("https:" + raw);
+                return;
+            }
+            if (raw.startsWith("www.")) {
+                openExternalPage("https://" + raw);
+                return;
+            }
+        }
+
+        // http(s) 永远不跳系统浏览器。
+        if (isHttpScheme(scheme)) {
+            openExternalPage(uri.toString());
+            return;
+        }
+
+        // intent:// 优先取 browser_fallback_url，避免“一点链接就跳出到系统浏览器”。
+        if ("intent".equalsIgnoreCase(scheme)) {
+            String fallback = intentFallbackHttpUrl(uri);
+            if (fallback != null && !fallback.isEmpty()) {
+                openExternalPage(fallback);
+                return;
+            }
+            try {
+                Intent intent = Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME);
+                if (intent != null) {
+                    String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                    if (fallbackUrl == null || fallbackUrl.isEmpty()) {
+                        fallbackUrl = intent.getStringExtra("S.browser_fallback_url");
+                    }
+                    if (fallbackUrl != null && !fallbackUrl.isEmpty()
+                            && isHttpScheme(Uri.parse(fallbackUrl).getScheme())) {
+                        openExternalPage(fallbackUrl);
+                        return;
+                    }
+                    // 仅尝试拉起明确的第三方 App；不要把 generic VIEW 交给浏览器包。
+                    if (intent.getPackage() != null || intent.getComponent() != null) {
+                        startActivity(intent);
+                        return;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            Toast.makeText(this, R.string.no_app_for_link, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            intent.addCategory(Intent.CATEGORY_BROWSABLE);
+            intent.setComponent(null);
+            intent.setSelector(null);
+            // 明确排除“仅因没有 App 就落到默认浏览器”的 http 回落：上面已拦截 http。
+            startActivity(intent);
         } catch (ActivityNotFoundException ignored) {
             Toast.makeText(this, R.string.no_app_for_link, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private String intentFallbackHttpUrl(Uri uri) {
+        if (uri == null) return null;
+        try {
+            String raw = uri.toString();
+            // intent://host/path#Intent;scheme=https;S.browser_fallback_url=...;end
+            int intentIdx = raw.indexOf("#Intent;");
+            if (intentIdx < 0) intentIdx = raw.indexOf(";Intent;");
+            String extras = intentIdx >= 0 ? raw.substring(intentIdx) : raw;
+            String[] keys = {
+                    "S.browser_fallback_url=",
+                    "browser_fallback_url=",
+                    "S.browser_fallback_url=",
+            };
+            for (String key : keys) {
+                int at = extras.indexOf(key);
+                if (at < 0) continue;
+                int start = at + key.length();
+                int end = extras.indexOf(';', start);
+                if (end < 0) end = extras.length();
+                String value = Uri.decode(extras.substring(start, end).trim());
+                if (value.startsWith("http://") || value.startsWith("https://")) {
+                    return value;
+                }
+            }
+            // intent: 里 scheme=https; 且 path 可还原
+            Intent parsed = Intent.parseUri(raw, Intent.URI_INTENT_SCHEME);
+            if (parsed != null && parsed.getData() != null
+                    && isHttpScheme(parsed.getData().getScheme())) {
+                return parsed.getData().toString();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private void showWelcome() {
@@ -4258,8 +4357,8 @@ public class MainActivity extends Activity {
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(meta){"
                 + "var c=meta.getAttribute('content')||'';"
-                + "c=c.replace(/interactive-widget=overlays-content/g,'interactive-widget=resizes-content');"
-                + "if(c.indexOf('interactive-widget=')<0){c+=', interactive-widget=resizes-content';}"
+                + "c=c.replace(/interactive-widget=resizes-content/g,'interactive-widget=overlays-content');"
+                + "if(c.indexOf('interactive-widget=')<0){c+=', interactive-widget=overlays-content';}"
                 + "meta.setAttribute('content',c);"
                 + "}"
                 + "var style=document.createElement('style');"
@@ -4509,12 +4608,11 @@ public class MainActivity extends Activity {
             return;
         }
         lastLegacyImeInsetBottom = -1;
-        // The page patch only needs the open/closed transition. Dispatching
-        // JavaScript for every IME animation pixel caused avoidable jank and, on
-        // some ROMs, let stale legacy callbacks race the modern Insets callback.
+        // Modern glass composer：宿主 padding 已抬高输入区，页面侧必须保持 0 位移，
+        // 否则会叠加成“升两倍键盘高度”。只同步 open/closed，inset 像素传 0。
         if (keyboardWasOpen == isOpen) return;
         keyboardWasOpen = isOpen;
-        notifyKeyboardInsetToWeb(effectiveInset, isOpen);
+        notifyKeyboardInsetToWeb(0, isOpen);
     }
 
     private void watchKeyboardLegacy(View root) {
@@ -6294,6 +6392,13 @@ public class MainActivity extends Activity {
                 String candidate = rawUri == null ? "" : rawUri;
                 Uri uri = Uri.parse(candidate);
                 String scheme = uri.getScheme();
+                // 协议相对地址先归一成 https，避免掉进系统浏览器。
+                if (scheme == null || scheme.isEmpty()) {
+                    if (candidate.startsWith("//")) {
+                        openExternalPage("https:" + candidate);
+                        return true;
+                    }
+                }
                 if (isHttpScheme(scheme)) {
                     if (hasDeviceProfileSelection(uri)) {
                         availableLocalApiBase = null;
@@ -6321,7 +6426,9 @@ public class MainActivity extends Activity {
                         view.loadUrl(repaired);
                         return true;
                     }
-                    if (hasUserGesture && !sameMainDocument) {
+                    // 离开主 WebUI 文档的链接统一应用内打开；不依赖 hasUserGesture，
+                    // 避免部分跳转漏报手势后落到系统浏览器或其他路径。
+                    if (!sameMainDocument) {
                         openExternalPage(candidate);
                         return true;
                     }

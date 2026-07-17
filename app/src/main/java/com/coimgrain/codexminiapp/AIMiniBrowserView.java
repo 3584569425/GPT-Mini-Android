@@ -29,6 +29,7 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
@@ -113,6 +114,8 @@ final class AIMiniBrowserView extends FrameLayout {
     private boolean hostInForeground = true;
     private boolean suspendedForBackground;
     private boolean desktopMode;
+    private boolean pageBridgeEnabled = true;
+    private int contentBackgroundColor = PAGE_BACKGROUND_COLOR;
     private String mobileUserAgent = "";
     private String desktopUserAgent = "";
     private long pageStartGeneration;
@@ -125,15 +128,27 @@ final class AIMiniBrowserView extends FrameLayout {
     AIMiniBrowserView(Context context, AIMiniBrowserEngine engine) {
         super(context);
         this.engine = engine;
-        setBackgroundColor(PAGE_BACKGROUND_COLOR);
+        setBackgroundColor(contentBackgroundColor);
         webView = new WebView(context);
-        webView.setBackgroundColor(PAGE_BACKGROUND_COLOR);
+        webView.setBackgroundColor(contentBackgroundColor);
         addView(webView, new LayoutParams(
                 LayoutParams.MATCH_PARENT,
                 LayoutParams.MATCH_PARENT
         ));
         configureWebView();
         engine.register(this);
+    }
+
+    /** 外链浏览关闭 WebUI bridge，避免把会话页脚本注入普通网页。 */
+    void setPageBridgeEnabled(boolean enabled) {
+        pageBridgeEnabled = enabled;
+    }
+
+    void setContentBackgroundColor(int color) {
+        contentBackgroundColor = color;
+        setBackgroundColor(color);
+        if (webView != null) webView.setBackgroundColor(color);
+        if (compositorCover != null) compositorCover.setBackgroundColor(color);
     }
 
     WebView rawWebView() {
@@ -446,6 +461,15 @@ final class AIMiniBrowserView extends FrameLayout {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             settings.setSafeBrowsingEnabled(false);
         }
+        // 禁止系统按深色主题强行给普通网页“反色”，否则百度等浅色页顶部会发黑。
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false);
+            } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(settings, WebSettingsCompat.FORCE_DARK_OFF);
+            }
+        } catch (Throwable ignored) {
+        }
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
@@ -453,6 +477,16 @@ final class AIMiniBrowserView extends FrameLayout {
         // 顶部改为页面 inset 控制，不再消费 statusBars。
         // WebView 延伸进状态栏区域，由 --ai-mini-top-inset 下移顶部功能栏，
         // 避免原生黑块。
+        // 键盘避让由 Activity 统一处理：消费 IME insets，防止 WebView 再抬一次。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            webView.setOnApplyWindowInsetsListener((v, insets) -> {
+                Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                if (ime.left == 0 && ime.top == 0 && ime.right == 0 && ime.bottom == 0) {
+                    return insets;
+                }
+                return insets.inset(ime.left, ime.top, ime.right, ime.bottom);
+            });
+        }
         webView.addJavascriptInterface(new BridgeInterface(), "AIMiniNative");
         // 兼容 page.js 中 window.CodexMiniNative 直接调用路径：
         // page.js 通过 CustomEvent 发送，但仍保留旧接口名给遗留脚本。
@@ -620,6 +654,7 @@ final class AIMiniBrowserView extends FrameLayout {
     }
 
     private void injectBridgeFallback() {
+        if (!pageBridgeEnabled) return;
         String script = engine.documentStartScript();
         if (script == null || script.isEmpty()) return;
         try {
@@ -642,7 +677,7 @@ final class AIMiniBrowserView extends FrameLayout {
         long generation = ++compositorCoverGeneration;
         if (compositorCover == null || compositorCover.getParent() != this) {
             compositorCover = new ImageView(getContext());
-            compositorCover.setBackgroundColor(PAGE_BACKGROUND_COLOR);
+            compositorCover.setBackgroundColor(contentBackgroundColor);
             compositorCover.setScaleType(ImageView.ScaleType.FIT_XY);
             compositorCover.setClickable(false);
             addView(compositorCover, new LayoutParams(

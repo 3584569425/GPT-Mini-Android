@@ -229,11 +229,11 @@
         if (!meta) return;
         let content = String(meta.getAttribute("content") || "");
         content = content.replace(
-          /interactive-widget\s*=\s*overlays-content/gi,
-          "interactive-widget=resizes-content"
+          /interactive-widget\s*=\s*resizes-content/gi,
+          "interactive-widget=overlays-content"
         );
         if (!/interactive-widget\s*=/i.test(content)) {
-          content += (content.trim() ? ", " : "") + "interactive-widget=resizes-content";
+          content += (content.trim() ? ", " : "") + "interactive-widget=overlays-content";
         }
         if (meta.getAttribute("content") !== content) {
           meta.setAttribute("content", content);
