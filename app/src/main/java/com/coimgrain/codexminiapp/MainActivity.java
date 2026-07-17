@@ -4443,7 +4443,26 @@ public class MainActivity extends Activity {
                 + "var(--ai-mini-native-keyboard-shift,0px)),0)!important;"
                 + "transition:none!important;"
                 + "will-change:transform!important;}"
+                + "html.ai-mini-webview:not(.liquid-glass-off),"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off){"
+                + "--liquid-glass-filter:none!important;"
+                + "--liquid-glass-backdrop:blur(6px) saturate(140%)!important;}"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-warp,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-warp,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .task-plan-dock-card::before,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) .task-plan-dock-card::before{"
+                + "filter:none!important;-webkit-filter:none!important;"
+                + "backdrop-filter:blur(6px) saturate(140%)!important;"
+                + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;}"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-border-screen,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-border-overlay,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-hover-glow,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-active-glow,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-top-glow{"
+                + "display:none!important;}"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) "
                 + ".composer.codex-liquid-glass-original{"
                 + "background:rgba(255,255,255,.06)!important;"
                 + "border:1px solid rgba(255,255,255,.18)!important;"
@@ -4451,10 +4470,14 @@ public class MainActivity extends Activity {
                 + "box-shadow:0 12px 42px rgba(0,0,0,.27),"
                 + "inset 0 1px 0 rgba(255,255,255,.10),"
                 + "inset 0 -1px 0 rgba(0,0,0,.08)!important;"
-                + "overflow:hidden!important;isolation:isolate!important;}"
+                + "overflow:hidden!important;isolation:isolate!important;"
+                + "contain:paint!important;}"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original>.liquid-glass-warp,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) "
                 + ".composer.codex-liquid-glass-original>.liquid-glass-warp{"
                 + "display:block!important;filter:none!important;"
+                + "-webkit-filter:none!important;"
                 + "position:absolute!important;inset:-1px!important;"
                 + "border-radius:inherit!important;background:transparent!important;"
                 + "backdrop-filter:blur(6px) saturate(140%)!important;"
@@ -4748,13 +4771,14 @@ public class MainActivity extends Activity {
         boolean downloadsVisible = downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE;
         applyBackdropBlur(nativeLiquidGlassEnabled() && (menuVisible || downloadsVisible), dp(10));
         if (miniMenuScrim != null) {
+            // 不用整页 RenderEffect 时，略加强 scrim 以保留玻璃菜单的景深感。
             miniMenuScrim.setBackgroundColor(nativeLiquidGlassEnabled()
-                    ? Color.argb(isFloatMenuLight() ? 22 : 52, 0, 0, 0)
+                    ? Color.argb(isFloatMenuLight() ? 36 : 78, 0, 0, 0)
                     : Color.TRANSPARENT);
         }
         if (downloadsScrim != null) {
             downloadsScrim.setBackgroundColor(nativeLiquidGlassEnabled()
-                    ? Color.argb(isFloatMenuLight() ? 20 : 54, 0, 0, 0)
+                    ? Color.argb(isFloatMenuLight() ? 34 : 80, 0, 0, 0)
                     : Color.argb(48, 0, 0, 0));
         }
     }
@@ -4766,12 +4790,16 @@ public class MainActivity extends Activity {
     }
 
     private void applyBackdropBlur(boolean enabled, int radius) {
+        // Chromium WebView 上对整页 setRenderEffect(blur) 会在滚动/输入时严重掉帧。
+        // 液态玻璃外观改由页面 CSS 的 frosted backdrop + 原生 scrim 完成，
+        // 这里只确保清掉可能残留的 RenderEffect，不再对 WebView 做全屏实时模糊。
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
         AIMiniBrowserView target = activeWebView();
         if (target == null) return;
-        target.setRenderEffect(enabled
-                ? RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
-                : null);
+        try {
+            target.setRenderEffect(null);
+        } catch (Throwable ignored) {
+        }
     }
 
     private TextView downloadHeaderTextButton(int textRes) {
