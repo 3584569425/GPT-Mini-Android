@@ -477,16 +477,8 @@ final class AIMiniBrowserView extends FrameLayout {
         // 顶部改为页面 inset 控制，不再消费 statusBars。
         // WebView 延伸进状态栏区域，由 --ai-mini-top-inset 下移顶部功能栏，
         // 避免原生黑块。
-        // 键盘避让由 Activity 统一处理：消费 IME insets，防止 WebView 再抬一次。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            webView.setOnApplyWindowInsetsListener((v, insets) -> {
-                Insets ime = insets.getInsets(WindowInsets.Type.ime());
-                if (ime.left == 0 && ime.top == 0 && ime.right == 0 && ime.bottom == 0) {
-                    return insets;
-                }
-                return insets.inset(ime.left, ime.top, ime.right, ime.bottom);
-            });
-        }
+        // 键盘：对齐 Gecko，由 Activity 的 ADJUST_RESIZE + IME insets/host padding 处理，
+        // 不在 WebView 上消费 IME，避免布局与页面位移不同步。
         webView.addJavascriptInterface(new BridgeInterface(), "AIMiniNative");
         // 兼容 page.js 中 window.CodexMiniNative 直接调用路径：
         // page.js 通过 CustomEvent 发送，但仍保留旧接口名给遗留脚本。

@@ -312,8 +312,7 @@ public class MainActivity extends Activity {
         Window window = getWindow();
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.BLACK);
-        // 边缘到边缘下由 IME insets + host padding 单独抬高输入区，避免与 ADJUST_RESIZE 叠成双倍高度。
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
             window.setStatusBarContrastEnforced(false);
@@ -2240,7 +2239,7 @@ public class MainActivity extends Activity {
         String content = desktopMode
                 ? "width=1280, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes"
                 : "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, "
-                        + "interactive-widget=overlays-content";
+                        + "interactive-widget=resizes-content";
         String script = "(function(){try{"
                 + "var desired=" + JSONObject.quote(content) + ";"
                 + "var desktop=" + (desktopMode ? "true" : "false") + ";"
@@ -4357,8 +4356,8 @@ public class MainActivity extends Activity {
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(meta){"
                 + "var c=meta.getAttribute('content')||'';"
-                + "c=c.replace(/interactive-widget=resizes-content/g,'interactive-widget=overlays-content');"
-                + "if(c.indexOf('interactive-widget=')<0){c+=', interactive-widget=overlays-content';}"
+                + "c=c.replace(/interactive-widget=overlays-content/g,'interactive-widget=resizes-content');"
+                + "if(c.indexOf('interactive-widget=')<0){c+=', interactive-widget=resizes-content';}"
                 + "meta.setAttribute('content',c);"
                 + "}"
                 + "var style=document.createElement('style');"
@@ -4425,11 +4424,15 @@ public class MainActivity extends Activity {
                 // ancestor is permanently promoted by translate3d/will-change.
                 // ADJUST_RESIZE already moves the visual viewport, so the WebUI's
                 // extra keyboard transform is unnecessary in the app.
-                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell{"
+                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,"
+                + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell{"
                 + "transform:none!important;transition:none!important;"
-                + "will-change:auto!important;}"
+                + "will-change:auto!important;"
+                + "bottom:0!important;margin-bottom:0!important;}"
                 + "html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,"
-                + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread{"
+                + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread,"
+                + "html.ai-mini-webview.ai-mini-legacy-composer .composer-shell,"
+                + "html.ai-mini-webview.ai-mini-legacy-composer .thread{"
                 + "transform:translate3d(0,calc(-1 * "
                 + "var(--ai-mini-native-keyboard-shift,0px)),0)!important;"
                 + "transition:none!important;"
@@ -4553,25 +4556,20 @@ public class MainActivity extends Activity {
         int keyboardBottom = imeReportedVisible
                 ? Math.max(0, ime.bottom)
                 : (overlapFallbackVisible ? visibleOverlap : 0);
-        // The modern glass composer follows the resized native host and must
-        // not receive a second CSS translation. The legacy composer was built
-        // for an overlaid visual viewport, so keep its Gecko surface full
-        // height and let the dedicated --ai-mini-native-keyboard-shift
-        // transform follow the IME instead. This keeps both variants on one
-        // movement path and prevents a double-keyboard-height offset.
-        int contentBottom = legacyComposerImeBridgeEnabled
-                ? Math.max(0, navigation.bottom)
-                : (imeVisible
-                        ? Math.max(navigation.bottom, keyboardBottom)
-                        : Math.max(0, navigation.bottom));
+        // WebView / Chromium 与 Gecko 不同：
+        // 1) SOFT_INPUT_ADJUST_RESIZE + interactive-widget=resizes-content 会真实
+        //    缩小布局，固定底栏输入区会被系统抬一次。
+        // 2) 若再把 keyboardBottom 写进 host padding，就会抬第二次，中间出现
+        //    约一个键盘高度的黑块（用户截图的“两倍黑屏”）。
+        // 因此 host 永远只保留 navigation 避让。
+        // 页面侧：
+        // - 现代 glass：CSS transform 强制 0，这里仍把键盘高度传给 page.js
+        //   仅用于 keyboard-open 状态同步（page.js 会把 shift 置 0）。
+        // - legacy composer：同一数值作为 --ai-mini-native-keyboard-shift。
+        int contentBottom = Math.max(0, navigation.bottom);
         applyHostBottomInset(contentBottom);
-        // IME Insets can include the navigation-bar area on some ROMs. The
-        // legacy path already keeps that area as native host padding, so only
-        // send the keyboard portion above it to the WebUI transform.
         int pageKeyboardBottom = imeVisible
-                ? (legacyComposerImeBridgeEnabled
-                        ? Math.max(0, keyboardBottom - navigation.bottom)
-                        : keyboardBottom)
+                ? Math.max(0, keyboardBottom - navigation.bottom)
                 : 0;
         applyImeInset(root, pageKeyboardBottom);
     }
@@ -4608,11 +4606,13 @@ public class MainActivity extends Activity {
             return;
         }
         lastLegacyImeInsetBottom = -1;
-        // Modern glass composer：宿主 padding 已抬高输入区，页面侧必须保持 0 位移，
-        // 否则会叠加成“升两倍键盘高度”。只同步 open/closed，inset 像素传 0。
+        // Modern glass: only sync open/closed. Pixel values still go through so
+        // page.js can set keyboardOpen=true (it keys off px>0), but page.js and
+        // CSS force the visual shift to 0 for non-legacy composers. Dispatching
+        // every animation frame causes jank, so only notify on state change.
         if (keyboardWasOpen == isOpen) return;
         keyboardWasOpen = isOpen;
-        notifyKeyboardInsetToWeb(0, isOpen);
+        notifyKeyboardInsetToWeb(effectiveInset, isOpen);
     }
 
     private void watchKeyboardLegacy(View root) {
@@ -4633,12 +4633,10 @@ public class MainActivity extends Activity {
                 int navigationBottom = insets == null
                         ? 0
                         : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
-                applyHostBottomInset(legacyComposerImeBridgeEnabled
-                        ? navigationBottom
-                        : (keyboardOpen
-                                ? Math.max(navigationBottom, hidden)
-                                : navigationBottom));
+                // 与 applyModernImeInsets 一致：host 不承担键盘高度，避免双倍黑块。
+                applyHostBottomInset(navigationBottom);
             }
+            // 传实际遮挡高度：legacy 用于 CSS shift，现代仅用于 open 状态同步。
             applyImeInset(root, keyboardOpen ? hidden : 0);
         });
     }

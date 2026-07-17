@@ -229,11 +229,11 @@
         if (!meta) return;
         let content = String(meta.getAttribute("content") || "");
         content = content.replace(
-          /interactive-widget\s*=\s*resizes-content/gi,
-          "interactive-widget=overlays-content"
+          /interactive-widget\s*=\s*overlays-content/gi,
+          "interactive-widget=resizes-content"
         );
         if (!/interactive-widget\s*=/i.test(content)) {
-          content += (content.trim() ? ", " : "") + "interactive-widget=overlays-content";
+          content += (content.trim() ? ", " : "") + "interactive-widget=resizes-content";
         }
         if (meta.getAttribute("content") !== content) {
           meta.setAttribute("content", content);
@@ -713,10 +713,21 @@
     const style = document.createElement("style");
     style.id = "ai-mini-gecko-liquid-glass";
     style.textContent = `
-      html.ai-mini-geckoview .composer-shell {
+      html.ai-mini-geckoview .composer-shell,
+      html.ai-mini-webview .composer-shell {
         transform: none !important;
         transition: none !important;
         will-change: auto !important;
+        bottom: 0 !important;
+        margin-bottom: 0 !important;
+      }
+      html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,
+      html.ai-mini-geckoview.ai-mini-legacy-composer .thread,
+      html.ai-mini-webview.ai-mini-legacy-composer .composer-shell,
+      html.ai-mini-webview.ai-mini-legacy-composer .thread {
+        transform: translate3d(0, calc(-1 * var(--ai-mini-native-keyboard-shift, 0px)), 0) !important;
+        transition: none !important;
+        will-change: transform !important;
       }
       html.ai-mini-geckoview:not(.liquid-glass-off)
       .composer.codex-liquid-glass-original {
