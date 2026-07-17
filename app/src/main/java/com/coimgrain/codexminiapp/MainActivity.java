@@ -146,6 +146,8 @@ public class MainActivity extends Activity {
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
     private static final int DEFAULT_TOP_INSET_DP = 0;
+    // 默认比完整状态栏略收紧，避免 0 档时顶部功能栏视觉偏下。
+    private static final int TOP_INSET_STATUS_PULL_UP_DP = 12;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
     private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
@@ -1352,13 +1354,20 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 页面实际顶部 inset：系统状态栏/刘海 + 用户在「顶部区域高度」中设定的额外间距。
-     * 用户值按「在状态栏之下再留多少」理解，而不是再画一块原生黑底。
+     * 页面实际顶部 inset：收紧后的状态栏/刘海高度 + 用户额外间距。
+     * 默认 0 档时比完整状态栏略靠上，避免功能栏初始偏下；滑条仍可再往下加。
      */
     private int resolvedPageTopInsetPx() {
-        int statusPx = currentStatusBarTopPx();
-        int extraPx = dp(topInsetDp());
-        return Math.max(0, statusPx + extraPx);
+        return Math.max(0, tightenedStatusBarTopPx() + dp(topInsetDp()));
+    }
+
+    /** 状态栏基准略上收，给默认 0 档更紧凑的顶部位置。 */
+    private int tightenedStatusBarTopPx() {
+        int statusPx = Math.max(0, currentStatusBarTopPx());
+        int pullUp = dp(TOP_INSET_STATUS_PULL_UP_DP);
+        // 至少保留一部分避让，避免完全顶进状态栏图标。
+        int minKeep = Math.min(statusPx, dp(8));
+        return Math.max(minKeep, statusPx - pullUp);
     }
 
     private int currentStatusBarTopPx() {
@@ -1499,22 +1508,26 @@ public class MainActivity extends Activity {
      */
     private void applyPageTopInsetToWeb() {
         if (webView == null) return;
-        int statusPx = Math.max(0, currentStatusBarTopPx());
+        int rawStatusPx = Math.max(0, currentStatusBarTopPx());
+        int statusPx = Math.max(0, tightenedStatusBarTopPx());
         int extraPx = Math.max(0, dp(topInsetDp()));
         int totalPx = Math.max(0, statusPx + extraPx);
         float density = getResources().getDisplayMetrics().density;
         if (density <= 0f) density = 1f;
         String totalCss = String.format(Locale.US, "%.2fpx", totalPx / density);
         String statusCss = String.format(Locale.US, "%.2fpx", statusPx / density);
+        String rawStatusCss = String.format(Locale.US, "%.2fpx", rawStatusPx / density);
         String extraCss = String.format(Locale.US, "%.2fpx", extraPx / density);
         String script = "(function(){try{"
                 + "var total=" + JSONObject.quote(totalCss) + ";"
                 + "var status=" + JSONObject.quote(statusCss) + ";"
+                + "var rawStatus=" + JSONObject.quote(rawStatusCss) + ";"
                 + "var extra=" + JSONObject.quote(extraCss) + ";"
                 + "var root=document.documentElement;if(!root){return false;}"
                 + "root.classList.add('ai-mini-geckoview','ai-mini-webview','android-keyboard-mode');"
                 + "root.style.setProperty('--ai-mini-top-inset',total,'important');"
                 + "root.style.setProperty('--ai-mini-status-inset',status,'important');"
+                + "root.style.setProperty('--ai-mini-status-raw',rawStatus,'important');"
                 + "root.style.setProperty('--ai-mini-top-extra',extra,'important');"
                 + "root.style.setProperty('--ai-mini-safe-top',total,'important');"
                 + "root.style.setProperty('--sat',total,'important');"
@@ -1547,11 +1560,13 @@ public class MainActivity extends Activity {
                                 + "html.ai-mini-webview [class*='model-bar'],"
                                 + "html.ai-mini-geckoview [class*='ModelBar'],"
                                 + "html.ai-mini-webview [class*='ModelBar']{"
+                                + "top:0!important;"
                                 + "padding-top:var(--ai-mini-top-inset,env(safe-area-inset-top,0px))!important;"
                                 + "box-sizing:border-box!important;}"
                 )
                 + ";"
-                // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部 composer
+                // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部 composer。
+                // 强制 top:0 + padding-top，避免 env(safe-area) 的 top 与 padding 双重下移。
                 + "var nodes=document.body?document.body.querySelectorAll('*'):[];"
                 + "for(var i=0;i<nodes.length;i++){"
                 + "var el=nodes[i];"
@@ -1560,12 +1575,14 @@ public class MainActivity extends Activity {
                 + "var pos=cs.position;"
                 + "if(pos!=='fixed'&&pos!=='sticky'){continue;}"
                 + "var top=parseFloat(cs.top);"
-                + "if(isNaN(top)||top>2){continue;}"
+                + "if(isNaN(top)){top=0;}"
+                + "if(top>48){continue;}"
                 + "var rect=el.getBoundingClientRect();"
                 + "if(rect.height<=0||rect.width<=0){continue;}"
-                + "if(rect.top>96){continue;}"
+                + "if(rect.top>120){continue;}"
                 + "var bottom=parseFloat(cs.bottom);"
                 + "if(!isNaN(bottom)&&bottom<=2&&rect.bottom>window.innerHeight*0.55){continue;}"
+                + "el.style.setProperty('top','0px','important');"
                 + "el.style.setProperty('padding-top',total,'important');"
                 + "el.style.setProperty('box-sizing','border-box','important');"
                 + "}catch(ignore){}"
@@ -4308,6 +4325,7 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-geckoview [class*='TopBar'],html.ai-mini-webview [class*='TopBar'],"
                 + "html.ai-mini-geckoview [class*='model-bar'],html.ai-mini-webview [class*='model-bar'],"
                 + "html.ai-mini-geckoview [class*='ModelBar'],html.ai-mini-webview [class*='ModelBar']{"
+                + "top:0!important;"
                 + "padding-top:var(--ai-mini-top-inset,env(safe-area-inset-top,0px))!important;"
                 + "box-sizing:border-box!important;}"
                 + ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
