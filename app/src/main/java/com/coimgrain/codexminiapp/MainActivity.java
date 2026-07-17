@@ -1585,7 +1585,7 @@ public class MainActivity extends Activity {
     @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
         mainMobileUserAgent = GeckoSession.getDefaultUserAgent()
-                + " GPTMiniAndroidApp/1.25.8";
+                + " GPTMiniAndroidApp/1.25.9";
         webView.setDelegate(createMainBrowserDelegate());
         webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -2057,7 +2057,7 @@ public class MainActivity extends Activity {
     private String desktopUserAgent() {
         return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 + "Gecko/20100101 Firefox/152.0 GPTMiniAndroidApp/"
-                + "1.25.8";
+                + "1.25.9";
     }
 
     private void applyConversationFontScale(AIMiniGeckoView target) {
@@ -4076,14 +4076,17 @@ public class MainActivity extends Activity {
                 + "'ai-mini-legacy-composer',legacy);"
                 + "return legacy;};"
                 + "var legacyComposer=detectLegacyComposer();"
-                + "if(window.__AIMiniFixVersion==='1.25.8'){return legacyComposer;}"
-                + "window.__AIMiniFixVersion='1.25.8';"
+                + "if(window.__AIMiniFixVersion==='1.25.9'){return legacyComposer;}"
+                + "window.__AIMiniFixVersion='1.25.9';"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
                 + "try{if(!detectLegacyComposer()){return false;}"
                 + "var density=Math.max(1,Number(window.devicePixelRatio)||1);"
-                + "var cssPx=Math.max(0,Number(devicePixels)||0)/density;"
+                + "var nativeCssPx=Math.max(0,Number(devicePixels)||0)/density;"
+                + "var trim=parseFloat(getComputedStyle(document.documentElement)"
+                + ".getPropertyValue('--keyboard-shift-trim'))||0;"
+                + "var cssPx=Math.max(0,nativeCssPx-Math.max(0,trim));"
                 + "var cssValue=cssPx.toFixed(2)+'px';"
                 + "document.documentElement.style.setProperty("
                 + "'--ai-mini-native-keyboard-shift',cssValue,'important');"
@@ -4292,7 +4295,15 @@ public class MainActivity extends Activity {
                         ? Math.max(navigation.bottom, keyboardBottom)
                         : Math.max(0, navigation.bottom));
         applyHostBottomInset(contentBottom);
-        applyImeInset(root, imeVisible ? keyboardBottom : 0);
+        // IME Insets can include the navigation-bar area on some ROMs. The
+        // legacy path already keeps that area as native host padding, so only
+        // send the keyboard portion above it to the WebUI transform.
+        int pageKeyboardBottom = imeVisible
+                ? (legacyComposerImeBridgeEnabled
+                        ? Math.max(0, keyboardBottom - navigation.bottom)
+                        : keyboardBottom)
+                : 0;
+        applyImeInset(root, pageKeyboardBottom);
     }
 
     private void applyHostBottomInset(int bottom) {

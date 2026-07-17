@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.25") return;
-    window.__AIMiniKeyboardHooksVersion = "1.25";
+    if (window.__AIMiniKeyboardHooksVersion === "1.26") return;
+    window.__AIMiniKeyboardHooksVersion = "1.26";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -149,8 +149,18 @@
       // native inset for that exact DOM signature.
       const legacyComposer = usesLegacyKeyboardShift();
       const density = Math.max(1, Number(window.devicePixelRatio) || 1);
+      const nativeCssPixels = nativeKeyboardInsetDevicePixels / density;
+      // This WebUI intentionally reserves a bottom safe area under the
+      // composer and exposes the matching compensation as
+      // --keyboard-shift-trim (56px in Android keyboard mode). Moving by the
+      // full native IME height leaves that reserved area above the keyboard,
+      // which looks like an extra upward offset on high-density phones.
+      const trimValue = legacyComposer
+        ? parseFloat(getComputedStyle(document.documentElement)
+          .getPropertyValue("--keyboard-shift-trim")) || 0
+        : 0;
       const cssPixels = legacyComposer
-        ? nativeKeyboardInsetDevicePixels / density
+        ? Math.max(0, nativeCssPixels - Math.max(0, trimValue))
         : 0;
       const cssValue = cssPixels.toFixed(2) + "px";
       const priority = legacyComposer ? "important" : "";
