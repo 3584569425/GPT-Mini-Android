@@ -718,24 +718,22 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // WebView/Chromium liquid-glass perf patch.
-    // Full WebUI glass uses SVG feDisplacementMap x3 + backdrop-filter on many
-    // layers (liquid-glass-react style). That looks great on desktop/Gecko but
-    // tanks Chromium WebView scroll/input FPS. We keep the frosted glass look
-    // (blur/saturate, translucent fill, inset highlight, radius, shadow) and
-    // only strip the expensive displacement/aberration filter.
-    if (window.__AIMiniGeckoGlassVersion === "1.20") return;
+    // WebView/Chromium liquid-glass safe perf patch (1.21).
+    // Keep frosted glass look (blur/saturate/translucent) and disable only the
+    // expensive SVG feDisplacementMap path via CSS. No MutationObserver and no
+    // DOM surgery during WebUI boot — those caused blank/broken entry on 1.1.8.
+    if (window.__AIMiniGeckoGlassVersion === "1.21") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.20";
+    window.__AIMiniGeckoGlassVersion = "1.21";
 
-    function ensureHostClasses() {
+    try {
       const root = document.documentElement;
-      if (!root) return;
-      root.classList.add("ai-mini-webview");
-      // Reuse WebUI's existing gecko glass CSS path (filter:none + blur).
-      root.classList.add("ai-mini-geckoview");
-    }
-    ensureHostClasses();
+      if (root) {
+        root.classList.add("ai-mini-webview");
+        // Reuse WebUI's existing gecko glass CSS path (filter:none + blur).
+        root.classList.add("ai-mini-geckoview");
+      }
+    } catch (_) {}
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const oldStyle = document.getElementById(STYLE_ID);
@@ -771,22 +769,13 @@
         will-change: transform !important;
       }
 
-      /* ===== liquid glass: kill SVG displacement, keep frosted look ===== */
+      /* ===== liquid glass: CSS-only disable heavy displacement, keep frost ===== */
       html.ai-mini-webview:not(.liquid-glass-off),
       html.ai-mini-geckoview:not(.liquid-glass-off) {
         --liquid-glass-filter: none !important;
         --liquid-glass-backdrop: blur(6px) saturate(140%) !important;
-        --liquid-glass-bg: transparent !important;
-        --liquid-glass-shadow: 0 12px 40px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.08), inset 0 -1px 0 rgba(0,0,0,.08) !important;
-        --liquid-glass-text-shadow: 0 2px 12px rgba(0,0,0,.4) !important;
-        --liquid-glass-row-bg: rgba(255,255,255,.032) !important;
-        --liquid-glass-row-border: rgba(255,255,255,.10) !important;
-        --liquid-glass-row-current-bg: rgba(255,255,255,.060) !important;
-        --liquid-glass-border-screen-opacity: 0 !important;
-        --liquid-glass-glow-opacity: 0 !important;
       }
 
-      /* All warp / pseudo glass layers: no SVG filter, keep backdrop blur */
       html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-warp,
       html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-warp,
       html.ai-mini-webview:not(.liquid-glass-off) .task-plan-dock-card::before,
@@ -797,26 +786,6 @@
         -webkit-filter: none !important;
         backdrop-filter: blur(6px) saturate(140%) !important;
         -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
-        background: transparent !important;
-        pointer-events: none !important;
-        transform: translateZ(0) !important;
-        -webkit-backface-visibility: hidden !important;
-        backface-visibility: hidden !important;
-      }
-
-      /* Hide decorative glow/border layers that add overdraw without much look */
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-border-screen,
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-border-overlay,
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-hover-glow,
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-active-glow,
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-top-glow,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-border-screen,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-border-overlay,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-hover-glow,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-active-glow,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-top-glow {
-        display: none !important;
-        opacity: 0 !important;
       }
 
       /* Composer glass surface — match Gecko mobile look */
@@ -831,8 +800,6 @@
           inset 0 -1px 0 rgba(0,0,0,.08) !important;
         overflow: hidden !important;
         isolation: isolate !important;
-        contain: paint !important;
-        transform: translateZ(0) !important;
       }
       html.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original > .liquid-glass-warp,
       html.ai-mini-geckoview:not(.liquid-glass-off) .composer.codex-liquid-glass-original > .liquid-glass-warp {
@@ -849,39 +816,7 @@
         pointer-events: none !important;
       }
 
-      /* Stack cards / top actions / menus: same glass recipe, bounded cost */
-      html.ai-mini-webview:not(.liquid-glass-off) .composer-stack-glass-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .topbar > .top-actions,
-      html.ai-mini-webview:not(.liquid-glass-off) .composer-shell .top-actions,
-      html.ai-mini-webview:not(.liquid-glass-off) .model-menu-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .permission-menu-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .reasoning-menu-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .settings-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .approval-sheet,
-      html.ai-mini-webview:not(.liquid-glass-off) .thread-action-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .guardian-info-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .context-quick-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .thread-menu,
-      html.ai-mini-webview:not(.liquid-glass-off) .composer-menu-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .queued-send-card {
-        isolation: isolate !important;
-        contain: paint !important;
-        transform: translateZ(0) !important;
-      }
-      html.ai-mini-webview:not(.liquid-glass-off) .composer-stack-glass-card,
-      html.ai-mini-webview:not(.liquid-glass-off) .queued-send-card {
-        backdrop-filter: blur(6px) saturate(140%) !important;
-        -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
-      }
-      html.ai-mini-webview:not(.liquid-glass-off) .topbar > .top-actions {
-        backdrop-filter: blur(6px) saturate(140%) !important;
-        -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
-        background: rgba(255,255,255,.032) !important;
-        border-color: rgba(255,255,255,.10) !important;
-        box-shadow: 0 12px 40px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.08), inset 0 -1px 0 rgba(0,0,0,.08) !important;
-      }
-
-      /* Light theme: keep readable frosted glass */
+      /* Light theme readability */
       html.theme-light.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original,
       html.theme-light.ai-mini-geckoview:not(.liquid-glass-off) .composer.codex-liquid-glass-original {
         background: rgba(255,255,255,.42) !important;
@@ -892,76 +827,22 @@
           inset 0 -1px 0 rgba(20,30,45,.06) !important;
       }
     `;
-    (document.head || document.documentElement).appendChild(style);
+    try {
+      (document.head || document.documentElement).appendChild(style);
+    } catch (_) {}
 
-    function neutralizeSvgDisplacementFilter() {
-      try {
-        // Removing the filter node makes url(#codex-mini-liquid-glass-filter) a no-op.
-        const filter = document.getElementById("codex-mini-liquid-glass-filter");
-        if (filter && filter.parentNode) {
-          // Keep an empty stub with same id so later reinject code thinks it exists,
-          // but without expensive feDisplacementMap children.
-          const parent = filter.parentNode;
-          const stub = filter.cloneNode(false);
-          while (stub.firstChild) stub.removeChild(stub.firstChild);
-          // empty filter = identity
-          parent.replaceChild(stub, filter);
-        }
-        // If WebUI re-creates a full filter later, strip it again.
-        const svgFilters = document.querySelectorAll('filter[id*="liquid-glass"]');
-        svgFilters.forEach(function (node) {
-          if (node && node.childNodes && node.childNodes.length) {
-            while (node.firstChild) node.removeChild(node.firstChild);
-          }
-        });
-      } catch (_) {}
-    }
-    neutralizeSvgDisplacementFilter();
-
-    // WebUI toggles ai-mini-geckoview based on Gecko UA only; keep our host marks.
-    // Also watch for late injection of the heavy SVG displacement filter.
-    if (!window.__AIMiniGlassHostObserver) {
-      try {
-        const obs = new MutationObserver(function (records) {
-          ensureHostClasses();
+    // Soft re-assert host classes after late WebUI class rewrites. CSS-only.
+    [300, 1200, 3000].forEach(function (delay) {
+      setTimeout(function () {
+        try {
+          const root = document.documentElement;
+          if (!root) return;
+          root.classList.add("ai-mini-webview");
+          root.classList.add("ai-mini-geckoview");
           if (!document.getElementById(STYLE_ID) && (document.head || document.documentElement)) {
             (document.head || document.documentElement).appendChild(style);
           }
-          let maybeFilter = false;
-          for (let i = 0; i < records.length; i++) {
-            const rec = records[i];
-            if (rec.type === "childList") {
-              const nodes = rec.addedNodes;
-              for (let j = 0; j < nodes.length; j++) {
-                const n = nodes[j];
-                if (!n || n.nodeType !== 1) continue;
-                if (n.id === "codex-mini-liquid-glass-filter"
-                    || (n.tagName && n.tagName.toLowerCase() === "filter")
-                    || (n.querySelector && n.querySelector('filter[id*="liquid-glass"]'))) {
-                  maybeFilter = true;
-                  break;
-                }
-              }
-            }
-            if (maybeFilter) break;
-          }
-          if (maybeFilter) neutralizeSvgDisplacementFilter();
-        });
-        obs.observe(document.documentElement, {
-          attributes: true,
-          attributeFilter: ["class"],
-          childList: true,
-          subtree: true
-        });
-        window.__AIMiniGlassHostObserver = obs;
-      } catch (_) {}
-    }
-
-    // Re-run after late WebUI scripts inject the heavy SVG filter.
-    [0, 200, 800, 2000, 5000].forEach(function (delay) {
-      setTimeout(function () {
-        ensureHostClasses();
-        neutralizeSvgDisplacementFilter();
+        } catch (_) {}
       }, delay);
     });
   }

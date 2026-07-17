@@ -4471,7 +4471,7 @@ public class MainActivity extends Activity {
                 + "inset 0 1px 0 rgba(255,255,255,.10),"
                 + "inset 0 -1px 0 rgba(0,0,0,.08)!important;"
                 + "overflow:hidden!important;isolation:isolate!important;"
-                + "contain:paint!important;}"
+                + "}"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) "
                 + ".composer.codex-liquid-glass-original>.liquid-glass-warp,"
                 + "html.ai-mini-webview:not(.liquid-glass-off) "
