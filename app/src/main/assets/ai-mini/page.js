@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.29") return;
-    window.__AIMiniKeyboardHooksVersion = "1.29";
+    if (window.__AIMiniKeyboardHooksVersion === "1.30") return;
+    window.__AIMiniKeyboardHooksVersion = "1.30";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -115,7 +115,6 @@
     let cachedComposerTrim = null;
     let lastKeyboardCssValue = "";
     let lastKeyboardCssLegacy = null;
-    let lastKeyboardCssOverlay = null;
     let viewportClosing = false;
     let lastVisualViewportHeight = window.visualViewport
       ? window.visualViewport.height
@@ -151,11 +150,9 @@
 
     function applyNativeKeyboardInset(force) {
       if (keyboardCssPrepared && !force) return;
-      // Chromium WebView normally keeps this page's visual viewport overlaid
-      // while the IME is visible. Some ColorOS frames intermittently fail to
-      // resize the WebView, so the modern composer needs a CSS fallback in
-      // that case. If the viewport really did resize, keep the fallback at 0
-      // to avoid moving it twice.
+      // Modern WebView composer movement is handled by native host bounds.
+      // Never transform a focused input ancestor: doing so can desynchronise
+      // visual position, hit testing and the platform InputConnection.
       const legacyComposer = usesLegacyKeyboardShift();
       const density = Math.max(1, Number(window.devicePixelRatio) || 1);
       const nativeCssPixels = nativeKeyboardInsetDevicePixels / density;
@@ -171,10 +168,6 @@
       const viewportDelta = Math.max(0, largestViewportHeight - currentHeight);
       const viewportResized = keyboardOpen
         && viewportDelta > Math.max(90, largestViewportHeight * 0.16);
-      const overlayFallback = !legacyComposer
-        && keyboardOpen
-        && !viewportResized
-        && nativeCssPixels > 0;
       // This WebUI intentionally reserves a bottom safe area under the
       // composer and exposes the matching compensation as
       // --keyboard-shift-trim (56px in Android keyboard mode). Moving by the
@@ -189,13 +182,12 @@
       const trimValue = legacyComposer ? cachedComposerTrim || 0 : 0;
       const cssPixels = legacyComposer
         ? Math.max(0, nativeCssPixels - Math.max(0, trimValue))
-        : (overlayFallback ? nativeCssPixels : 0);
+        : 0;
       const cssValue = cssPixels.toFixed(2) + "px";
-      const priority = (legacyComposer || overlayFallback) ? "important" : "";
+      const priority = legacyComposer ? "important" : "";
       if (keyboardCssPrepared
           && lastKeyboardCssValue === cssValue
-          && lastKeyboardCssLegacy === legacyComposer
-          && lastKeyboardCssOverlay === overlayFallback) {
+          && lastKeyboardCssLegacy === legacyComposer) {
         return legacyComposer;
       }
       document.documentElement.style.setProperty(
@@ -213,13 +205,10 @@
         legacyComposer ? cssValue : "0px",
         legacyComposer ? "important" : ""
       );
-      document.documentElement.classList.toggle(
-        "ai-mini-ime-overlay-fallback",
-        overlayFallback
-      );
+      document.documentElement.classList.remove("ai-mini-ime-overlay-fallback");
       window.__AIMiniLastNativeInsetDevicePixels = nativeKeyboardInsetDevicePixels;
       window.__AIMiniKeyboardViewportResized = viewportResized;
-      window.__AIMiniKeyboardOverlayFallback = overlayFallback;
+      window.__AIMiniKeyboardOverlayFallback = false;
       if (!keyboardStyleCleanupDone) {
         const staleStyle = document.getElementById("ai-mini-keyboard-inset-style");
         if (staleStyle) staleStyle.remove();
@@ -233,7 +222,6 @@
       }
       lastKeyboardCssValue = cssValue;
       lastKeyboardCssLegacy = legacyComposer;
-      lastKeyboardCssOverlay = overlayFallback;
       keyboardCssPrepared = true;
       return legacyComposer;
     }
@@ -412,10 +400,28 @@
     function sendKeyboardRequest(editable) {
       if (!editable) return;
       lastEditable = editable;
+      if (document.activeElement !== editable) {
+        try {
+          editable.focus({ preventScroll: true });
+        } catch (_) {
+          try { editable.focus(); } catch (_) {}
+        }
+      }
       const now = Date.now();
       if (now - lastKeyboardRequestAt < 120) return;
       lastKeyboardRequestAt = now;
       setTimeout(function () {
+        // Run once more after the WebUI's pointer/click handlers finish.
+        // Some UI revisions restore focus to the toolbar during bubbling,
+        // which leaves the IME visible but removes WebView's editor
+        // InputConnection.
+        if (editable.isConnected && document.activeElement !== editable) {
+          try {
+            editable.focus({ preventScroll: true });
+          } catch (_) {
+            try { editable.focus(); } catch (_) {}
+          }
+        }
         try { window.CodexMiniNative.showKeyboard(); } catch (_) {}
       }, 24);
     }
@@ -494,7 +500,7 @@
       // makes the keyboard look delayed and can cause repeated scrolling.
       // Its transform already follows the IME frame directly, so only run the
       // heavier open/close work when the state actually changes.
-      if (!legacyComposer || wasOpen !== keyboardOpen) {
+      if (wasOpen !== keyboardOpen) {
         window.dispatchEvent(new Event("resize"));
         if (keyboardOpen) {
           viewportClosing = false;
@@ -533,10 +539,9 @@
         lastVisualViewportHeight = currentHeight;
         if (viewportClosing) cancelPendingReveals();
         updateKeyboardState();
-        // ColorOS may report an overlaid viewport first and resize it a few
-        // frames later. Re-evaluate the fallback after every viewport resize
-        // so it cannot remain applied after a real resize.
-        if (keyboardOpen) applyNativeKeyboardInset(true);
+        if (keyboardOpen && usesLegacyKeyboardShift()) {
+          applyNativeKeyboardInset(true);
+        }
         if (!viewportClosing
             && (keyboardOpen || editableFor(document.activeElement))) {
           if (!wasOpen && keyboardOpen) revealEditable();
@@ -896,21 +901,20 @@
         transition: none !important;
         will-change: auto !important;
       }
-      /* ColorOS fallback: if the WebView viewport stays full-height while
-         the IME overlays it, move only the composer shell. Keep the thread
-         still so the glass surface does not get a second full-page shift. */
-      html.ai-mini-webview.ai-mini-ime-overlay-fallback:not(.ai-mini-legacy-composer) .composer-shell,
-      html.ai-mini-geckoview.ai-mini-ime-overlay-fallback:not(.ai-mini-legacy-composer) .composer-shell {
-        transform: translate3d(0, calc(-1 * var(--ai-mini-native-keyboard-shift, 0px)), 0) !important;
-        transition: none !important;
-        will-change: transform !important;
-      }
       /* Match WebUI gecko path: absolute composer keeps glass sampling after device switch */
       html.ai-mini-geckoview .composer-shell,
       html.ai-mini-webview .composer-shell {
         position: absolute !important;
         bottom: 0 !important;
         margin-bottom: 0 !important;
+      }
+      /* The glass compatibility patch uses absolute positioning at rest.
+         During IME resize, pin the modern WebView composer to the real
+         resized viewport. This keeps rendering and input coordinates aligned
+         without translating a focused textarea. */
+      html.ai-mini-webview:not(.ai-mini-legacy-composer) body.keyboard-open .composer-shell {
+        position: fixed !important;
+        bottom: 0 !important;
       }
       html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,
       html.ai-mini-geckoview.ai-mini-legacy-composer .thread,

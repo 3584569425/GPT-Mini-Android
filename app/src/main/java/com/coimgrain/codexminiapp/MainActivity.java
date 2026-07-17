@@ -64,6 +64,7 @@ import android.webkit.URLUtil;
 import android.webkit.WebSettings;
 import android.webkit.WebChromeClient;
 import android.webkit.ValueCallback;
+import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -264,11 +265,13 @@ public class MainActivity extends Activity {
     private int appliedImeInsetBottom;
     private int lastLegacyImeInsetBottom = -1;
     private int lastModernImeInsetBottom = -1;
-    private long lastModernImeNotifyAt;
     private long lastModernImeUpdateAt;
     private boolean imeAnimationRunning;
     private boolean modernImeInsetsReliable;
     private boolean legacyComposerImeBridgeEnabled;
+    private int stableImeRootHeight;
+    private int stableImeHostHeight;
+    private int stableImeLayoutWidth;
     private final Rect visibleDisplayFrame = new Rect();
     private final int[] rootLocationOnScreen = new int[2];
     private final Runnable conversationFontScaleApplier =
@@ -4992,6 +4995,13 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,"
                 + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell{"
                 + "bottom:0!important;margin-bottom:0!important;}"
+                // The glass patch keeps the composer absolute while the
+                // keyboard is closed. Once the real WebView is resized for
+                // the IME, pin it to that resized viewport without applying a
+                // transform to the focused editor.
+                + "html.ai-mini-webview:not(.ai-mini-legacy-composer) "
+                + "body.keyboard-open .composer-shell{"
+                + "position:fixed!important;bottom:0!important;}"
                 + "html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,"
                 + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread,"
                 + "html.ai-mini-webview.ai-mini-legacy-composer .composer-shell,"
@@ -5061,6 +5071,10 @@ public class MainActivity extends Activity {
     }
 
     private void installImeInsetHandling(View root) {
+        root.post(() -> {
+            rememberStableImeLayout(root);
+            root.requestApplyInsets();
+        });
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             root.setOnApplyWindowInsetsListener((view, insets) -> {
                 // Android dispatches the animation's final Insets during the
@@ -5106,10 +5120,47 @@ public class MainActivity extends Activity {
                     }
                 }
             });
-            root.post(root::requestApplyInsets);
         }
 
         watchKeyboardLegacy(root);
+    }
+
+    private void rememberStableImeLayout(View root) {
+        if (root == null || appHost == null) return;
+        int width = Math.max(root.getWidth(), appHost.getWidth());
+        if (width <= 0) return;
+        if (stableImeLayoutWidth != width) {
+            stableImeLayoutWidth = width;
+            stableImeRootHeight = 0;
+            stableImeHostHeight = 0;
+        }
+        if (root.getHeight() > 0) {
+            stableImeRootHeight = Math.max(stableImeRootHeight, root.getHeight());
+        }
+        if (appHost.getHeight() > 0) {
+            stableImeHostHeight = Math.max(stableImeHostHeight, appHost.getHeight());
+        }
+    }
+
+    private int nativeImeLayoutReduction(View root, int keyboardBottom) {
+        if (root == null || appHost == null || keyboardBottom <= 0) return 0;
+        int width = Math.max(root.getWidth(), appHost.getWidth());
+        if (width > 0 && stableImeLayoutWidth != width) {
+            stableImeLayoutWidth = width;
+            stableImeRootHeight = root.getHeight();
+            stableImeHostHeight = appHost.getHeight();
+            return 0;
+        }
+        int rootReduction = stableImeRootHeight > 0
+                ? Math.max(0, stableImeRootHeight - root.getHeight())
+                : 0;
+        int hostReduction = stableImeHostHeight > 0
+                ? Math.max(0, stableImeHostHeight - appHost.getHeight())
+                : 0;
+        // Only compensate the part of the IME that Android has not already
+        // removed through ADJUST_RESIZE. Clamping also prevents window mode or
+        // rotation changes from being mistaken for an extra keyboard.
+        return Math.min(keyboardBottom, Math.max(rootReduction, hostReduction));
     }
 
     private void applyModernImeInsets(View root, WindowInsets insets) {
@@ -5146,16 +5197,23 @@ public class MainActivity extends Activity {
         int keyboardBottom = imeHasGeometry
                 ? Math.max(0, ime.bottom)
                 : (overlapFallbackVisible ? visibleOverlap : 0);
-        // WebView 键盘策略（与 Gecko 不同）：
-        // - interactive-widget 必须用 overlays-content。若再用 resizes-content，
-        //   会与 SOFT_INPUT_ADJUST_RESIZE 叠成“布局缩两次”，中间留下约一个
-        //   键盘高度的黑空洞，输入框虽贴键盘但对话区被顶到最上。
-        // - host 默认只留 navigation；仅当 ADJUST_RESIZE 在边缘到边缘下失效
-        //   （可见区域仍被键盘挡住）时，现代 glass 才用 host padding 补一次。
-        // - 现代 glass 的 CSS transform 保持 0；legacy 走 keyboard-shift。
-        // 不再根据 overlap 判断是否 host 垫键盘：OPPO/ColorOS 上该判断失真
-        // 会导致双倍抬升/黑空洞。现代与 legacy 的 host 都只保留导航栏高度。
-        int contentBottom = Math.max(0, navigation.bottom);
+        if (!imeVisible) rememberStableImeLayout(root);
+
+        // Do not translate a focused HTML editor with CSS. Keep the real
+        // WebView, hit testing and InputConnection in one coordinate system.
+        // Android ROMs differ here: some fully resize the activity, some only
+        // partly resize it, and edge-to-edge ROMs may not resize it at all.
+        // Measure the resize already performed by Android and pad only the
+        // remaining IME height.
+        int nativeReduction = imeVisible
+                ? nativeImeLayoutReduction(root, keyboardBottom)
+                : 0;
+        int contentBottom;
+        if (!imeVisible || legacyComposerImeBridgeEnabled) {
+            contentBottom = Math.max(0, navigation.bottom);
+        } else {
+            contentBottom = Math.max(0, keyboardBottom - nativeReduction);
+        }
         applyHostBottomInset(contentBottom);
         int pageKeyboardBottom;
         if (!imeVisible) {
@@ -5163,8 +5221,8 @@ public class MainActivity extends Activity {
         } else if (legacyComposerImeBridgeEnabled) {
             pageKeyboardBottom = Math.max(0, keyboardBottom - navigation.bottom);
         } else {
-            // 现代：只同步 open 状态（非 0 即可），page.js 会把视觉 shift 置 0。
-            // 传真实键盘高度给 page.js 判定 open；不再用它做 layout padding。
+            // Modern composer receives state only. Its position follows the
+            // actual WebView bounds changed by the host padding above.
             pageKeyboardBottom = Math.max(0, keyboardBottom - navigation.bottom);
         }
         applyImeInset(root, pageKeyboardBottom);
@@ -5174,7 +5232,12 @@ public class MainActivity extends Activity {
         if (appHost == null) return;
         int safeBottom = Math.max(0, bottom);
         if (appHost.getPaddingBottom() != safeBottom) {
-            appHost.setPadding(0, 0, 0, safeBottom);
+            appHost.setPadding(
+                    appHost.getPaddingLeft(),
+                    appHost.getPaddingTop(),
+                    appHost.getPaddingRight(),
+                    safeBottom
+            );
         }
     }
 
@@ -5202,21 +5265,12 @@ public class MainActivity extends Activity {
             return;
         }
         lastLegacyImeInsetBottom = -1;
-        // Modern WebView can keep the viewport overlaid on ColorOS. Send the
-        // animated inset at a modest rate so page.js can apply its fallback;
-        // the final frame is delivered after the animation ends.
-        long now = SystemClock.uptimeMillis();
+        // Modern composer follows native WebView bounds. The page only needs
+        // keyboard open/closed state, not every animated inset pixel.
         boolean stateChanged = keyboardWasOpen != isOpen;
-        boolean insetChanged = lastModernImeInsetBottom != effectiveInset;
-        if (!stateChanged && !insetChanged) return;
-        if (!stateChanged
-                && imeAnimationRunning
-                && now - lastModernImeNotifyAt < 32L) {
-            return;
-        }
+        if (!stateChanged && lastModernImeInsetBottom >= 0) return;
         keyboardWasOpen = isOpen;
         lastModernImeInsetBottom = effectiveInset;
-        lastModernImeNotifyAt = now;
         notifyKeyboardInsetToWeb(effectiveInset, isOpen);
     }
 
@@ -5251,11 +5305,24 @@ public class MainActivity extends Activity {
                 int navigationBottom = insets == null
                         ? 0
                         : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
-                // fallback 与 applyModernImeInsets 对齐。
-                // 现代 WebView 一律不垫键盘；legacy 也只保留导航栏。
-                applyHostBottomInset(navigationBottom);
+                if (keyboardOpen && !legacyComposerImeBridgeEnabled) {
+                    int nativeReduction = nativeImeLayoutReduction(root, hidden);
+                    applyHostBottomInset(Math.max(0, hidden - nativeReduction));
+                } else {
+                    applyHostBottomInset(navigationBottom);
+                    if (!keyboardOpen) rememberStableImeLayout(root);
+                }
+            } else {
+                if (keyboardOpen && !legacyComposerImeBridgeEnabled) {
+                    int nativeReduction = nativeImeLayoutReduction(root, hidden);
+                    applyHostBottomInset(Math.max(0, hidden - nativeReduction));
+                } else if (!keyboardOpen) {
+                    applyHostBottomInset(0);
+                    rememberStableImeLayout(root);
+                }
             }
-            // legacy：CSS shift；现代：仅 open 状态（shift 在 page.js 置 0）。
+            // Legacy composer keeps its old CSS bridge; modern composer only
+            // consumes open/closed state and follows the native host size.
             applyImeInset(root, keyboardOpen ? hidden : 0);
         });
     }
@@ -5273,12 +5340,6 @@ public class MainActivity extends Activity {
                         + "if(!handled&&window.__AIMiniApplyLegacyKeyboardInset"
                         + "&&window.__AIMiniApplyLegacyKeyboardInset(px)){"
                         + "handled=true;}"
-                        // Android WebView occasionally exposes the page
-                        // bridge function from a different JS world. Keep a
-                        // small native-side DOM fallback so a successful
-                        // evaluateJavascript call still moves the modern
-                        // composer when the function's closure cannot update
-                        // its own CSS state.
                         + "var root=document.documentElement;"
                         + "var composer=document.querySelector("
                         + "'footer.composer-shell form#composer.composer');"
@@ -5286,27 +5347,16 @@ public class MainActivity extends Activity {
                         + "&&!composer.classList.contains('codex-liquid-glass-original')"
                         + "&&!composer.classList.contains('liquid-glass-react-surface'));"
                         + "if(!legacy){"
-                        + "var density=Math.max(1,Number(window.devicePixelRatio)||1);"
-                        + "var cssPx=Math.max(0,px/density);"
-                        + "var viewport=window.visualViewport;"
-                        + "var largest=Math.max(window.innerHeight||0,"
-                        + "document.documentElement.clientHeight||0);"
-                        + "var current=viewport&&viewport.height>0"
-                        + "?viewport.height:largest;"
-                        + "var resized=px>0&&largest-current>Math.max(90,largest*.16);"
-                        + "var overlay=px>0&&!resized;"
                         + "root.style.setProperty('--ai-mini-native-keyboard-shift',"
-                        + "(overlay?cssPx:0).toFixed(2)+'px','important');"
+                        + "'0px','important');"
                         + "root.style.setProperty('--keyboard-inset','0px','important');"
                         + "root.style.setProperty('--keyboard-shift','0px','important');"
-                        + "root.classList.toggle('ai-mini-ime-overlay-fallback',overlay);"
+                        + "root.classList.remove('ai-mini-ime-overlay-fallback');"
                         + "document.body&&document.body.classList.toggle('keyboard-open',px>80);"
                         + "document.querySelectorAll('.composer-shell').forEach(function(el){"
-                        + "el.style.setProperty('transform',overlay"
-                        + "?('translate3d(0,-'+cssPx.toFixed(2)+'px,0)'):'none','important');});"
+                        + "el.style.setProperty('transform','none','important');});"
                         + "window.__AIMiniLastNativeInsetDevicePixels=px;"
-                        + "window.__AIMiniKeyboardViewportResized=resized;"
-                        + "window.__AIMiniKeyboardOverlayFallback=overlay;"
+                        + "window.__AIMiniKeyboardOverlayFallback=false;"
                         + "}"
                         + "if(legacy&&!handled){"
                         + "document.body&&document.body.classList."
@@ -5328,15 +5378,44 @@ public class MainActivity extends Activity {
     private void showKeyboardForBrowser(AIMiniBrowserView browser) {
         AIMiniBrowserView target = browser == null ? activeWebView() : browser;
         if (target == null) return;
-        target.setFocusable(true);
-        target.setFocusableInTouchMode(true);
-        target.requestFocus();
+        WebView inputView = target.rawWebView();
+        if (inputView == null || !inputView.isAttachedToWindow()) return;
+        // Focus the view that owns WebView's InputConnection. Focusing the
+        // FrameLayout wrapper can show an IME with a null input connection.
+        target.setFocusable(false);
+        target.setFocusableInTouchMode(false);
+        inputView.setFocusable(true);
+        inputView.setFocusableInTouchMode(true);
+        if (!inputView.hasFocus()) {
+            inputView.requestFocusFromTouch();
+            inputView.requestFocus();
+        }
         InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
         if (imm != null) {
-            target.postDelayed(
-                    () -> imm.showSoftInput(target, InputMethodManager.SHOW_IMPLICIT),
-                    16
-            );
+            inputView.postDelayed(() -> {
+                if (!inputView.isAttachedToWindow() || !inputView.hasFocus()) return;
+                boolean shown = imm.showSoftInput(
+                        inputView,
+                        InputMethodManager.SHOW_IMPLICIT
+                );
+                // A few OEM WebViews create the editor connection one frame
+                // after focus. Restart only as a fallback; doing it on every
+                // tap would break CJK composing text.
+                if (!shown || !imm.isActive(inputView)) {
+                    inputView.postDelayed(() -> {
+                        if (!inputView.isAttachedToWindow()
+                                || !inputView.hasFocus()
+                                || imm.isActive(inputView)) {
+                            return;
+                        }
+                        imm.restartInput(inputView);
+                        imm.showSoftInput(
+                                inputView,
+                                InputMethodManager.SHOW_IMPLICIT
+                        );
+                    }, 80L);
+                }
+            }, 16L);
         }
     }
 

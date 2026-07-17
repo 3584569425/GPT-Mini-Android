@@ -128,8 +128,17 @@ final class AIMiniBrowserView extends FrameLayout {
     AIMiniBrowserView(Context context, AIMiniBrowserEngine engine) {
         super(context);
         this.engine = engine;
+        // The wrapper only lays out the real WebView. It must never become the
+        // IME target itself, otherwise Android creates no WebView
+        // InputConnection and the keyboard can be visible without accepting
+        // text on some ROMs.
+        setFocusable(false);
+        setFocusableInTouchMode(false);
+        setDescendantFocusability(FOCUS_AFTER_DESCENDANTS);
         setBackgroundColor(contentBackgroundColor);
         webView = new WebView(context);
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
         webView.setBackgroundColor(contentBackgroundColor);
         addView(webView, new LayoutParams(
                 LayoutParams.MATCH_PARENT,
