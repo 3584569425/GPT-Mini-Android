@@ -1660,10 +1660,40 @@
   }
 
   function installUiGestureFixes() {
-    // 1.1.11: settings popup scroll when taller than viewport; desktop pinch-zoom.
-    if (window.__AIMiniUiGestureFixesVersion === "1.11") return;
+    // 1.1.12: WebUI desktop pinch-zoom — neutralize lockViewportZoom multi-touch block.
+    if (window.__AIMiniUiGestureFixesVersion === "1.12") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniUiGestureFixesVersion = "1.11";
+    window.__AIMiniUiGestureFixesVersion = "1.12";
+
+    // WebUI lockViewportZoom() does:
+    //   gesture* preventDefault + touchmove(touches>1) preventDefault
+    // which kills native WebView pinch on the SPA. External pages work because
+    // they lack that lock. In desktop mode, allow multi-touch / pinch through.
+    if (!window.__AIMiniDesktopPinchAllowPatch) {
+      window.__AIMiniDesktopPinchAllowPatch = true;
+      try {
+        const originalPreventDefault = Event.prototype.preventDefault;
+        Event.prototype.preventDefault = function () {
+          try {
+            if (document.documentElement
+                && document.documentElement.classList.contains("ai-mini-desktop-mode")) {
+              const type = this.type;
+              if (type === "gesturestart"
+                  || type === "gesturechange"
+                  || type === "gestureend") {
+                return;
+              }
+              if (type === "touchmove"
+                  && this.touches
+                  && this.touches.length > 1) {
+                return;
+              }
+            }
+          } catch (_) {}
+          return originalPreventDefault.apply(this, arguments);
+        };
+      } catch (_) {}
+    }
 
     const STYLE_ID = "ai-mini-ui-gesture-fixes";
     function ensureStyle() {
@@ -1697,18 +1727,30 @@
           overflow-y: auto !important;
           -webkit-overflow-scrolling: touch !important;
           overscroll-behavior: contain !important;
-          touch-action: pan-y !important;
+          touch-action: pan-y pinch-zoom !important;
         }
 
-        /* Desktop mode: allow browser-like pinch zoom (WebUI defaults to pan-only) */
+        /* Desktop mode: WebUI sets pan-x/pan-y (no pinch) on html/body and
+           pan-x / pan-y / manipulation on many children — override broadly so
+           pinch can start from any surface, matching browser desktop mode. */
         html.ai-mini-desktop-mode,
         html.ai-mini-desktop-mode body {
           touch-action: pan-x pan-y pinch-zoom !important;
           -ms-touch-action: pan-x pan-y pinch-zoom !important;
-        }
-        html.ai-mini-desktop-mode body {
-          /* Keep layout, but do not block zoom gestures */
+          overscroll-behavior: auto !important;
+          overscroll-behavior-x: auto !important;
           overscroll-behavior-y: auto !important;
+        }
+        html.ai-mini-desktop-mode body,
+        html.ai-mini-desktop-mode .app,
+        html.ai-mini-desktop-mode .thread,
+        html.ai-mini-desktop-mode .composer-shell,
+        html.ai-mini-desktop-mode .top-bar,
+        html.ai-mini-desktop-mode header,
+        html.ai-mini-desktop-mode main,
+        html.ai-mini-desktop-mode body * {
+          touch-action: pan-x pan-y pinch-zoom !important;
+          -ms-touch-action: pan-x pan-y pinch-zoom !important;
         }
       `;
     }
