@@ -152,9 +152,6 @@ public final class AIMiniNotificationService extends Service {
             try {
                 terminals.addAll(discoverActiveThreads());
                 CurrentStatusResult currentStatus = fetchCurrentStatus();
-                if (currentStatus != null && "running".equals(currentStatus.state)) {
-                    upsertDiscoveredTask(currentStatus.toMonitoredTask());
-                }
                 List<MonitoredTask> snapshot = readTasks();
                 long now = System.currentTimeMillis();
                 for (MonitoredTask task : snapshot) {
@@ -193,7 +190,13 @@ public final class AIMiniNotificationService extends Service {
                             Log.d(TAG, "terminal deferred until running is observed thread=" + task.threadId);
                             continue;
                         }
-                        String threadId = status.optString("threadId", task.threadId);
+                        // An explicit monitored thread is authoritative. Some root
+                        // status payloads temporarily expose a child-agent threadId;
+                        // using that response id would split one main task into
+                        // child-agent notification identities.
+                        String threadId = usableThreadId(task.threadId)
+                                ? task.threadId
+                                : status.optString("threadId", task.threadId);
                         String threadName = resolveThreadName(threadId, task.name, status);
                         terminals.add(new TerminalResult(task, threadId, threadName, state, status));
                     } catch (Exception error) {
@@ -292,7 +295,7 @@ public final class AIMiniNotificationService extends Service {
                 );
                 if (startedAt <= 0L) startedAt = now;
                 String endpoint = connection.statusForThread(threadId);
-                if ("running".equals(state)) {
+                if ("running".equals(state) && registeredThreadIds.contains(threadId)) {
                     upsertDiscoveredTask(new MonitoredTask(
                             threadId,
                             threadId,
@@ -302,47 +305,6 @@ public final class AIMiniNotificationService extends Service {
                     ));
                     registeredThreadIds.add(threadId);
                     discoveredCount += 1;
-                } else if (baselineWasReady
-                        && ("complete".equals(state) || "error".equals(state))
-                        && isNewRuntimeTerminal(previousSnapshot, currentSnapshot)) {
-                    boolean alreadyTracked = registeredThreadIds.contains(threadId);
-                    boolean alreadyPosted = hasTerminalNotificationSince(threadId, startedAt);
-                    if (!alreadyTracked && !alreadyPosted) {
-                        try {
-                            JSONObject status = new JSONObject(httpGet(endpoint, 6000));
-                            String confirmedState = taskStateFromJson(status);
-                            if (!"complete".equals(confirmedState)
-                                    && !"error".equals(confirmedState)) {
-                                if (previousSnapshot != null) {
-                                    nextSnapshots.put(threadId, previousSnapshot);
-                                }
-                                continue;
-                            }
-                            missedTerminals.add(new TerminalResult(
-                                    new MonitoredTask(
-                                            threadId,
-                                            threadId,
-                                            name,
-                                            endpoint,
-                                            startedAt
-                                    ),
-                                    threadId,
-                                    name,
-                                    confirmedState,
-                                    status
-                            ));
-                            Log.i(
-                                    TAG,
-                                    "short task terminal recovered thread=" + threadId
-                            );
-                        } catch (Exception error) {
-                            if (previousSnapshot != null) {
-                                nextSnapshots.put(threadId, previousSnapshot);
-                            }
-                            Log.w(TAG, "short task terminal recovery temporarily failed", error);
-                            continue;
-                        }
-                    }
                 }
                 nextSnapshots.put(threadId, currentSnapshot);
             }

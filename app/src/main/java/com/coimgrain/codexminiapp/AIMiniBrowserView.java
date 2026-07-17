@@ -128,6 +128,10 @@ final class AIMiniBrowserView extends FrameLayout {
     AIMiniBrowserView(Context context, AIMiniBrowserEngine engine) {
         super(context);
         this.engine = engine;
+        if ((context.getApplicationInfo().flags
+                & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
         // The wrapper only lays out the real WebView. It must never become the
         // IME target itself, otherwise Android creates no WebView
         // InputConnection and the keyboard can be visible without accepting

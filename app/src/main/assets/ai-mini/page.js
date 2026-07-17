@@ -125,6 +125,8 @@
     );
 
     function usesLegacyKeyboardShift() {
+      const root = document.documentElement;
+      if (!root) return false;
       let composer = cachedComposer;
       if (!composer || !composer.isConnected) {
         composer = document.querySelector(
@@ -135,17 +137,50 @@
           cachedComposerTrim = null;
         }
       }
-      const legacy = !!(
+      const plainComposer = !!(
         composer
         && composer.querySelector("textarea#text")
         && !composer.classList.contains("codex-liquid-glass-original")
         && !composer.classList.contains("liquid-glass-react-surface")
       );
-      document.documentElement.classList.toggle(
-        "ai-mini-legacy-composer",
-        legacy
-      );
-      return legacy;
+      // The old plain/free panel used a CSS transform to follow the IME. On
+      // Chromium WebView that transform is added on top of ADJUST_RESIZE and
+      // also moves the focused textarea away from WebView's InputConnection.
+      // Keep a class for plain-panel styling, but let every panel use the same
+      // native host-resize path.
+      root.classList.toggle("ai-mini-plain-composer", plainComposer);
+      root.classList.remove("ai-mini-legacy-composer");
+      return false;
+    }
+
+    let composerModeFrame = 0;
+    function refreshComposerMode() {
+      if (composerModeFrame) return;
+      composerModeFrame = requestAnimationFrame(function () {
+        composerModeFrame = 0;
+        usesLegacyKeyboardShift();
+      });
+    }
+
+    function observeComposerMode() {
+      if (!document.documentElement || window.__AIMiniComposerModeObserver) return;
+      refreshComposerMode();
+      try {
+        const observer = new MutationObserver(refreshComposerMode);
+        observer.observe(document.documentElement, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ["class", "id"]
+        });
+        window.__AIMiniComposerModeObserver = observer;
+      } catch (_) {}
+    }
+
+    if (document.documentElement) {
+      observeComposerMode();
+    } else {
+      document.addEventListener("DOMContentLoaded", observeComposerMode, { once: true });
     }
 
     function applyNativeKeyboardInset(force) {
@@ -553,7 +588,19 @@
       });
     }
 
-    applyNativeKeyboardInset(true);
+    // DOCUMENT_START_SCRIPT executes before <html> exists on some Chromium
+    // WebView versions. Calling applyNativeKeyboardInset() immediately used to
+    // throw here after setting the global bridge guard, so the rest of page.js
+    // (notably stable task notifications) never installed and the later
+    // onPageFinished fallback was also skipped. Defer only this DOM-dependent
+    // initialization; the fetch/event hooks can still install at document start.
+    if (document.documentElement) {
+      applyNativeKeyboardInset(true);
+    } else {
+      document.addEventListener("DOMContentLoaded", function () {
+        applyNativeKeyboardInset(true);
+      }, { once: true });
+    }
   }
 
   function installConversationFontScale() {
@@ -916,13 +963,36 @@
         position: fixed !important;
         bottom: 0 !important;
       }
-      html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,
-      html.ai-mini-geckoview.ai-mini-legacy-composer .thread,
-      html.ai-mini-webview.ai-mini-legacy-composer .composer-shell,
-      html.ai-mini-webview.ai-mini-legacy-composer .thread {
-        transform: translate3d(0, calc(-1 * var(--ai-mini-native-keyboard-shift, 0px)), 0) !important;
+      html.ai-mini-geckoview.ai-mini-plain-composer .composer-shell,
+      html.ai-mini-webview.ai-mini-plain-composer .composer-shell {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      html.ai-mini-geckoview.ai-mini-plain-composer form#composer,
+      html.ai-mini-webview.ai-mini-plain-composer form#composer {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        box-sizing: border-box !important;
+      }
+      html.ai-mini-geckoview.ai-mini-plain-composer body.keyboard-open .composer-shell,
+      html.ai-mini-webview.ai-mini-plain-composer body.keyboard-open .composer-shell {
+        position: fixed !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        padding-bottom: max(8px, env(safe-area-inset-bottom, 0px)) !important;
+        overflow: visible !important;
+        transform: none !important;
         transition: none !important;
-        will-change: transform !important;
+        will-change: auto !important;
+      }
+      html.ai-mini-geckoview.ai-mini-plain-composer .thread,
+      html.ai-mini-webview.ai-mini-plain-composer .thread {
+        transform: none !important;
+        transition: none !important;
+        will-change: auto !important;
       }
       html.ai-mini-webview:not(.liquid-glass-off),
       html.ai-mini-geckoview:not(.liquid-glass-off) {
@@ -1261,7 +1331,8 @@
         : "";
       // The responsive WebUI can keep both mobile and desktop labels inside the
       // same title node, making textContent contain the same title twice.
-      while (title.length % 2 === 0
+      while (title.length > 0
+          && title.length % 2 === 0
           && title.slice(0, title.length / 2) === title.slice(title.length / 2)) {
         title = title.slice(0, title.length / 2).trim();
       }
@@ -1280,6 +1351,15 @@
         .replace(/\s+/g, " ")
         .trim();
       return isPlaceholderThreadTitle(documentTitle) ? "当前会话" : documentTitle;
+    }
+
+    function normalizedThreadTitle(value) {
+      let title = String(value || "").replace(/\s+/g, " ").trim();
+      while (title.length % 2 === 0
+          && title.slice(0, title.length / 2) === title.slice(title.length / 2)) {
+        title = title.slice(0, title.length / 2).trim();
+      }
+      return title || "当前会话";
     }
 
     function notificationSummary(data, status) {
@@ -1386,7 +1466,17 @@
     function trackTaskState(data, statusUrl) {
       try {
         if (!data) return;
-        const id = String(data.threadId || data.id || "current");
+        const endpoint = normalizedStatusEndpoint(statusUrl);
+        let endpointThreadId = "";
+        try {
+          endpointThreadId = endpoint
+            ? String(new URL(endpoint).searchParams.get("thread") || "").trim()
+            : "";
+        } catch (_) {}
+        // A root status endpoint can temporarily surface child-agent payloads.
+        // The endpoint's explicit thread is the notification identity; using a
+        // child payload id here creates one alert per sub-agent.
+        const id = String(endpointThreadId || data.threadId || data.id || "current");
         const runningKey = "__aiMiniRunning_" + id;
         let rawStatus = String(data.status || data.state || data.phase || "").toLowerCase();
         if (!rawStatus && (data.running === true || data.busy === true || data.active === true)) {
@@ -1418,7 +1508,6 @@
             ].indexOf(rawStatus) >= 0
               ? "error"
               : rawStatus;
-        const endpoint = normalizedStatusEndpoint(statusUrl);
         const endpointRunningKey = endpoint
           ? "__aiMiniRunningEndpoint_" + endpoint
           : "";
@@ -1553,7 +1642,6 @@
         const args = arguments;
         const url = String((args[0] && args[0].url) || args[0] || "");
         const isStatusRequest = isStatusUrl(url);
-        if (isSendUrl(url)) beginTrackingBeforeSend(url);
         if (isStatusRequest) {
           try {
             const savedInput = args[0] instanceof Request ? args[0].clone() : args[0];
@@ -1598,7 +1686,6 @@
     XMLHttpRequest.prototype.send = function () {
       const xhr = this;
       const url = String(xhr.__aiMiniTaskUrl || "");
-      if (isSendUrl(url)) beginTrackingBeforeSend(url);
       if (isSendUrl(url) || isStatusUrl(url)) {
         xhr.addEventListener("load", function () {
           if (xhr.status < 200 || xhr.status >= 300) return;
@@ -1662,7 +1749,7 @@
       const stableData = {
         id: String(detail.id || "current"),
         threadId: String(detail.id || "current"),
-        title: String(detail.title || currentThreadTitle()),
+        title: normalizedThreadTitle(detail.title || currentThreadTitle()),
         state: state,
         at: detail.at || Date.now()
       };

@@ -4425,7 +4425,15 @@ public class MainActivity extends Activity {
     }
 
     private String normalizedTaskName(String threadName) {
-        String name = threadName == null ? "" : threadName.trim();
+        String name = threadName == null
+                ? ""
+                : threadName.replaceAll("\\s+", " ").trim();
+        while (name.length() > 0
+                && name.length() % 2 == 0
+                && name.substring(0, name.length() / 2)
+                .equals(name.substring(name.length() / 2))) {
+            name = name.substring(0, name.length() / 2).trim();
+        }
         if (name.isEmpty() || "选择线程".equals(name)) {
             return getString(R.string.task_complete_fallback);
         }
@@ -4878,12 +4886,14 @@ public class MainActivity extends Activity {
                 + "var detectLegacyComposer=function(){"
                 + "var form=document.querySelector("
                 + "'footer.composer-shell form#composer.composer');"
-                + "var legacy=!!(form&&form.querySelector('textarea#text')"
+                + "var plain=!!(form&&form.querySelector('textarea#text')"
                 + "&&!form.classList.contains('codex-liquid-glass-original')"
                 + "&&!form.classList.contains('liquid-glass-react-surface'));"
                 + "document.documentElement.classList.toggle("
-                + "'ai-mini-legacy-composer',legacy);"
-                + "return legacy;};"
+                + "'ai-mini-plain-composer',plain);"
+                + "document.documentElement.classList.remove("
+                + "'ai-mini-legacy-composer');"
+                + "return false;};"
                 + "var legacyComposer=detectLegacyComposer();"
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview','ai-mini-webview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
@@ -4934,7 +4944,7 @@ public class MainActivity extends Activity {
                 + "document.addEventListener('click',show,true);"
                 + "document.addEventListener('focusin',function(e){if(!editable(e.target)){return;}var now=Date.now();if(now-lastEditableTouchAt>=900&&now<suppressFocusUntil){setTimeout(function(){try{e.target.blur();if(CodexMiniNative.hideKeyboard){CodexMiniNative.hideKeyboard();}}catch(ignore){}},0);return;}if(now-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(function(){CodexMiniNative.showKeyboard();},40);}},true);"
                 + "}"
-                + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var id=String(data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').trim():'当前会话';var endpoint='';try{endpoint=new URL(String(statusUrl||''),location.href).href;}catch(ignore){}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
+                + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var endpoint='',endpointThread='';try{endpoint=new URL(String(statusUrl||''),location.href).href;endpointThread=String(new URL(endpoint).searchParams.get('thread')||'').trim();}catch(ignore){}var id=String(endpointThread||data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').replace(/\\s+/g,' ').trim():'当前会话';while(title.length>0&&title.length%2===0&&title.slice(0,title.length/2)===title.slice(title.length/2)){title=title.slice(0,title.length/2).trim();}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
                 + "var oldFetch=window.fetch;if(oldFetch&&!window.__AIMiniFetchHooked){window.__AIMiniFetchHooked=true;window.__AIMiniStatusPollers=window.__AIMiniStatusPollers||{};window.__AIMiniPollStatuses=function(){try{Object.keys(window.__AIMiniStatusPollers||{}).forEach(function(key){try{window.__AIMiniStatusPollers[key]();}catch(e){}});}catch(e){}};window.fetch=function(){var ctx=this,args=arguments;var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){try{var savedInput=args[0] instanceof Request?args[0].clone():args[0];var savedInit=args.length>1?args[1]:undefined;window.__AIMiniStatusPollers[u]=function(){try{var input=savedInput instanceof Request?savedInput.clone():savedInput;return oldFetch.call(window,input,savedInit).then(function(pollRes){try{pollRes.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}catch(e){}return pollRes;}).catch(function(){});}catch(e){return Promise.resolve();}};}catch(e){}}return oldFetch.apply(ctx,args).then(function(res){try{if(u.indexOf('/codex/status')>=0){res.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}}catch(e){}return res;});};}"
                 + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{if(window.__AIMiniApplyLegacyKeyboardInset&&window.__AIMiniApplyLegacyKeyboardInset(0)){return;}document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));}catch(e){}};}"
                 + "if(!window.__AIMiniDownloadHooksVersion){"
@@ -5002,14 +5012,27 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-webview:not(.ai-mini-legacy-composer) "
                 + "body.keyboard-open .composer-shell{"
                 + "position:fixed!important;bottom:0!important;}"
-                + "html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,"
-                + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread,"
-                + "html.ai-mini-webview.ai-mini-legacy-composer .composer-shell,"
-                + "html.ai-mini-webview.ai-mini-legacy-composer .thread{"
-                + "transform:translate3d(0,calc(-1 * "
-                + "var(--ai-mini-native-keyboard-shift,0px)),0)!important;"
-                + "transition:none!important;"
-                + "will-change:transform!important;}"
+                + "html.ai-mini-geckoview.ai-mini-plain-composer .composer-shell,"
+                + "html.ai-mini-webview.ai-mini-plain-composer .composer-shell{"
+                + "width:100%!important;max-width:100%!important;"
+                + "box-sizing:border-box!important;}"
+                + "html.ai-mini-geckoview.ai-mini-plain-composer form#composer,"
+                + "html.ai-mini-webview.ai-mini-plain-composer form#composer{"
+                + "width:100%!important;max-width:100%!important;min-width:0!important;"
+                + "box-sizing:border-box!important;}"
+                + "html.ai-mini-geckoview.ai-mini-plain-composer "
+                + "body.keyboard-open .composer-shell,"
+                + "html.ai-mini-webview.ai-mini-plain-composer "
+                + "body.keyboard-open .composer-shell{"
+                + "position:fixed!important;left:0!important;right:0!important;"
+                + "bottom:0!important;"
+                + "padding-bottom:max(8px,env(safe-area-inset-bottom,0px))!important;"
+                + "overflow:visible!important;transform:none!important;"
+                + "transition:none!important;will-change:auto!important;}"
+                + "html.ai-mini-geckoview.ai-mini-plain-composer .thread,"
+                + "html.ai-mini-webview.ai-mini-plain-composer .thread{"
+                + "transform:none!important;transition:none!important;"
+                + "will-change:auto!important;}"
                 + "html.ai-mini-webview:not(.liquid-glass-off),"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off){"
                 + "--liquid-glass-filter:none!important;"
@@ -5343,9 +5366,12 @@ public class MainActivity extends Activity {
                         + "var root=document.documentElement;"
                         + "var composer=document.querySelector("
                         + "'footer.composer-shell form#composer.composer');"
-                        + "var legacy=!!(composer&&composer.querySelector('textarea#text')"
+                        + "var plain=!!(composer&&composer.querySelector('textarea#text')"
                         + "&&!composer.classList.contains('codex-liquid-glass-original')"
                         + "&&!composer.classList.contains('liquid-glass-react-surface'));"
+                        + "root.classList.toggle('ai-mini-plain-composer',plain);"
+                        + "root.classList.remove('ai-mini-legacy-composer');"
+                        + "var legacy=false;"
                         + "if(!legacy){"
                         + "root.style.setProperty('--ai-mini-native-keyboard-shift',"
                         + "'0px','important');"

@@ -246,6 +246,12 @@ final class TaskNotificationStyle {
 
     private static String cleanThreadName(Context context, String threadName) {
         String value = threadName == null ? "" : threadName.replaceAll("\\s+", " ").trim();
+        while (value.length() > 0
+                && value.length() % 2 == 0
+                && value.substring(0, value.length() / 2)
+                .equals(value.substring(value.length() / 2))) {
+            value = value.substring(0, value.length() / 2).trim();
+        }
         if (value.isEmpty() || "选择线程".equals(value)) {
             return context.getString(R.string.task_complete_fallback);
         }
