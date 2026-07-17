@@ -169,6 +169,13 @@ public class MainActivity extends Activity {
     private final List<DownloadItem> downloads = new ArrayList<>();
     private final List<TextView> miniMenuButtons = new ArrayList<>();
     private final List<TextView> settingsLabels = new ArrayList<>();
+    private final List<View> miniMenuNavRows = new ArrayList<>();
+    private final List<TextView> miniMenuNavTitles = new ArrayList<>();
+    private final List<TextView> miniMenuNavSubtitles = new ArrayList<>();
+    private final List<TextView> miniMenuNavChevrons = new ArrayList<>();
+    private final List<View> miniMenuNavIcons = new ArrayList<>();
+    private final List<View> miniMenuSettingsRows = new ArrayList<>();
+    private final List<TextView> miniMenuSectionTitles = new ArrayList<>();
     private final Set<String> runningNotificationTasks = new HashSet<>();
     private final Map<String, String> monitoredTaskStatusUrls = new HashMap<>();
     private final Map<String, String> monitoredTaskNames = new HashMap<>();
@@ -190,8 +197,9 @@ public class MainActivity extends Activity {
     private AIMiniBrowserView webView;
     private FrameLayout externalBrowserContainer;
     private AIMiniBrowserView externalWebView;
-    private TextView externalCloseButton;
-    private TextView externalModeButton;
+    private View externalCloseButton;
+    private View externalModeButton;
+    private TextView externalModeLabel;
     private boolean mainDesktopMode;
     private boolean externalDesktopMode;
     private String mainMobileUserAgent;
@@ -226,8 +234,15 @@ public class MainActivity extends Activity {
     private RoundedIconView miniButton;
     private View miniMenuScrim;
     private LinearLayout miniMenu;
+    private LinearLayout miniMenuTitleBar;
+    private TextView miniMenuBackButton;
+    private TextView miniMenuTitleText;
+    private LinearLayout miniMenuRootPage;
     private LinearLayout floatSettingsPanel;
     private LinearLayout notificationSettingsPanel;
+    private String miniMenuPage = "root";
+    private View floatGlassSwitch;
+    private boolean floatGlassSwitchOn;
     private TextView floatSizeValue;
     private TextView floatAlphaValue;
     private TextView topInsetValue;
@@ -939,51 +954,136 @@ public class MainActivity extends Activity {
         miniMenu = new LinearLayout(this);
         miniMenu.setOrientation(LinearLayout.VERTICAL);
         miniMenu.setPadding(dp(12), dp(12), dp(12), dp(12));
-        miniMenu.setBackground(glassPanel(dp(26)));
+        miniMenu.setBackground(menuPanelBackground(isFloatMenuLight()));
         miniMenu.setElevation(dp(18));
         miniMenu.setVisibility(View.GONE);
-        miniMenu.setOnClickListener(view -> {
-        });
+        miniMenu.setClickable(true);
         FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(
-                dp(292),
+                dp(328),
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER
         );
         parent.addView(miniMenu, menuParams);
 
-        externalCloseButton = miniMenuButton(R.string.close_external_page, view -> {
-            hideMiniMenu();
-            closeExternalPage();
-        });
+        // Title bar: back + title (WebUI settings-title style)
+        miniMenuTitleBar = new LinearLayout(this);
+        miniMenuTitleBar.setOrientation(LinearLayout.HORIZONTAL);
+        miniMenuTitleBar.setGravity(Gravity.CENTER_VERTICAL);
+        miniMenuTitleBar.setPadding(dp(2), dp(2), dp(2), dp(6));
+        miniMenu.addView(miniMenuTitleBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        miniMenuBackButton = new TextView(this);
+        miniMenuBackButton.setText("‹");
+        miniMenuBackButton.setTextSize(20);
+        miniMenuBackButton.setGravity(Gravity.CENTER);
+        miniMenuBackButton.setPadding(0, 0, dp(1), dp(2));
+        miniMenuBackButton.setVisibility(View.GONE);
+        miniMenuBackButton.setOnClickListener(view -> showMiniMenuPage("root"));
+        LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(dp(28), dp(28));
+        backParams.setMargins(0, 0, dp(8), 0);
+        miniMenuTitleBar.addView(miniMenuBackButton, backParams);
+
+        miniMenuTitleText = new TextView(this);
+        miniMenuTitleText.setText(R.string.mini_menu_title);
+        miniMenuTitleText.setTextSize(15);
+        miniMenuTitleText.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        miniMenuTitleText.setGravity(Gravity.CENTER_VERTICAL);
+        miniMenuTitleBar.addView(miniMenuTitleText, new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+        ));
+
+        // Root page — nav rows like WebUI settings-nav-row
+        miniMenuRootPage = new LinearLayout(this);
+        miniMenuRootPage.setOrientation(LinearLayout.VERTICAL);
+        miniMenu.addView(miniMenuRootPage, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        externalCloseButton = createMiniNavRow(
+                getString(R.string.close_external_page),
+                getString(R.string.mini_menu_close_external_subtitle),
+                "close",
+                false,
+                view -> {
+                    hideMiniMenu();
+                    closeExternalPage();
+                }
+        );
         externalCloseButton.setVisibility(View.GONE);
-        miniMenu.addView(externalCloseButton);
+        miniMenuRootPage.addView(externalCloseButton);
 
-        externalModeButton = miniMenuButton(R.string.switch_to_desktop_mode, view -> {
-            hideMiniMenu();
-            toggleActiveBrowserMode();
-        });
-        miniMenu.addView(externalModeButton);
+        externalModeLabel = new TextView(this);
+        externalModeButton = createMiniNavRow(
+                getString(R.string.switch_to_desktop_mode),
+                getString(R.string.mini_menu_mode_subtitle),
+                "mode",
+                false,
+                view -> {
+                    hideMiniMenu();
+                    toggleActiveBrowserMode();
+                },
+                externalModeLabel
+        );
+        miniMenuRootPage.addView(externalModeButton);
 
-        miniMenu.addView(miniMenuButton(R.string.downloads_title, view -> {
-            hideMiniMenu();
-            showDownloadsPanel();
-        }));
-        miniMenu.addView(miniMenuButton(R.string.return_home, view -> {
-            hideMiniMenu();
-            showWelcome();
-        }));
-        miniMenu.addView(miniMenuButton(R.string.refresh_page, view -> {
-            hideMiniMenu();
-            AIMiniBrowserView activeWebView = activeWebView();
-            if (activeWebView != null) {
-                showBrowserTransitionCover(2400L);
-                activeWebView.reload(reloadFallbackUrl(activeWebView));
-            }
-        }));
-        miniMenu.addView(miniMenuButton(R.string.interface_settings, view -> toggleFloatSettings()));
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.downloads_title),
+                getString(R.string.mini_menu_downloads_subtitle),
+                "downloads",
+                false,
+                view -> {
+                    hideMiniMenu();
+                    showDownloadsPanel();
+                }
+        ));
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.return_home),
+                getString(R.string.mini_menu_home_subtitle),
+                "home",
+                false,
+                view -> {
+                    hideMiniMenu();
+                    showWelcome();
+                }
+        ));
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.refresh_page),
+                getString(R.string.mini_menu_refresh_subtitle),
+                "refresh",
+                false,
+                view -> {
+                    hideMiniMenu();
+                    AIMiniBrowserView activeWebView = activeWebView();
+                    if (activeWebView != null) {
+                        showBrowserTransitionCover(2400L);
+                        activeWebView.reload(reloadFallbackUrl(activeWebView));
+                    }
+                }
+        ));
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.interface_settings),
+                getString(R.string.mini_menu_interface_subtitle),
+                "appearance",
+                true,
+                view -> showMiniMenuPage("interface")
+        ));
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.notification_settings),
+                getString(R.string.mini_menu_notification_subtitle),
+                "notification",
+                true,
+                view -> showMiniMenuPage("notification")
+        ));
+
         buildFloatSettingsPanel();
-        miniMenu.addView(miniMenuButton(R.string.notification_settings, view -> toggleNotificationSettings()));
         buildNotificationSettingsPanel();
+        showMiniMenuPage("root");
 
         miniButton = new RoundedIconView(this);
         miniButton.setImageResource(R.drawable.ic_gptmini);
@@ -1009,74 +1109,78 @@ public class MainActivity extends Activity {
     private void buildFloatSettingsPanel() {
         floatSettingsPanel = new LinearLayout(this);
         floatSettingsPanel.setOrientation(LinearLayout.VERTICAL);
-        floatSettingsPanel.setPadding(dp(12), dp(8), dp(12), dp(10));
         floatSettingsPanel.setVisibility(View.GONE);
-        floatSettingsPanel.setBackground(glassInsetPanel(dp(16)));
+        floatSettingsPanel.setPadding(0, 0, 0, 0);
+        floatSettingsPanel.setBackground(null);
+
+        TextView section = miniSectionTitle(getString(R.string.interface_settings));
+        floatSettingsPanel.addView(section);
 
         floatSizeValue = settingsLabel("");
-        floatSettingsPanel.addView(floatSizeValue);
-        SeekBar sizeBar = new SeekBar(this);
-        sizeBar.setMax(MAX_FLOAT_SIZE_DP - MIN_FLOAT_SIZE_DP);
-        sizeBar.setProgress(floatButtonSizeDp() - MIN_FLOAT_SIZE_DP);
-        sizeBar.setOnSeekBarChangeListener(new SimpleSeekBarListener(progress -> {
-            int size = MIN_FLOAT_SIZE_DP + progress;
-            preferences.edit().putInt(KEY_FLOAT_SIZE, size).apply();
-            updateFloatSettingsLabels();
-            applyFloatButtonSize();
-        }));
-        floatSettingsPanel.addView(sizeBar);
+        floatSettingsPanel.addView(wrapSettingsControlRow(
+                floatSizeValue,
+                buildSettingsSeekBar(
+                        MAX_FLOAT_SIZE_DP - MIN_FLOAT_SIZE_DP,
+                        floatButtonSizeDp() - MIN_FLOAT_SIZE_DP,
+                        progress -> {
+                            int size = MIN_FLOAT_SIZE_DP + progress;
+                            preferences.edit().putInt(KEY_FLOAT_SIZE, size).apply();
+                            updateFloatSettingsLabels();
+                            applyFloatButtonSize();
+                        }
+                )
+        ));
 
         floatAlphaValue = settingsLabel("");
-        floatSettingsPanel.addView(floatAlphaValue);
-        SeekBar alphaBar = new SeekBar(this);
-        alphaBar.setMax(90);
-        alphaBar.setProgress(floatButtonTransparencyPercent());
-        alphaBar.setOnSeekBarChangeListener(new SimpleSeekBarListener(progress -> {
-            preferences.edit().putInt(KEY_FLOAT_ALPHA, progress).apply();
-            updateFloatSettingsLabels();
-            if (miniMenu.getVisibility() != View.VISIBLE) miniButton.setAlpha(floatIdleAlpha());
-        }));
-        floatSettingsPanel.addView(alphaBar);
+        floatSettingsPanel.addView(wrapSettingsControlRow(
+                floatAlphaValue,
+                buildSettingsSeekBar(
+                        90,
+                        floatButtonTransparencyPercent(),
+                        progress -> {
+                            preferences.edit().putInt(KEY_FLOAT_ALPHA, progress).apply();
+                            updateFloatSettingsLabels();
+                            if (miniMenu.getVisibility() != View.VISIBLE) {
+                                miniButton.setAlpha(floatIdleAlpha());
+                            }
+                        }
+                )
+        ));
 
         topInsetValue = settingsLabel("");
-        floatSettingsPanel.addView(topInsetValue);
-        SeekBar topInsetBar = new SeekBar(this);
-        topInsetBar.setMax(MAX_TOP_INSET_DP - MIN_TOP_INSET_DP);
-        topInsetBar.setProgress(topInsetDp() - MIN_TOP_INSET_DP);
-        topInsetBar.setOnSeekBarChangeListener(new SimpleSeekBarListener(progress -> {
-            int inset = progress + MIN_TOP_INSET_DP;
-            preferences.edit().putInt(KEY_TOP_INSET_DP, inset).apply();
-            updateTopInsetArea();
-            applyPageTopInsetToWeb();
-            requestInterfaceInsets();
-            updateFloatSettingsLabels();
-        }));
-        floatSettingsPanel.addView(topInsetBar);
+        floatSettingsPanel.addView(wrapSettingsControlRow(
+                topInsetValue,
+                buildSettingsSeekBar(
+                        MAX_TOP_INSET_DP - MIN_TOP_INSET_DP,
+                        topInsetDp() - MIN_TOP_INSET_DP,
+                        progress -> {
+                            int inset = progress + MIN_TOP_INSET_DP;
+                            preferences.edit().putInt(KEY_TOP_INSET_DP, inset).apply();
+                            updateTopInsetArea();
+                            applyPageTopInsetToWeb();
+                            requestInterfaceInsets();
+                            updateFloatSettingsLabels();
+                        }
+                )
+        ));
 
         conversationFontScaleValue = settingsLabel("");
-        floatSettingsPanel.addView(conversationFontScaleValue);
-        SeekBar conversationFontScaleBar = new SeekBar(this);
-        conversationFontScaleBar.setMax(
-                MAX_CONVERSATION_FONT_SCALE - MIN_CONVERSATION_FONT_SCALE
-        );
-        conversationFontScaleBar.setProgress(
-                conversationFontScalePercent() - MIN_CONVERSATION_FONT_SCALE
-        );
-        conversationFontScaleBar.setOnSeekBarChangeListener(
-                new SimpleSeekBarListener(progress -> {
-                    int percent = MIN_CONVERSATION_FONT_SCALE + progress;
-                    preferences.edit()
-                            .putInt(KEY_CONVERSATION_FONT_SCALE, percent)
-                            .apply();
-                    updateFloatSettingsLabels();
-                    // Dragging a 150-step slider can produce several callbacks
-                    // in one display frame. Coalesce them so Gecko receives only
-                    // the latest value without making the settings panel stutter.
-                    handler.removeCallbacks(conversationFontScaleApplier);
-                    handler.postDelayed(conversationFontScaleApplier, 16L);
-                })
-        );
-        floatSettingsPanel.addView(conversationFontScaleBar);
+        floatSettingsPanel.addView(wrapSettingsControlRow(
+                conversationFontScaleValue,
+                buildSettingsSeekBar(
+                        MAX_CONVERSATION_FONT_SCALE - MIN_CONVERSATION_FONT_SCALE,
+                        conversationFontScalePercent() - MIN_CONVERSATION_FONT_SCALE,
+                        progress -> {
+                            int percent = MIN_CONVERSATION_FONT_SCALE + progress;
+                            preferences.edit()
+                                    .putInt(KEY_CONVERSATION_FONT_SCALE, percent)
+                                    .apply();
+                            updateFloatSettingsLabels();
+                            handler.removeCallbacks(conversationFontScaleApplier);
+                            handler.postDelayed(conversationFontScaleApplier, 16L);
+                        }
+                )
+        ));
 
         floatThemeValue = settingsLabel("");
         floatSettingsPanel.addView(floatThemeValue);
@@ -1087,7 +1191,7 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(36)
         );
-        themeRowParams.setMargins(0, dp(6), 0, 0);
+        themeRowParams.setMargins(0, dp(4), 0, 0);
         floatSettingsPanel.addView(themeRow, themeRowParams);
 
         floatThemeDarkOption = floatThemeOptionButton(R.string.float_theme_dark, FLOAT_MENU_THEME_DARK);
@@ -1097,41 +1201,29 @@ public class MainActivity extends Activity {
         floatThemeSystemOption = floatThemeOptionButton(R.string.float_theme_system, FLOAT_MENU_THEME_SYSTEM);
         themeRow.addView(floatThemeSystemOption, compactSegmentParams(dp(5)));
 
-        floatGlassOption = new TextView(this);
-        floatGlassOption.setTextSize(12);
-        floatGlassOption.setGravity(Gravity.CENTER);
-        floatGlassOption.setPadding(dp(10), 0, dp(10), 0);
-        floatGlassOption.setOnClickListener(view -> {
-            preferences.edit()
-                    .putBoolean(KEY_NATIVE_LIQUID_GLASS, !nativeLiquidGlassEnabled())
-                    .apply();
-            refreshMiniMenuTheme();
-            applyNativeGlassState();
-        });
-        LinearLayout glassRow = new LinearLayout(this);
-        glassRow.setOrientation(LinearLayout.HORIZONTAL);
-        glassRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams glassRowParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(38)
+        // Liquid glass as switch-style settings row (WebUI appearance)
+        LinearLayout glassRow = createSettingsSwitchRow(
+                getString(R.string.float_liquid_glass),
+                getString(R.string.mini_menu_glass_subtitle),
+                nativeLiquidGlassEnabled(),
+                enabled -> {
+                    preferences.edit().putBoolean(KEY_NATIVE_LIQUID_GLASS, enabled).apply();
+                    refreshMiniMenuTheme();
+                    applyNativeGlassState();
+                }
         );
-        glassRowParams.setMargins(0, dp(8), 0, 0);
-        floatSettingsPanel.addView(glassRow, glassRowParams);
-        TextView glassLabel = settingsLabel(getString(R.string.float_liquid_glass));
-        glassLabel.setPadding(0, 0, 0, 0);
-        glassRow.addView(glassLabel, new LinearLayout.LayoutParams(
-                0,
+        floatGlassOption = null; // legacy option button retired; switch row owns state
+        LinearLayout.LayoutParams glassParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                1f
-        ));
-        glassLabel.setGravity(Gravity.CENTER_VERTICAL);
-        glassRow.addView(floatGlassOption, new LinearLayout.LayoutParams(dp(92), dp(34)));
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        glassParams.setMargins(0, dp(10), 0, 0);
+        floatSettingsPanel.addView(glassRow, glassParams);
 
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        params.setMargins(0, dp(6), 0, 0);
         miniMenu.addView(floatSettingsPanel, params);
         updateFloatSettingsLabels();
     }
@@ -1139,12 +1231,15 @@ public class MainActivity extends Activity {
     private void buildNotificationSettingsPanel() {
         notificationSettingsPanel = new LinearLayout(this);
         notificationSettingsPanel.setOrientation(LinearLayout.VERTICAL);
-        notificationSettingsPanel.setPadding(dp(12), dp(8), dp(12), dp(10));
         notificationSettingsPanel.setVisibility(View.GONE);
-        notificationSettingsPanel.setBackground(glassInsetPanel(dp(16)));
+        notificationSettingsPanel.setPadding(0, 0, 0, 0);
+        notificationSettingsPanel.setBackground(null);
+
+        notificationSettingsPanel.addView(miniSectionTitle(getString(R.string.notification_settings)));
 
         notificationModeValue = settingsLabel("");
         notificationSettingsPanel.addView(notificationModeValue);
+
         notificationEndOption = notificationOptionButton(
                 R.string.notification_mode_end,
                 NOTIFICATION_MODE_END
@@ -1160,9 +1255,214 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        params.setMargins(0, dp(6), 0, 0);
         miniMenu.addView(notificationSettingsPanel, params);
         updateNotificationSettingsLabels();
+    }
+
+    private TextView miniSectionTitle(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(12);
+        view.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        view.setPadding(dp(4), dp(2), dp(4), dp(8));
+        miniMenuSectionTitles.add(view);
+        return view;
+    }
+
+    private SeekBar buildSettingsSeekBar(int max, int progress, SimpleSeekBarListener.ProgressCallback consumer) {
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(Math.max(0, max));
+        bar.setProgress(Math.max(0, Math.min(max, progress)));
+        bar.setOnSeekBarChangeListener(new SimpleSeekBarListener(consumer));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        params.setMargins(0, dp(2), 0, 0);
+        bar.setLayoutParams(params);
+        return bar;
+    }
+
+    private LinearLayout wrapSettingsControlRow(TextView label, View control) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(10), dp(10), dp(10), dp(10));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        params.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(params);
+        label.setPadding(0, 0, 0, 0);
+        row.addView(label);
+        row.addView(control);
+        miniMenuSettingsRows.add(row);
+        return row;
+    }
+
+    private LinearLayout createSettingsSwitchRow(
+            String title,
+            String subtitle,
+            boolean initialOn,
+            SwitchConsumer consumer
+    ) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(10), dp(10), dp(10));
+        miniMenuSettingsRows.add(row);
+
+        LinearLayout textCol = new LinearLayout(this);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextSize(13);
+        titleView.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        miniMenuNavTitles.add(titleView);
+        textCol.addView(titleView);
+        TextView subtitleView = new TextView(this);
+        subtitleView.setText(subtitle);
+        subtitleView.setTextSize(11);
+        subtitleView.setPadding(0, dp(2), 0, 0);
+        miniMenuNavSubtitles.add(subtitleView);
+        textCol.addView(subtitleView);
+        row.addView(textCol, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        View switchView = createMiniSwitch(initialOn);
+        floatGlassSwitch = switchView;
+        floatGlassSwitchOn = initialOn;
+        row.addView(switchView, new LinearLayout.LayoutParams(dp(48), dp(29)));
+        row.setOnClickListener(v -> {
+            floatGlassSwitchOn = !floatGlassSwitchOn;
+            styleMiniSwitch(floatGlassSwitch, floatGlassSwitchOn);
+            consumer.onChanged(floatGlassSwitchOn);
+        });
+        switchView.setOnClickListener(v -> row.performClick());
+        return row;
+    }
+
+    private View createMiniSwitch(boolean on) {
+        View view = new View(this);
+        styleMiniSwitch(view, on);
+        return view;
+    }
+
+    private void styleMiniSwitch(View view, boolean on) {
+        if (view == null) return;
+        boolean light = isFloatMenuLight();
+        GradientDrawable track = new GradientDrawable();
+        track.setCornerRadius(dp(999));
+        if (on) {
+            track.setColor(light ? Color.argb(220, 49, 210, 157) : Color.argb(210, 48, 211, 157));
+        } else {
+            track.setColor(light ? Color.argb(120, 113, 113, 122) : Color.argb(96, 113, 113, 122));
+        }
+        view.setBackground(track);
+        // thumb via layered look using padding asymmetry isn't perfect; use foreground-like child if needed
+        view.setTag(on ? Boolean.TRUE : Boolean.FALSE);
+        // Draw a simple "thumb" using left/right inset via stroke + solid is hard;
+        // approximate with two-tone gradient orientation.
+        GradientDrawable thumbTrack = new GradientDrawable(
+                on ? GradientDrawable.Orientation.LEFT_RIGHT : GradientDrawable.Orientation.RIGHT_LEFT,
+                on
+                        ? new int[]{
+                                light ? Color.argb(40, 255, 255, 255) : Color.argb(30, 255, 255, 255),
+                                light ? Color.argb(220, 49, 210, 157) : Color.argb(210, 48, 211, 157)
+                        }
+                        : new int[]{
+                                light ? Color.argb(120, 113, 113, 122) : Color.argb(96, 113, 113, 122),
+                                light ? Color.argb(180, 255, 255, 255) : Color.argb(210, 255, 255, 255)
+                        }
+        );
+        thumbTrack.setCornerRadius(dp(999));
+        view.setBackground(thumbTrack);
+    }
+
+    private View createMiniNavRow(
+            String title,
+            String subtitle,
+            String iconKind,
+            boolean showChevron,
+            View.OnClickListener listener
+    ) {
+        return createMiniNavRow(title, subtitle, iconKind, showChevron, listener, null);
+    }
+
+    private View createMiniNavRow(
+            String title,
+            String subtitle,
+            String iconKind,
+            boolean showChevron,
+            View.OnClickListener listener,
+            TextView reuseTitleView
+    ) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(9), dp(10), dp(9));
+        row.setMinimumHeight(dp(50));
+        row.setOnClickListener(listener);
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        rowParams.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(rowParams);
+        miniMenuNavRows.add(row);
+
+        View icon = createMiniNavIcon(iconKind);
+        miniMenuNavIcons.add(icon);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+        iconParams.setMargins(0, 0, dp(12), 0);
+        row.addView(icon, iconParams);
+
+        LinearLayout textCol = new LinearLayout(this);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+        TextView titleView = reuseTitleView != null ? reuseTitleView : new TextView(this);
+        titleView.setText(title);
+        titleView.setTextSize(15);
+        titleView.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        titleView.setSingleLine(true);
+        miniMenuNavTitles.add(titleView);
+        miniMenuButtons.add(titleView);
+        textCol.addView(titleView);
+
+        TextView subtitleView = new TextView(this);
+        subtitleView.setText(subtitle);
+        subtitleView.setTextSize(11);
+        subtitleView.setPadding(0, dp(2), 0, 0);
+        subtitleView.setSingleLine(true);
+        miniMenuNavSubtitles.add(subtitleView);
+        textCol.addView(subtitleView);
+        row.addView(textCol, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView chevron = new TextView(this);
+        chevron.setText("›");
+        chevron.setTextSize(22);
+        chevron.setGravity(Gravity.CENTER);
+        chevron.setPadding(dp(2), 0, 0, dp(1));
+        chevron.setVisibility(showChevron ? View.VISIBLE : View.INVISIBLE);
+        miniMenuNavChevrons.add(chevron);
+        row.addView(chevron, new LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    private View createMiniNavIcon(String kind) {
+        TextView icon = new TextView(this);
+        icon.setGravity(Gravity.CENTER);
+        icon.setTextSize(14);
+        icon.setTypeface(Typeface.DEFAULT_BOLD);
+        String glyph = "•";
+        if ("close".equals(kind)) glyph = "×";
+        else if ("mode".equals(kind)) glyph = "⧉";
+        else if ("downloads".equals(kind)) glyph = "↓";
+        else if ("home".equals(kind)) glyph = "⌂";
+        else if ("refresh".equals(kind)) glyph = "↻";
+        else if ("appearance".equals(kind)) glyph = "◐";
+        else if ("notification".equals(kind)) glyph = "◔";
+        icon.setText(glyph);
+        icon.setTag(kind);
+        return icon;
     }
 
     private TextView notificationOptionButton(int textRes, String mode) {
@@ -1176,11 +1476,12 @@ public class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(38)
+                dp(42)
         );
-        params.setMargins(0, dp(7), 0, 0);
+        params.setMargins(0, dp(8), 0, 0);
         button.setLayoutParams(params);
         button.setTag(textRes);
+        miniMenuButtons.add(button);
         return button;
     }
 
@@ -1195,7 +1496,34 @@ public class MainActivity extends Activity {
             updateFloatSettingsLabels();
         });
         button.setTag(textRes);
+        miniMenuButtons.add(button);
         return button;
+    }
+
+    private void showMiniMenuPage(String page) {
+        miniMenuPage = page == null ? "root" : page;
+        boolean root = "root".equals(miniMenuPage);
+        boolean iface = "interface".equals(miniMenuPage);
+        boolean notif = "notification".equals(miniMenuPage);
+        if (miniMenuRootPage != null) {
+            miniMenuRootPage.setVisibility(root ? View.VISIBLE : View.GONE);
+        }
+        if (floatSettingsPanel != null) {
+            floatSettingsPanel.setVisibility(iface ? View.VISIBLE : View.GONE);
+        }
+        if (notificationSettingsPanel != null) {
+            notificationSettingsPanel.setVisibility(notif ? View.VISIBLE : View.GONE);
+        }
+        if (miniMenuBackButton != null) {
+            miniMenuBackButton.setVisibility(root ? View.GONE : View.VISIBLE);
+        }
+        if (miniMenuTitleText != null) {
+            if (iface) miniMenuTitleText.setText(R.string.interface_settings);
+            else if (notif) miniMenuTitleText.setText(R.string.notification_settings);
+            else miniMenuTitleText.setText(R.string.mini_menu_title);
+        }
+        if (iface) updateFloatSettingsLabels();
+        if (notif) updateNotificationSettingsLabels();
     }
 
     private LinearLayout.LayoutParams compactSegmentParams(int leftMargin) {
@@ -1265,6 +1593,7 @@ public class MainActivity extends Activity {
         if (miniMenu.getVisibility() == View.VISIBLE) hideMiniMenu();
         else {
             if (miniMenuScrim != null) miniMenuScrim.setVisibility(View.VISIBLE);
+            showMiniMenuPage("root");
             miniMenu.setVisibility(View.VISIBLE);
             applyNativeGlassState();
             if (miniButton != null) {
@@ -1277,8 +1606,7 @@ public class MainActivity extends Activity {
     private void hideMiniMenu() {
         if (miniMenuScrim != null) miniMenuScrim.setVisibility(View.GONE);
         if (miniMenu != null) miniMenu.setVisibility(View.GONE);
-        if (floatSettingsPanel != null) floatSettingsPanel.setVisibility(View.GONE);
-        if (notificationSettingsPanel != null) notificationSettingsPanel.setVisibility(View.GONE);
+        showMiniMenuPage("root");
         clearNativeBackdropBlurIfUnused();
         if (miniButton != null) {
             miniButton.setAlpha(floatIdleAlpha());
@@ -1287,17 +1615,19 @@ public class MainActivity extends Activity {
     }
 
     private void toggleFloatSettings() {
-        if (floatSettingsPanel == null) return;
-        if (notificationSettingsPanel != null) notificationSettingsPanel.setVisibility(View.GONE);
-        floatSettingsPanel.setVisibility(floatSettingsPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-        updateFloatSettingsLabels();
+        if (miniMenu == null) return;
+        if (miniMenu.getVisibility() != View.VISIBLE) {
+            toggleMiniMenu();
+        }
+        showMiniMenuPage("interface");
     }
 
     private void toggleNotificationSettings() {
-        if (notificationSettingsPanel == null) return;
-        if (floatSettingsPanel != null) floatSettingsPanel.setVisibility(View.GONE);
-        notificationSettingsPanel.setVisibility(notificationSettingsPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-        updateNotificationSettingsLabels();
+        if (miniMenu == null) return;
+        if (miniMenu.getVisibility() != View.VISIBLE) {
+            toggleMiniMenu();
+        }
+        showMiniMenuPage("notification");
     }
 
     private void applyFloatButtonSize() {
@@ -1651,18 +1981,9 @@ public class MainActivity extends Activity {
         updateOptionButton(floatThemeDarkOption, FLOAT_MENU_THEME_DARK.equals(floatMenuTheme()));
         updateOptionButton(floatThemeLightOption, FLOAT_MENU_THEME_LIGHT.equals(floatMenuTheme()));
         updateOptionButton(floatThemeSystemOption, FLOAT_MENU_THEME_SYSTEM.equals(floatMenuTheme()));
-        if (floatGlassOption != null) {
-            boolean enabled = nativeLiquidGlassEnabled();
-            floatGlassOption.setText((enabled ? "●  " : "○  ") + getString(
-                    enabled ? R.string.float_liquid_glass_on : R.string.float_liquid_glass_off
-            ));
-            boolean light = isFloatMenuLight();
-            floatGlassOption.setTextColor(enabled
-                    ? light ? Color.rgb(0, 105, 72) : Color.rgb(48, 211, 157)
-                    : light ? Color.rgb(72, 76, 86) : Color.rgb(218, 222, 230));
-            floatGlassOption.setBackground(enabled
-                    ? optionSelectedBackground(light)
-                    : optionBackground(light));
+        floatGlassSwitchOn = nativeLiquidGlassEnabled();
+        if (floatGlassSwitch != null) {
+            styleMiniSwitch(floatGlassSwitch, floatGlassSwitchOn);
         }
     }
 
@@ -1690,29 +2011,63 @@ public class MainActivity extends Activity {
 
     private void refreshMiniMenuTheme() {
         boolean light = isFloatMenuLight();
+        boolean glass = nativeLiquidGlassEnabled();
         updateTopInsetArea();
         if (miniMenu != null) {
-            miniMenu.setBackground(nativeLiquidGlassEnabled()
-                    ? liquidGlassPanelBackground(light, dp(26))
-                    : menuPanelBackground(light));
+            miniMenu.setBackground(glass
+                    ? liquidGlassPanelBackground(light, dp(22))
+                    : settingsCardBackground(light));
         }
-        if (floatSettingsPanel != null) {
-            floatSettingsPanel.setBackground(nativeLiquidGlassEnabled()
-                    ? liquidGlassPanelBackground(light, dp(16))
-                    : menuInsetBackground(light));
+        // Subpages fill the same card — no nested inset panel.
+        if (floatSettingsPanel != null) floatSettingsPanel.setBackground(null);
+        if (notificationSettingsPanel != null) notificationSettingsPanel.setBackground(null);
+
+        if (miniMenuTitleText != null) {
+            miniMenuTitleText.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
         }
-        if (notificationSettingsPanel != null) {
-            notificationSettingsPanel.setBackground(nativeLiquidGlassEnabled()
-                    ? liquidGlassPanelBackground(light, dp(16))
-                    : menuInsetBackground(light));
+        if (miniMenuBackButton != null) {
+            miniMenuBackButton.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
+            miniMenuBackButton.setBackground(settingsBackBackground(light, glass));
         }
+
+        for (View row : miniMenuNavRows) {
+            row.setBackground(settingsNavRowBackground(light, glass));
+        }
+        for (View row : miniMenuSettingsRows) {
+            row.setBackground(settingsNavRowBackground(light, glass));
+        }
+        for (TextView title : miniMenuNavTitles) {
+            title.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
+        }
+        for (TextView subtitle : miniMenuNavSubtitles) {
+            subtitle.setTextColor(light
+                    ? Color.argb(170, 60, 66, 78)
+                    : Color.argb(174, 255, 255, 255));
+        }
+        for (TextView chevron : miniMenuNavChevrons) {
+            chevron.setTextColor(light
+                    ? Color.argb(150, 90, 96, 110)
+                    : Color.argb(140, 255, 255, 255));
+        }
+        for (View icon : miniMenuNavIcons) {
+            styleMiniNavIcon(icon, light, glass);
+        }
+        for (TextView section : miniMenuSectionTitles) {
+            section.setTextColor(light
+                    ? Color.argb(180, 70, 78, 92)
+                    : Color.argb(160, 255, 255, 255));
+        }
+
+        // Theme segment / notification option buttons keep selected styling.
         for (TextView button : miniMenuButtons) {
+            // Skip nav titles already colored above; only style actual option buttons.
+            if (miniMenuNavTitles.contains(button)) continue;
             button.setTextColor(light ? Color.rgb(30, 34, 42) : Color.rgb(244, 244, 245));
             button.setBackground(optionBackground(light));
         }
         int labelColor = light
-                ? Color.rgb(27, 78, 62)
-                : Color.rgb(195, 236, 213);
+                ? Color.rgb(36, 42, 52)
+                : Color.rgb(220, 226, 234);
         for (TextView label : settingsLabels) {
             label.setTextColor(labelColor);
         }
@@ -1723,6 +2078,89 @@ public class MainActivity extends Activity {
             renderDownloads();
         }
         refreshFloatingButtonGlassStyle();
+    }
+
+    private GradientDrawable settingsCardBackground(boolean light) {
+        // Match WebUI non-glass settings-card.
+        GradientDrawable drawable = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                light
+                        ? new int[]{Color.argb(250, 252, 252, 253), Color.argb(248, 246, 247, 250)}
+                        : new int[]{Color.argb(250, 27, 27, 30), Color.argb(245, 20, 20, 23)}
+        );
+        drawable.setCornerRadius(dp(22));
+        drawable.setStroke(dp(1), light ? Color.argb(48, 0, 0, 0) : Color.argb(30, 255, 255, 255));
+        return drawable;
+    }
+
+    private GradientDrawable settingsNavRowBackground(boolean light, boolean glass) {
+        GradientDrawable drawable = roundedRect(
+                light
+                        ? (glass ? Color.argb(90, 255, 255, 255) : Color.argb(18, 0, 0, 0))
+                        : (glass ? Color.argb(28, 255, 255, 255) : Color.argb(18, 255, 255, 255)),
+                dp(17)
+        );
+        drawable.setStroke(
+                dp(1),
+                light
+                        ? (glass ? Color.argb(70, 255, 255, 255) : Color.argb(20, 0, 0, 0))
+                        : (glass ? Color.argb(40, 255, 255, 255) : Color.argb(18, 255, 255, 255))
+        );
+        return drawable;
+    }
+
+    private GradientDrawable settingsBackBackground(boolean light, boolean glass) {
+        GradientDrawable drawable = roundedRect(
+                light
+                        ? (glass ? Color.argb(100, 255, 255, 255) : Color.argb(22, 0, 0, 0))
+                        : (glass ? Color.argb(36, 255, 255, 255) : Color.argb(24, 255, 255, 255)),
+                dp(999)
+        );
+        drawable.setStroke(
+                dp(1),
+                light
+                        ? Color.argb(40, 0, 0, 0)
+                        : Color.argb(30, 255, 255, 255)
+        );
+        return drawable;
+    }
+
+    private void styleMiniNavIcon(View icon, boolean light, boolean glass) {
+        if (!(icon instanceof TextView)) return;
+        TextView tv = (TextView) icon;
+        String kind = String.valueOf(tv.getTag());
+        int fg;
+        int bg;
+        int border;
+        if ("appearance".equals(kind)) {
+            fg = light ? Color.rgb(180, 110, 20) : Color.argb(242, 255, 190, 104);
+            bg = light ? Color.argb(28, 205, 124, 21) : Color.argb(36, 255, 176, 73);
+            border = light ? Color.argb(40, 205, 124, 21) : Color.argb(48, 255, 195, 111);
+        } else if ("notification".equals(kind)) {
+            fg = light ? Color.rgb(31, 111, 208) : Color.argb(242, 178, 225, 255);
+            bg = light ? Color.argb(28, 31, 111, 208) : Color.argb(36, 142, 203, 255);
+            border = light ? Color.argb(40, 31, 111, 208) : Color.argb(48, 142, 203, 255);
+        } else if ("home".equals(kind) || "refresh".equals(kind) || "downloads".equals(kind)) {
+            fg = light ? Color.rgb(23, 122, 76) : Color.argb(240, 111, 222, 162);
+            bg = light ? Color.argb(28, 23, 122, 76) : Color.argb(34, 65, 201, 125);
+            border = light ? Color.argb(40, 23, 122, 76) : Color.argb(48, 116, 222, 165);
+        } else if ("close".equals(kind)) {
+            fg = light ? Color.rgb(180, 60, 50) : Color.argb(242, 255, 145, 132);
+            bg = light ? Color.argb(28, 190, 70, 58) : Color.argb(34, 255, 119, 103);
+            border = light ? Color.argb(40, 190, 70, 58) : Color.argb(48, 255, 151, 137);
+        } else {
+            // mode / default — blue status
+            fg = light ? Color.rgb(31, 111, 208) : Color.argb(242, 126, 205, 255);
+            bg = light ? Color.argb(30, 31, 111, 208) : Color.argb(36, 60, 153, 255);
+            border = light ? Color.argb(42, 31, 111, 208) : Color.argb(48, 102, 190, 255);
+        }
+        if (glass) {
+            bg = Color.argb(Math.min(255, Color.alpha(bg) + 10), Color.red(bg), Color.green(bg), Color.blue(bg));
+        }
+        tv.setTextColor(fg);
+        GradientDrawable drawable = roundedRect(bg, dp(13));
+        drawable.setStroke(dp(1), border);
+        tv.setBackground(drawable);
     }
 
     private void refreshFloatingButtonGlassStyle() {
@@ -2311,8 +2749,10 @@ public class MainActivity extends Activity {
         }
         if (externalModeButton != null) {
             externalModeButton.setVisibility(View.VISIBLE);
+        }
+        if (externalModeLabel != null) {
             boolean desktopMode = active ? externalDesktopMode : mainDesktopMode;
-            externalModeButton.setText(desktopMode
+            externalModeLabel.setText(desktopMode
                     ? R.string.switch_to_mobile_mode
                     : R.string.switch_to_desktop_mode);
         }
@@ -7486,6 +7926,10 @@ public class MainActivity extends Activity {
             super.onDraw(canvas);
             canvas.restoreToCount(saveCount);
         }
+    }
+
+    private interface SwitchConsumer {
+        void onChanged(boolean enabled);
     }
 
     private static final class SimpleSeekBarListener implements SeekBar.OnSeekBarChangeListener {
