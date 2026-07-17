@@ -450,17 +450,9 @@ final class AIMiniBrowserView extends FrameLayout {
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        // 消费顶部系统栏 insets，避免 Chromium 再把状态栏高度当作
-        // safe-area-inset-top 注入页面，与原生 topInsetArea 双重避让。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            webView.setOnApplyWindowInsetsListener((w, insets) -> {
-                Insets top = insets.getInsets(
-                        WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout()
-                );
-                if (top.top <= 0) return insets;
-                return insets.inset(0, top.top, 0, 0);
-            });
-        }
+        // 顶部改为页面 inset 控制，不再消费 statusBars。
+        // WebView 延伸进状态栏区域，由 --ai-mini-top-inset 下移顶部功能栏，
+        // 避免原生黑块。
         webView.addJavascriptInterface(new BridgeInterface(), "AIMiniNative");
         // 兼容 page.js 中 window.CodexMiniNative 直接调用路径：
         // page.js 通过 CustomEvent 发送，但仍保留旧接口名给遗留脚本。

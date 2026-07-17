@@ -121,6 +121,7 @@ public class MainActivity extends Activity {
     private static final String KEY_CONVERSATION_FONT_SCALE = "conversation_font_scale";
     private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
     private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
+    private static final String KEY_TOP_INSET_PAGE_MODE_MIGRATED = "top_inset_page_mode_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
     static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
     static final String NOTIFICATION_MODE_END = "end";
@@ -144,7 +145,7 @@ public class MainActivity extends Activity {
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
-    private static final int DEFAULT_TOP_INSET_DP = 20;
+    private static final int DEFAULT_TOP_INSET_DP = 0;
     private static final int MIN_TOP_INSET_DP = 0;
     private static final int MAX_TOP_INSET_DP = 64;
     private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
@@ -1042,10 +1043,12 @@ public class MainActivity extends Activity {
         topInsetBar.setMax(MAX_TOP_INSET_DP - MIN_TOP_INSET_DP);
         topInsetBar.setProgress(topInsetDp() - MIN_TOP_INSET_DP);
         topInsetBar.setOnSeekBarChangeListener(new SimpleSeekBarListener(progress -> {
-            int inset = MIN_TOP_INSET_DP + progress;
+            int inset = progress + MIN_TOP_INSET_DP;
             preferences.edit().putInt(KEY_TOP_INSET_DP, inset).apply();
-            updateFloatSettingsLabels();
+            updateTopInsetArea();
+            applyPageTopInsetToWeb();
             requestInterfaceInsets();
+            updateFloatSettingsLabels();
         }));
         floatSettingsPanel.addView(topInsetBar);
 
@@ -1341,17 +1344,21 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 原生顶部占位像素。
-     * WebView/Chromium 会额外提供 safe-area-inset-top；页面侧会清零该值，
-     * 因此由原生 topInsetArea 单独承担顶部避让：
-     * - 用户设为 0：完全沉浸，允许与状态栏重叠
-     * - 用户 > 0：取 max(用户设定, 状态栏高度)，避免“状态栏 + 用户值”双重叠加
+     * 原生顶部黑块已弃用：高度恒为 0，WebView 延伸到状态栏下方，
+     * 顶部避让改由页面 safe-area / --ai-mini-top-inset 完成，视觉上连续不出现黑条。
      */
     private int resolvedNativeTopInsetPx() {
-        int userPx = dp(topInsetDp());
-        if (userPx <= 0) return 0;
+        return 0;
+    }
+
+    /**
+     * 页面实际顶部 inset：系统状态栏/刘海 + 用户在「顶部区域高度」中设定的额外间距。
+     * 用户值按「在状态栏之下再留多少」理解，而不是再画一块原生黑底。
+     */
+    private int resolvedPageTopInsetPx() {
         int statusPx = currentStatusBarTopPx();
-        return Math.max(userPx, statusPx);
+        int extraPx = dp(topInsetDp());
+        return Math.max(0, statusPx + extraPx);
     }
 
     private int currentStatusBarTopPx() {
@@ -1408,6 +1415,16 @@ public class MainActivity extends Activity {
             // the new 20dp baseline while retaining other user-selected values.
             if (!preferences.contains(KEY_TOP_INSET_DP)
                     || preferences.getInt(KEY_TOP_INSET_DP, 0) == 0) {
+                editor.putInt(KEY_TOP_INSET_DP, 20);
+            }
+        }
+        if (!preferences.getBoolean(KEY_TOP_INSET_PAGE_MODE_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_PAGE_MODE_MIGRATED, true);
+            changed = true;
+            // 顶部黑块改为页面 inset：状态栏高度由系统自动计入，
+            // 滑条表示状态栏下的额外间距。旧默认 20dp 黑块改成 0 额外间距。
+            int current = preferences.getInt(KEY_TOP_INSET_DP, 20);
+            if (!preferences.contains(KEY_TOP_INSET_DP) || current == 20) {
                 editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
             }
         }
@@ -1425,22 +1442,20 @@ public class MainActivity extends Activity {
     private void updateTopInsetArea() {
         if (topInsetArea != null) {
             ViewGroup.LayoutParams params = topInsetArea.getLayoutParams();
-            // WebView/Chromium 会把 statusBars/cutout 再作为 safe-area-inset-top
-            // 注入到页面；原生 topInsetArea 若再叠一层就会把顶部功能栏顶得过远。
-            // 这里只保留“用户设定”的原生顶部高度，状态栏避让改由 WebView
-            // 消费系统 insets + 页面侧清零 safe-area 完成，避免双重计算。
+            // 原生黑块高度恒为 0；实际顶部间距交给页面 --ai-mini-top-inset。
             int height = resolvedNativeTopInsetPx();
             if (params != null && params.height != height) {
                 params.height = height;
                 topInsetArea.setLayoutParams(params);
             }
-            topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
+            // 黑块已废弃：即使残留 0 高度 view 也保持透明，不盖住页面背景。
+            topInsetArea.setBackgroundColor(Color.TRANSPARENT);
+            topInsetArea.setVisibility(View.GONE);
         }
         boolean light = isFloatMenuLight();
         Window window = getWindow();
-        // WebUI content must always render behind the status bar and cutout.
-        // topInsetArea is the only optional safe area, and a value of 0 means
-        // that no native view is allowed to cover the top of the page.
+        // WebUI 延伸到状态栏下方；顶部功能栏由页面 --ai-mini-top-inset 下移，
+        // 状态栏区域显示页面背景而不是原生黑条。
         window.setStatusBarColor(Color.TRANSPARENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
@@ -1470,6 +1485,96 @@ public class MainActivity extends Activity {
                 flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
             }
             window.getDecorView().setSystemUiVisibility(flags);
+        }
+        applyPageTopInsetToWeb();
+        // 首次布局前 statusBars 可能为 0，下一帧再刷一次确保顶部 inset 正确。
+        if (appHost != null) {
+            appHost.post(this::applyPageTopInsetToWeb);
+        }
+    }
+
+    /**
+     * 将「状态栏 + 用户额外间距」注入页面 CSS 变量，并只给靠近顶部的
+     * fixed/sticky 功能栏加 padding-top。body 不整体下移，页面背景可延伸进状态栏。
+     */
+    private void applyPageTopInsetToWeb() {
+        if (webView == null) return;
+        int statusPx = Math.max(0, currentStatusBarTopPx());
+        int extraPx = Math.max(0, dp(topInsetDp()));
+        int totalPx = Math.max(0, statusPx + extraPx);
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0f) density = 1f;
+        String totalCss = String.format(Locale.US, "%.2fpx", totalPx / density);
+        String statusCss = String.format(Locale.US, "%.2fpx", statusPx / density);
+        String extraCss = String.format(Locale.US, "%.2fpx", extraPx / density);
+        String script = "(function(){try{"
+                + "var total=" + JSONObject.quote(totalCss) + ";"
+                + "var status=" + JSONObject.quote(statusCss) + ";"
+                + "var extra=" + JSONObject.quote(extraCss) + ";"
+                + "var root=document.documentElement;if(!root){return false;}"
+                + "root.classList.add('ai-mini-geckoview','ai-mini-webview','android-keyboard-mode');"
+                + "root.style.setProperty('--ai-mini-top-inset',total,'important');"
+                + "root.style.setProperty('--ai-mini-status-inset',status,'important');"
+                + "root.style.setProperty('--ai-mini-top-extra',extra,'important');"
+                + "root.style.setProperty('--ai-mini-safe-top',total,'important');"
+                + "root.style.setProperty('--sat',total,'important');"
+                + "root.style.setProperty('padding-top','0px','important');"
+                + "root.style.setProperty('margin-top','0px','important');"
+                + "if(document.body){"
+                + "document.body.style.setProperty('padding-top','0px','important');"
+                + "document.body.style.setProperty('margin-top','0px','important');"
+                + "}"
+                + "var styleId='ai-mini-page-top-inset-style';"
+                + "var style=document.getElementById(styleId);"
+                + "if(!style){"
+                + "style=document.createElement('style');"
+                + "style.id=styleId;"
+                + "(document.head||root).appendChild(style);"
+                + "}"
+                + "style.textContent="
+                + JSONObject.quote(
+                        "html.ai-mini-geckoview,html.ai-mini-webview{"
+                                + "padding-top:0!important;margin-top:0!important;}"
+                                + "html.ai-mini-geckoview body,html.ai-mini-webview body{"
+                                + "padding-top:0!important;margin-top:0!important;}"
+                                + "html.ai-mini-geckoview header,"
+                                + "html.ai-mini-webview header,"
+                                + "html.ai-mini-geckoview [class*='top-bar'],"
+                                + "html.ai-mini-webview [class*='top-bar'],"
+                                + "html.ai-mini-geckoview [class*='TopBar'],"
+                                + "html.ai-mini-webview [class*='TopBar'],"
+                                + "html.ai-mini-geckoview [class*='model-bar'],"
+                                + "html.ai-mini-webview [class*='model-bar'],"
+                                + "html.ai-mini-geckoview [class*='ModelBar'],"
+                                + "html.ai-mini-webview [class*='ModelBar']{"
+                                + "padding-top:var(--ai-mini-top-inset,env(safe-area-inset-top,0px))!important;"
+                                + "box-sizing:border-box!important;}"
+                )
+                + ";"
+                // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部 composer
+                + "var nodes=document.body?document.body.querySelectorAll('*'):[];"
+                + "for(var i=0;i<nodes.length;i++){"
+                + "var el=nodes[i];"
+                + "try{"
+                + "var cs=window.getComputedStyle(el);"
+                + "var pos=cs.position;"
+                + "if(pos!=='fixed'&&pos!=='sticky'){continue;}"
+                + "var top=parseFloat(cs.top);"
+                + "if(isNaN(top)||top>2){continue;}"
+                + "var rect=el.getBoundingClientRect();"
+                + "if(rect.height<=0||rect.width<=0){continue;}"
+                + "if(rect.top>96){continue;}"
+                + "var bottom=parseFloat(cs.bottom);"
+                + "if(!isNaN(bottom)&&bottom<=2&&rect.bottom>window.innerHeight*0.55){continue;}"
+                + "el.style.setProperty('padding-top',total,'important');"
+                + "el.style.setProperty('box-sizing','border-box','important');"
+                + "}catch(ignore){}"
+                + "}"
+                + "return true;"
+                + "}catch(e){return false;}})();";
+        webView.evaluateJavascript(script, null);
+        if (externalWebView != null && externalWebView != webView) {
+            externalWebView.evaluateJavascript(script, null);
         }
     }
 
@@ -4118,7 +4223,7 @@ public class MainActivity extends Activity {
                 + "var legacyComposer=detectLegacyComposer();"
                 + "if(window.__AIMiniFixVersion==='1.25.9'){return legacyComposer;}"
                 + "window.__AIMiniFixVersion='1.25.9';"
-                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');window.__AIMiniZeroTopSafeArea=true;try{var m=document.querySelector('meta[name=viewport]');if(m){var c=m.getAttribute('content')||'';if(c.indexOf('viewport-fit')<0){m.setAttribute('content',c+', viewport-fit=cover');}}document.documentElement.style.setProperty('padding-top','0px','important');if(document.body){document.body.style.setProperty('padding-top','0px','important');}}catch(ignore){}"
+                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');try{var m=document.querySelector('meta[name=viewport]');if(m){var c=m.getAttribute('content')||'';if(c.indexOf('viewport-fit')<0){m.setAttribute('content',c+', viewport-fit=cover');}}}catch(ignore){}"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
                 + "try{if(!detectLegacyComposer()){return false;}"
@@ -4192,23 +4297,19 @@ public class MainActivity extends Activity {
     }
 
     private String androidWebViewCss() {
-        // Chromium WebView 会按系统状态栏填充 safe-area-inset-top；
-        // App 已用原生 topInsetArea 控制顶部避让，这里清零页面侧顶部安全区，
-        // 防止顶部模型/功能栏被顶到离状态栏过远。
+        // 不再用原生黑块避让。body/html 不整体 padding，页面背景可延伸到状态栏；
+        // 顶部功能栏实际间距由 applyPageTopInsetToWeb 写入的 --ai-mini-top-inset 控制。
         return "html.ai-mini-geckoview,html.ai-mini-webview{"
                 + "padding-top:0!important;margin-top:0!important;}"
                 + "html.ai-mini-geckoview body,html.ai-mini-webview body{"
                 + "padding-top:0!important;margin-top:0!important;}"
-                + "html.ai-mini-geckoview,html.ai-mini-webview{"
-                + "--sat:0px;--ai-mini-safe-top:0px;}"
-                + "@supports (top:env(safe-area-inset-top)){"
-                + "html.ai-mini-geckoview .fixed,html.ai-mini-webview .fixed,"
+                + "html.ai-mini-geckoview header,html.ai-mini-webview header,"
                 + "html.ai-mini-geckoview [class*='top-bar'],html.ai-mini-webview [class*='top-bar'],"
                 + "html.ai-mini-geckoview [class*='TopBar'],html.ai-mini-webview [class*='TopBar'],"
-                + "html.ai-mini-geckoview [class*='model'],html.ai-mini-webview [class*='model'],"
-                + "html.ai-mini-geckoview [class*='toolbar'],html.ai-mini-webview [class*='toolbar']"
-                + "{padding-top:0!important;}"
-                + "}"
+                + "html.ai-mini-geckoview [class*='model-bar'],html.ai-mini-webview [class*='model-bar'],"
+                + "html.ai-mini-geckoview [class*='ModelBar'],html.ai-mini-webview [class*='ModelBar']{"
+                + "padding-top:var(--ai-mini-top-inset,env(safe-area-inset-top,0px))!important;"
+                + "box-sizing:border-box!important;}"
                 + ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
                 + "'Apple Chancery','Segoe Script',cursive!important;}"
                 // Gecko can drop backdrop-filter descendants when their fixed
@@ -6270,6 +6371,7 @@ public class MainActivity extends Activity {
                 pendingConnectionUrl = null;
                 injectMobileFixes();
                 adaptPlainTextPageForMobile();
+                applyPageTopInsetToWeb();
                 applyConversationFontScale(view);
                 boolean nativeRouteAllowed = !hasDeviceProfileSelection(Uri.parse(url == null ? "" : url));
                 if (nativeRouteAllowed
