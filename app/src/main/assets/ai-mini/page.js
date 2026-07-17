@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.27") return;
-    window.__AIMiniKeyboardHooksVersion = "1.27";
+    if (window.__AIMiniKeyboardHooksVersion === "1.28") return;
+    window.__AIMiniKeyboardHooksVersion = "1.28";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -228,12 +228,27 @@
         }
         if (!meta) return;
         let content = String(meta.getAttribute("content") || "");
-        content = content.replace(
-          /interactive-widget\s*=\s*overlays-content/gi,
-          "interactive-widget=resizes-content"
-        );
-        if (!/interactive-widget\s*=/i.test(content)) {
-          content += (content.trim() ? ", " : "") + "interactive-widget=resizes-content";
+        // Chromium WebView: pair with ADJUST_RESIZE using overlays-content so the
+        // layout is not shrunk a second time (that left a keyboard-tall black hole).
+        // Gecko keeps resizes-content.
+        const useOverlay = document.documentElement.classList.contains("ai-mini-webview")
+          || /(?:;\s*wv\)|WebView|GPTMiniAndroidApp\/)/i.test(navigator.userAgent || "");
+        if (useOverlay) {
+          content = content.replace(
+            /interactive-widget\s*=\s*resizes-content/gi,
+            "interactive-widget=overlays-content"
+          );
+          if (!/interactive-widget\s*=/i.test(content)) {
+            content += (content.trim() ? ", " : "") + "interactive-widget=overlays-content";
+          }
+        } else {
+          content = content.replace(
+            /interactive-widget\s*=\s*overlays-content/gi,
+            "interactive-widget=resizes-content"
+          );
+          if (!/interactive-widget\s*=/i.test(content)) {
+            content += (content.trim() ? ", " : "") + "interactive-widget=resizes-content";
+          }
         }
         if (meta.getAttribute("content") !== content) {
           meta.setAttribute("content", content);
@@ -703,9 +718,9 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    if (window.__AIMiniGeckoGlassVersion === "1.17") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.18") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.17";
+    window.__AIMiniGeckoGlassVersion = "1.18";
     document.documentElement.classList.add("ai-mini-geckoview");
 
     const oldStyle = document.getElementById("ai-mini-gecko-liquid-glass");
@@ -713,11 +728,21 @@
     const style = document.createElement("style");
     style.id = "ai-mini-gecko-liquid-glass";
     style.textContent = `
-      html.ai-mini-geckoview .composer-shell,
-      html.ai-mini-webview .composer-shell {
+      html.ai-mini-webview,
+      html.ai-mini-webview body {
+        height: 100% !important;
+        max-height: 100% !important;
+      }
+      html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,
+      html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell,
+      html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .thread,
+      html.ai-mini-webview:not(.ai-mini-legacy-composer) .thread {
         transform: none !important;
         transition: none !important;
         will-change: auto !important;
+      }
+      html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,
+      html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell {
         bottom: 0 !important;
         margin-bottom: 0 !important;
       }

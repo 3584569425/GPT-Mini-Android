@@ -2239,7 +2239,7 @@ public class MainActivity extends Activity {
         String content = desktopMode
                 ? "width=1280, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes"
                 : "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, "
-                        + "interactive-widget=resizes-content";
+                        + "interactive-widget=overlays-content";
         String script = "(function(){try{"
                 + "var desired=" + JSONObject.quote(content) + ";"
                 + "var desktop=" + (desktopMode ? "true" : "false") + ";"
@@ -4330,7 +4330,7 @@ public class MainActivity extends Activity {
                 + "var legacyComposer=detectLegacyComposer();"
                 + "if(window.__AIMiniFixVersion==='1.25.9'){return legacyComposer;}"
                 + "window.__AIMiniFixVersion='1.25.9';"
-                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');try{var m=document.querySelector('meta[name=viewport]');if(m){var c=m.getAttribute('content')||'';if(c.indexOf('viewport-fit')<0){m.setAttribute('content',c+', viewport-fit=cover');}}}catch(ignore){}"
+                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview','ai-mini-webview');try{var m=document.querySelector('meta[name=viewport]');if(m){var c=m.getAttribute('content')||'';if(c.indexOf('viewport-fit')<0){m.setAttribute('content',c+', viewport-fit=cover');}}}catch(ignore){}"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
                 + "try{if(!detectLegacyComposer()){return false;}"
@@ -4356,8 +4356,8 @@ public class MainActivity extends Activity {
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(meta){"
                 + "var c=meta.getAttribute('content')||'';"
-                + "c=c.replace(/interactive-widget=overlays-content/g,'interactive-widget=resizes-content');"
-                + "if(c.indexOf('interactive-widget=')<0){c+=', interactive-widget=resizes-content';}"
+                + "c=c.replace(/interactive-widget=resizes-content/g,'interactive-widget=overlays-content');"
+                + "if(c.indexOf('interactive-widget=')<0){c+=', interactive-widget=overlays-content';}"
                 + "meta.setAttribute('content',c);"
                 + "}"
                 + "var style=document.createElement('style');"
@@ -4424,10 +4424,16 @@ public class MainActivity extends Activity {
                 // ancestor is permanently promoted by translate3d/will-change.
                 // ADJUST_RESIZE already moves the visual viewport, so the WebUI's
                 // extra keyboard transform is unnecessary in the app.
+                + "html.ai-mini-webview,html.ai-mini-webview body{"
+                + "height:100%!important;max-height:100%!important;}"
+                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,"
+                + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell,"
+                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .thread,"
+                + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .thread{"
+                + "transform:none!important;transition:none!important;"
+                + "will-change:auto!important;}"
                 + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,"
                 + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell{"
-                + "transform:none!important;transition:none!important;"
-                + "will-change:auto!important;"
                 + "bottom:0!important;margin-bottom:0!important;}"
                 + "html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,"
                 + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread,"
@@ -4556,21 +4562,39 @@ public class MainActivity extends Activity {
         int keyboardBottom = imeReportedVisible
                 ? Math.max(0, ime.bottom)
                 : (overlapFallbackVisible ? visibleOverlap : 0);
-        // WebView / Chromium 与 Gecko 不同：
-        // 1) SOFT_INPUT_ADJUST_RESIZE + interactive-widget=resizes-content 会真实
-        //    缩小布局，固定底栏输入区会被系统抬一次。
-        // 2) 若再把 keyboardBottom 写进 host padding，就会抬第二次，中间出现
-        //    约一个键盘高度的黑块（用户截图的“两倍黑屏”）。
-        // 因此 host 永远只保留 navigation 避让。
-        // 页面侧：
-        // - 现代 glass：CSS transform 强制 0，这里仍把键盘高度传给 page.js
-        //   仅用于 keyboard-open 状态同步（page.js 会把 shift 置 0）。
-        // - legacy composer：同一数值作为 --ai-mini-native-keyboard-shift。
-        int contentBottom = Math.max(0, navigation.bottom);
+        // WebView 键盘策略（与 Gecko 不同）：
+        // - interactive-widget 必须用 overlays-content。若再用 resizes-content，
+        //   会与 SOFT_INPUT_ADJUST_RESIZE 叠成“布局缩两次”，中间留下约一个
+        //   键盘高度的黑空洞，输入框虽贴键盘但对话区被顶到最上。
+        // - host 默认只留 navigation；仅当 ADJUST_RESIZE 在边缘到边缘下失效
+        //   （可见区域仍被键盘挡住）时，现代 glass 才用 host padding 补一次。
+        // - 现代 glass 的 CSS transform 保持 0；legacy 走 keyboard-shift。
+        int overlap = visibleKeyboardOverlap(root);
+        // ADJUST_RESIZE 生效时，root 已随窗口缩小，visible frame 几乎铺满 root，
+        // overlap 接近 0；失效时 overlap 约等于键盘高度。
+        boolean adjustResizeActive = !imeVisible
+                || overlap < Math.max(dp(80), Math.max(1, keyboardBottom) / 3);
+        int contentBottom;
+        if (legacyComposerImeBridgeEnabled) {
+            // legacy：表面保持全高，靠 CSS shift 抬输入区（同 Gecko legacy）。
+            contentBottom = Math.max(0, navigation.bottom);
+        } else if (imeVisible && !adjustResizeActive) {
+            // 系统没真正 resize：由 host 垫一次键盘高度。
+            contentBottom = Math.max(navigation.bottom, keyboardBottom);
+        } else {
+            // 系统已 resize：host 绝不能再垫键盘，否则双倍黑块。
+            contentBottom = Math.max(0, navigation.bottom);
+        }
         applyHostBottomInset(contentBottom);
-        int pageKeyboardBottom = imeVisible
-                ? Math.max(0, keyboardBottom - navigation.bottom)
-                : 0;
+        int pageKeyboardBottom;
+        if (!imeVisible) {
+            pageKeyboardBottom = 0;
+        } else if (legacyComposerImeBridgeEnabled) {
+            pageKeyboardBottom = Math.max(0, keyboardBottom - navigation.bottom);
+        } else {
+            // 现代：只同步 open 状态，page.js / CSS 会把 shift 置 0。
+            pageKeyboardBottom = Math.max(0, keyboardBottom - navigation.bottom);
+        }
         applyImeInset(root, pageKeyboardBottom);
     }
 
@@ -4633,10 +4657,16 @@ public class MainActivity extends Activity {
                 int navigationBottom = insets == null
                         ? 0
                         : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
-                // 与 applyModernImeInsets 一致：host 不承担键盘高度，避免双倍黑块。
-                applyHostBottomInset(navigationBottom);
+                // fallback 与 applyModernImeInsets 对齐。
+                if (legacyComposerImeBridgeEnabled) {
+                    applyHostBottomInset(navigationBottom);
+                } else {
+                    applyHostBottomInset(keyboardOpen
+                            ? Math.max(navigationBottom, hidden)
+                            : navigationBottom);
+                }
             }
-            // 传实际遮挡高度：legacy 用于 CSS shift，现代仅用于 open 状态同步。
+            // legacy：CSS shift；现代：仅 open 状态（shift 在 page.js 置 0）。
             applyImeInset(root, keyboardOpen ? hidden : 0);
         });
     }
