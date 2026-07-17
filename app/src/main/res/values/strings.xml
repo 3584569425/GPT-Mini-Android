@@ -1,11 +1,11 @@
 <resources>
     <string name="app_name">GPT Mini</string>
-    <string name="url_hint">输入 Codex Mini 网址</string>
+    <string name="url_hint">输入 GPT Mini 网址</string>
     <string name="url_example">http://电脑IP:8787/?token=...</string>
     <string name="open_url">打开</string>
     <string name="connect">连接</string>
     <string name="downloads">下载</string>
-    <string name="downloads_title">下载</string>
+    <string name="downloads_title">下载管理</string>
     <string name="back_to_codex">回到 GPT Mini</string>
     <string name="open_file">打开</string>
     <string name="share_file">分享文件</string>
@@ -30,6 +30,7 @@
     <string name="no_app_for_link">没有可打开此链接的应用</string>
     <string name="no_app_for_file">没有可打开此文件的应用</string>
     <string name="no_file_picker">没有可用的文件选择器</string>
+    <string name="file_upload_failed">无法读取所选文件，请重新选择</string>
     <string name="welcome_mark">&gt;_</string>
     <string name="welcome_intro">快速连接 · 安全稳定 · 高效便捷</string>
     <string name="scan_connect">扫码连接</string>
@@ -37,7 +38,7 @@
     <string name="scan_not_ready">扫码稍后接入，请先手动粘贴地址</string>
     <string name="scan_prompt">扫描 GPT Mini 电脑端二维码</string>
     <string name="scan_prompt_top">请将二维码放入取景框。</string>
-    <string name="scan_prompt_bottom">扫描电脑端 Codex Mini 链接二维码</string>
+    <string name="scan_prompt_bottom">扫描电脑端 GPT Mini 链接二维码</string>
     <string name="scan_cancelled">已取消扫码</string>
     <string name="scan_invalid">二维码内容不是可用的连接地址</string>
     <string name="scan_failed">无法打开扫码，请手动输入地址</string>
@@ -69,22 +70,44 @@
     <string name="mini_button">mini</string>
     <string name="return_home">回到连接页</string>
     <string name="refresh_page">刷新当前页面</string>
-    <string name="float_settings">悬浮窗设置</string>
+    <string name="close_external_page">关闭当前网页</string>
+    <string name="switch_to_desktop_mode">切换桌面模式</string>
+    <string name="switch_to_mobile_mode">切换手机模式</string>
+    <string name="float_settings">界面设置</string>
+    <string name="interface_settings">界面设置</string>
     <string name="notification_settings">通知设置</string>
-    <string name="float_size_value">大小：%1$d dp</string>
-    <string name="float_alpha_value">透明度：%1$d%%</string>
+    <string name="float_size_value">图标大小：%1$d dp</string>
+    <string name="float_alpha_value">图标透明度：%1$d%%</string>
+    <string name="top_inset_value">顶部区域高度：%1$d dp</string>
+    <string name="conversation_font_scale_value">会话字体大小：%1$d%%</string>
     <string name="float_theme_value">主题：%1$s</string>
     <string name="float_theme_dark">深色</string>
     <string name="float_theme_light">浅色</string>
     <string name="float_theme_system">跟随系统</string>
+    <string name="float_liquid_glass">液态玻璃</string>
+    <string name="float_liquid_glass_on">已开启</string>
+    <string name="float_liquid_glass_off">已关闭</string>
     <string name="notification_mode_value">当前：%1$s</string>
-    <string name="notification_mode_end">任务结束通知</string>
-    <string name="notification_mode_persistent">常驻通知</string>
-    <string name="notification_channel_tasks">GPT Mini 任务通知</string>
+    <string name="notification_mode_end">任务完成时通知</string>
+    <string name="notification_mode_persistent">实时通知</string>
+    <string name="notification_channel_tasks">GPT Mini 后台服务与任务状态</string>
+    <string name="notification_channel_alerts">GPT Mini 任务结束提醒</string>
+    <string name="notification_channel_alerts_description">任务完成、失败或异常时在屏幕顶部显示提醒</string>
     <string name="task_connected_title">GPT Mini 已连接</string>
+    <string name="background_service_title">GPT Mini 后台服务</string>
+    <string name="background_service_text">后台服务运行中，正在检查任务状态</string>
     <string name="task_idle_text">空闲中</string>
     <string name="task_running_title">GPT Mini 任务运行中</string>
-    <string name="task_complete_title">GPT Mini 任务已完成</string>
-    <string name="task_error_title">GPT Mini 任务失败/异常</string>
+    <plurals name="task_running_summary">
+        <item quantity="one">%1$d 个任务运行中</item>
+        <item quantity="other">%1$d 个任务运行中</item>
+    </plurals>
+    <string name="task_complete_title">任务已完成：%1$s</string>
+    <string name="task_error_title">任务执行失败：%1$s</string>
+    <string name="task_complete_summary_fallback">GPT 已完成回复</string>
+    <string name="task_error_summary_fallback">GPT 任务执行失败，请重试</string>
+    <string name="task_duration">用时：%1$s</string>
+    <string name="task_view_reply">查看回复</string>
+    <string name="task_mark_read">标为已读</string>
     <string name="task_complete_fallback">当前会话</string>
 </resources>

@@ -1,24 +1,28 @@
-# Codex Mini Android
+# GPT Mini Android（WebView 内核）
 
-一个最小原生 Android WebView 壳，用来加载 Codex Mini 手机网页，并通过 Android 原生窗口 resize 配合页面脚本缓解键盘遮挡底部输入框的问题。
+基于系统 `android.webkit.WebView` 的 GPT Mini 客户端。功能对齐 GeckoView 正式版（连接管理、下载、任务通知、桌面模式、界面设置、页面桥接等），浏览器内核保持 WebView，便于轻量安装与系统内核复用。
+
+当前版本：
+
+- versionName：`1.1.0`
+- versionCode：`2`
+- applicationId：`app.gptmini.webview`（与 Gecko 版 `app.gptmini` 并列安装）
+- 最低系统：Android 8.0（API 26）
+- 浏览器内核：系统 WebView
 
 ## 构建
-
-命令行构建：
 
 ```bash
 chmod +x scripts/build-debug.sh
 ./scripts/build-debug.sh
 ```
 
-APK 输出位置：
+APK 输出：
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/debug/GPT Mini-WebView-1.1.0-debug.apk
 ```
 
-也可以用 Android Studio 打开本目录，等待 Gradle 同步完成后连接 Android 手机运行 `app`。
+## 参考源码
 
-## 入口地址
-
-默认入口在 `app/src/main/res/values/strings.xml` 的 `codex_mini_url`。这个地址包含个人 token，不建议把仓库公开发布。
+`reference/GeckoView-v1.25.1/` 为 Gecko 正式版只读对照副本，移植功能时查阅，不参与构建。

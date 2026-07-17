@@ -23,5 +23,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = 'CodexMiniAndroid'
+rootProject.name = 'GPTMiniWebViewAndroid'
 include ':app'

@@ -18,13 +18,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
+import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
@@ -43,40 +43,40 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.util.Base64;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.PixelCopy;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
-import android.webkit.CookieManager;
-import android.webkit.DownloadListener;
-import android.webkit.JavascriptInterface;
-import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
-import android.webkit.ValueCallback;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceError;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
+import android.webkit.WebChromeClient;
+import android.webkit.ValueCallback;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -94,6 +94,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -106,42 +109,91 @@ public class MainActivity extends Activity {
     private static final int CAMERA_PERMISSION_REQUEST = 1003;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1004;
     private static final int QR_SCAN_REQUEST = 1005;
-    private static final String PREFS_NAME = "codex_mini_android";
-    private static final String KEY_LAST_URL = "last_url";
+    static final String PREFS_NAME = "codex_mini_android";
+    static final String KEY_LAST_URL = "last_url";
+    private static final String KEY_WELCOME_VISIBLE_STATE = "welcome_visible_state";
     private static final String KEY_SAVED_CONNECTIONS = "saved_connections";
     private static final String KEY_DOWNLOAD_RECORDS = "download_records";
     private static final String KEY_FLOAT_SIZE = "float_size";
     private static final String KEY_FLOAT_ALPHA = "float_alpha";
     private static final String KEY_FLOAT_Y = "float_y";
-    private static final String KEY_NOTIFICATION_MODE = "notification_mode";
-    private static final String NOTIFICATION_MODE_END = "end";
-    private static final String NOTIFICATION_MODE_PERSISTENT = "persistent";
+    private static final String KEY_TOP_INSET_DP = "top_inset_dp";
+    private static final String KEY_CONVERSATION_FONT_SCALE = "conversation_font_scale";
+    private static final String KEY_TOP_INSET_V118_MIGRATED = "top_inset_v118_migrated";
+    private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
+    static final String KEY_NOTIFICATION_MODE = "notification_mode";
+    static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
+    static final String NOTIFICATION_MODE_END = "end";
+    static final String NOTIFICATION_MODE_PERSISTENT = "persistent";
     private static final String KEY_FLOAT_MENU_THEME = "float_menu_theme";
+    private static final String KEY_NATIVE_LIQUID_GLASS = "native_liquid_glass";
     private static final String FLOAT_MENU_THEME_DARK = "dark";
     private static final String FLOAT_MENU_THEME_LIGHT = "light";
     private static final String FLOAT_MENU_THEME_SYSTEM = "system";
-    private static final String FONT_HOST = "codex-mini-app.local";
-    private static final String SNELL_FONT_PATH = "/fonts/SnellRoundhand.ttc";
-    private static final String BRADLEY_FONT_PATH = "/fonts/BradleyHandBold.ttf";
-    private static final String CHANCERY_FONT_PATH = "/fonts/AppleChancery.ttf";
-    private static final String NOTIFICATION_CHANNEL_ID = "gpt_mini_tasks";
-    private static final int PERSISTENT_NOTIFICATION_ID = 2100;
+    static final String NOTIFICATION_STATUS_CHANNEL_ID = "ai_mini_task_status_v4";
+    static final String NOTIFICATION_ALERT_CHANNEL_ID = "ai_mini_task_alerts_v4";
+    static final String EXTRA_OPEN_THREAD_ID = "open_notification_thread_id";
+    private static final String LEGACY_NOTIFICATION_CHANNEL_ID = "gpt_mini_tasks";
+    static final int PERSISTENT_NOTIFICATION_ID = 2100;
     private static final long DOWNLOAD_POLL_MS = 800L;
+    private static final long BLOB_PROGRESS_UI_INTERVAL_MS = 220L;
+    private static final long BLOB_PROGRESS_PERSIST_INTERVAL_MS = 700L;
+    private static final long BACKGROUND_TASK_POLL_MS = 2500L;
+    private static final long TASK_ERROR_CONFIRM_DELAY_MS = 1600L;
     private static final int DEFAULT_FLOAT_SIZE_DP = 42;
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
+    private static final int DEFAULT_TOP_INSET_DP = 20;
+    private static final int MIN_TOP_INSET_DP = 0;
+    private static final int MAX_TOP_INSET_DP = 64;
+    private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
+    private static final int MIN_CONVERSATION_FONT_SCALE = 50;
+    private static final int MAX_CONVERSATION_FONT_SCALE = 200;
+    private static final String NAVIGATION_LOG_TAG = "GPTMiniNavigation";
+    private static final int WEB_CONTENT_BACKGROUND_COLOR = 0xFF0D0D0D;
+    private static final long MAIN_NAVIGATION_MIN_REVEAL_DELAY_MS = 180L;
+    private static final long MAIN_NAVIGATION_MAX_REVEAL_DELAY_MS = 1500L;
+    private static final long MAIN_NAVIGATION_REVEAL_POLL_MS = 100L;
+    private static final long MAIN_NAVIGATION_FALLBACK_MS = 2200L;
+    private static final long LONG_BACKGROUND_HEALTH_CHECK_MS = 60_000L;
+    private static final long RESUME_BRIDGE_RECOVERY_DELAY_MS = 700L;
+    private static final long RESUME_BRIDGE_PROBE_TIMEOUT_MS = 900L;
+    private static final long RESUME_BRIDGE_PROBE_RETRY_MS = 320L;
+    private static final int RESUME_BRIDGE_PROBE_ATTEMPTS = 3;
+    private static final long RESUME_RELOAD_START_TIMEOUT_MS = 2600L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<DownloadItem> downloads = new ArrayList<>();
     private final List<TextView> miniMenuButtons = new ArrayList<>();
+    private final List<TextView> settingsLabels = new ArrayList<>();
     private final Set<String> runningNotificationTasks = new HashSet<>();
+    private final Map<String, String> monitoredTaskStatusUrls = new HashMap<>();
+    private final Map<String, String> monitoredTaskNames = new HashMap<>();
+    private final Map<String, Long> monitoredTaskStartedAt = new HashMap<>();
+    private final Map<String, Long> pendingTaskErrorTokens = new HashMap<>();
+    private final Map<String, PendingBlobDownload> pendingBlobDownloads = new ConcurrentHashMap<>();
+    private final Set<String> cancelledStreamDownloads = ConcurrentHashMap.newKeySet();
+    private final ExecutorService downloadIoExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService uploadIoExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService notificationIoExecutor = Executors.newSingleThreadExecutor();
 
     private SharedPreferences preferences;
+    private FrameLayout appHost;
     private LinearLayout appRoot;
+    private View topInsetArea;
     private View welcomeView;
     private FrameLayout browserFrame;
-    private WebView webView;
+    private AIMiniBrowserEngine browserEngine;
+    private AIMiniBrowserView webView;
+    private FrameLayout externalBrowserContainer;
+    private AIMiniBrowserView externalWebView;
+    private TextView externalCloseButton;
+    private TextView externalModeButton;
+    private boolean mainDesktopMode;
+    private boolean externalDesktopMode;
+    private String mainMobileUserAgent;
+    private String externalMobileUserAgent;
     private EditText urlInput;
     private EditText welcomeUrlInput;
     private LinearLayout continueButton;
@@ -149,6 +201,14 @@ public class MainActivity extends Activity {
     private TextView continueSubtitle;
     private TextView savedConnectionsSubtitle;
     private String pendingConnectionUrl;
+    private boolean waitingForMainPageReveal;
+    private ImageView mainNavigationCover;
+    private View browserTransitionCover;
+    private Bitmap mainNavigationSnapshot;
+    private long mainNavigationTransitionGeneration;
+    private long browserTransitionGeneration;
+    private boolean mainNavigationCaptureRunning;
+    private String pendingMainNavigationUrl;
     private volatile String availableLocalApiBase;
     private LinearLayout downloadsPanel;
     private LinearLayout downloadsList;
@@ -161,13 +221,15 @@ public class MainActivity extends Activity {
     private Button downloadBatchDeleteButton;
     private ImageView downloadCollapseButton;
     private Button downloadsButton;
-    private ImageView miniButton;
+    private RoundedIconView miniButton;
     private View miniMenuScrim;
     private LinearLayout miniMenu;
     private LinearLayout floatSettingsPanel;
     private LinearLayout notificationSettingsPanel;
     private TextView floatSizeValue;
     private TextView floatAlphaValue;
+    private TextView topInsetValue;
+    private TextView conversationFontScaleValue;
     private TextView notificationModeValue;
     private TextView notificationEndOption;
     private TextView notificationPersistentOption;
@@ -175,10 +237,27 @@ public class MainActivity extends Activity {
     private TextView floatThemeDarkOption;
     private TextView floatThemeLightOption;
     private TextView floatThemeSystemOption;
-    private ValueCallback<Uri[]> filePathCallback;
+    private TextView floatGlassOption;
+    private ValueCallback<Uri[]> pendingFilePathCallback;
+    private AIMiniBrowserView pendingFileChooserView;
     private boolean keyboardWasOpen;
+    private int appliedImeInsetBottom;
+    private int lastLegacyImeInsetBottom = -1;
+    private long lastModernImeUpdateAt;
+    private boolean imeAnimationRunning;
+    private boolean modernImeInsetsReliable;
+    private boolean legacyComposerImeBridgeEnabled;
+    private final Rect visibleDisplayFrame = new Rect();
+    private final int[] rootLocationOnScreen = new int[2];
+    private final Runnable conversationFontScaleApplier =
+            () -> applyConversationFontScale(webView);
     private boolean miniDragging;
+    private volatile boolean activityInForeground;
     private volatile boolean localRouteProbeRunning;
+    private volatile boolean backgroundStatusPollRunning;
+    private long taskStateSequence;
+    private long activityBackgroundedAtElapsed;
+    private long browserHealthCheckGeneration;
     private boolean downloadManageMode;
     private final Set<String> selectedDownloadKeys = new HashSet<>();
     private float miniTouchDx;
@@ -202,6 +281,19 @@ public class MainActivity extends Activity {
         if (!url.isEmpty()) tryUpgradeToLocalRoute(url);
     };
 
+    private final Runnable backgroundTaskPoller = new Runnable() {
+        @Override
+        public void run() {
+            if (activityInForeground || monitoredTaskStatusUrls.isEmpty() || webView == null) return;
+            pollTaskStatusesNatively();
+            String script = "(function(){try{"
+                    + "if(window.__AIMiniPollStatuses){window.__AIMiniPollStatuses();}"
+                    + "}catch(e){}})();";
+            webView.evaluateJavascript(script, null);
+            handler.postDelayed(this, BACKGROUND_TASK_POLL_MS);
+        }
+    };
+
     private ConnectivityManager.NetworkCallback networkCallback;
 
     @Override
@@ -209,56 +301,140 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String notificationThreadId = notificationThreadId(getIntent());
+        migrateTopInsetDefault();
+        restoreMonitoredTasks();
+        browserEngine = new AIMiniBrowserEngine(this);
+        browserEngine.setNativeMessageHandler(this::handleNativeMessage);
 
         Window window = getWindow();
-        window.setStatusBarColor(Color.BLACK);
+        window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.BLACK);
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(true);
+            window.setDecorFitsSystemWindows(false);
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
+        } else {
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            );
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(attributes);
         }
 
-        FrameLayout host = new FrameLayout(this);
-        host.setBackgroundColor(Color.BLACK);
-        setContentView(host);
+        appHost = new FrameLayout(this);
+        appHost.setBackgroundColor(Color.BLACK);
+        setContentView(appHost);
 
         appRoot = new LinearLayout(this);
         appRoot.setOrientation(LinearLayout.VERTICAL);
         appRoot.setBackgroundColor(Color.BLACK);
-        host.addView(appRoot, new FrameLayout.LayoutParams(
+        appHost.addView(appRoot, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
 
         buildToolbar(appRoot);
         buildBrowserArea(appRoot);
-        buildWelcomeView(host);
-        watchKeyboard(host);
+        buildWelcomeView(appHost);
+        installImeInsetHandling(window.getDecorView());
         configureWebView();
         loadPersistedDownloads();
         if (updateDownloadItems()) persistDownloads();
         registerNetworkRouteWatcher();
         requestLegacyStoragePermissionIfNeeded();
         requestNotificationPermissionIfNeeded();
+        // Once the user has opened GPT Mini, keep one foreground-service
+        // notification alive in either task-notification mode. This is the
+        // lowest-permission Android mechanism available for improving background
+        // task monitoring reliability.
+        syncNotificationMonitorService();
 
         if (savedInstanceState != null) {
-            showApp();
-            webView.restoreState(savedInstanceState);
-            urlInput.setText(savedInstanceState.getString(KEY_LAST_URL, preferences.getString(KEY_LAST_URL, "")));
+            String restoredUrl = savedInstanceState.getString(
+                    KEY_LAST_URL,
+                    preferences.getString(KEY_LAST_URL, "")
+            );
+            restoredUrl = restoredUrl == null ? "" : restoredUrl.trim();
+            urlInput.setText(restoredUrl);
+            boolean restoreWelcome = savedInstanceState.getBoolean(
+                    KEY_WELCOME_VISIBLE_STATE,
+                    restoredUrl.isEmpty()
+            );
+            if (restoreWelcome || restoredUrl.isEmpty()) {
+                showWelcome();
+            } else {
+                loadUrl(notificationThreadId.isEmpty()
+                        ? restoredUrl
+                        : urlWithThread(restoredUrl, notificationThreadId));
+            }
         } else {
             String lastUrl = preferences.getString(KEY_LAST_URL, "");
             if (lastUrl.isEmpty()) {
                 urlInput.setText("");
                 showWelcome();
             } else {
-                showApp();
                 urlInput.setText(lastUrl);
-                loadUrl(lastUrl);
+                loadUrl(notificationThreadId.isEmpty()
+                        ? lastUrl
+                        : urlWithThread(lastUrl, notificationThreadId));
             }
         }
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String threadId = notificationThreadId(intent);
+        if (!threadId.isEmpty()) openNotificationThread(threadId);
+    }
+
+    private String notificationThreadId(Intent intent) {
+        if (intent == null) return "";
+        String threadId = intent.getStringExtra(EXTRA_OPEN_THREAD_ID);
+        return threadId == null ? "" : threadId.trim();
+    }
+
+    private void openNotificationThread(String threadId) {
+        String savedUrl = preferences == null ? "" : preferences.getString(KEY_LAST_URL, "");
+        if (savedUrl == null || savedUrl.trim().isEmpty()) return;
+        loadUrl(urlWithThread(savedUrl, threadId));
+    }
+
+    private String urlWithThread(String rawUrl, String threadId) {
+        String safeThreadId = threadId == null ? "" : threadId.trim();
+        if (safeThreadId.isEmpty()) return rawUrl == null ? "" : rawUrl;
+        try {
+            Uri source = Uri.parse(rawUrl == null ? "" : rawUrl.trim());
+            Uri.Builder builder = source.buildUpon().clearQuery();
+            for (String name : source.getQueryParameterNames()) {
+                if ("thread".equals(name)) continue;
+                for (String value : source.getQueryParameters(name)) {
+                    builder.appendQueryParameter(name, value);
+                }
+            }
+            builder.appendQueryParameter("thread", safeThreadId);
+            return builder.build().toString();
+        } catch (Exception ignored) {
+            return rawUrl == null ? "" : rawUrl;
+        }
+    }
+
     private void buildToolbar(LinearLayout root) {
+        topInsetArea = new View(this);
+        root.addView(topInsetArea, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(topInsetDp())
+        ));
+        updateTopInsetArea();
+
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -398,7 +574,10 @@ public class MainActivity extends Activity {
         addAccentSegment(accent, dp(24), Color.argb(90, 68, 203, 215));
         addAccentSegment(accent, dp(12), Color.argb(42, 68, 203, 215));
 
-        ChatGptIconView icon = new ChatGptIconView(this);
+        RoundedIconView icon = new RoundedIconView(this);
+        icon.setImageResource(R.drawable.ic_gptmini);
+        icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        icon.setBackgroundColor(Color.TRANSPARENT);
         LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(70), dp(70));
         iconParams.setMargins(dp(12), 0, 0, 0);
         hero.addView(icon, iconParams);
@@ -429,16 +608,6 @@ public class MainActivity extends Activity {
         );
         scan.setOnClickListener(view -> startQrScan());
         actions.addView(scan, connectionActionParams(false));
-
-        LinearLayout savedConnections = createConnectionAction(
-                R.string.saved_connections,
-                R.string.saved_connections_empty,
-                ConnectionIconView.TYPE_SAVED,
-                false
-        );
-        savedConnectionsSubtitle = (TextView) savedConnections.getTag(R.id.saved_connection_subtitle);
-        savedConnections.setOnClickListener(view -> showSavedConnectionsDialog());
-        actions.addView(savedConnections, connectionActionParams(true));
 
         continueButton = createConnectionAction(
                 R.string.continue_last_title,
@@ -603,19 +772,27 @@ public class MainActivity extends Activity {
         footerParams.setMargins(0, dp(18), 0, dp(8));
         content.addView(footer, footerParams);
 
-        refreshSavedConnectionsSummary();
     }
 
     private void buildBrowserArea(LinearLayout root) {
         browserFrame = new FrameLayout(this);
+        browserFrame.setBackgroundColor(WEB_CONTENT_BACKGROUND_COLOR);
         root.addView(browserFrame, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
         ));
 
-        webView = new WebView(this);
+        webView = new AIMiniBrowserView(this, browserEngine);
         browserFrame.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        externalBrowserContainer = new FrameLayout(this);
+        externalBrowserContainer.setBackgroundColor(Color.BLACK);
+        externalBrowserContainer.setVisibility(View.GONE);
+        browserFrame.addView(externalBrowserContainer, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
@@ -766,11 +943,24 @@ public class MainActivity extends Activity {
         miniMenu.setOnClickListener(view -> {
         });
         FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(
-                dp(276),
+                dp(292),
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER
         );
         parent.addView(miniMenu, menuParams);
+
+        externalCloseButton = miniMenuButton(R.string.close_external_page, view -> {
+            hideMiniMenu();
+            closeExternalPage();
+        });
+        externalCloseButton.setVisibility(View.GONE);
+        miniMenu.addView(externalCloseButton);
+
+        externalModeButton = miniMenuButton(R.string.switch_to_desktop_mode, view -> {
+            hideMiniMenu();
+            toggleActiveBrowserMode();
+        });
+        miniMenu.addView(externalModeButton);
 
         miniMenu.addView(miniMenuButton(R.string.downloads_title, view -> {
             hideMiniMenu();
@@ -782,18 +972,23 @@ public class MainActivity extends Activity {
         }));
         miniMenu.addView(miniMenuButton(R.string.refresh_page, view -> {
             hideMiniMenu();
-            if (webView != null) webView.reload();
+            AIMiniBrowserView activeWebView = activeWebView();
+            if (activeWebView != null) {
+                showBrowserTransitionCover(2400L);
+                activeWebView.reload(reloadFallbackUrl(activeWebView));
+            }
         }));
-        miniMenu.addView(miniMenuButton(R.string.float_settings, view -> toggleFloatSettings()));
+        miniMenu.addView(miniMenuButton(R.string.interface_settings, view -> toggleFloatSettings()));
         buildFloatSettingsPanel();
         miniMenu.addView(miniMenuButton(R.string.notification_settings, view -> toggleNotificationSettings()));
         buildNotificationSettingsPanel();
 
         miniButton = new RoundedIconView(this);
-        miniButton.setImageResource(R.drawable.ic_chatgpt);
+        miniButton.setImageResource(R.drawable.ic_gptmini);
         miniButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
         miniButton.setPadding(0, 0, 0, 0);
         miniButton.setBackgroundColor(Color.TRANSPARENT);
+        miniButton.setContentScale(1.05f);
         miniButton.setAlpha(floatIdleAlpha());
         int size = dp(floatButtonSizeDp());
         FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
@@ -841,14 +1036,92 @@ public class MainActivity extends Activity {
         }));
         floatSettingsPanel.addView(alphaBar);
 
+        topInsetValue = settingsLabel("");
+        floatSettingsPanel.addView(topInsetValue);
+        SeekBar topInsetBar = new SeekBar(this);
+        topInsetBar.setMax(MAX_TOP_INSET_DP - MIN_TOP_INSET_DP);
+        topInsetBar.setProgress(topInsetDp() - MIN_TOP_INSET_DP);
+        topInsetBar.setOnSeekBarChangeListener(new SimpleSeekBarListener(progress -> {
+            int inset = MIN_TOP_INSET_DP + progress;
+            preferences.edit().putInt(KEY_TOP_INSET_DP, inset).apply();
+            updateFloatSettingsLabels();
+            requestInterfaceInsets();
+        }));
+        floatSettingsPanel.addView(topInsetBar);
+
+        conversationFontScaleValue = settingsLabel("");
+        floatSettingsPanel.addView(conversationFontScaleValue);
+        SeekBar conversationFontScaleBar = new SeekBar(this);
+        conversationFontScaleBar.setMax(
+                MAX_CONVERSATION_FONT_SCALE - MIN_CONVERSATION_FONT_SCALE
+        );
+        conversationFontScaleBar.setProgress(
+                conversationFontScalePercent() - MIN_CONVERSATION_FONT_SCALE
+        );
+        conversationFontScaleBar.setOnSeekBarChangeListener(
+                new SimpleSeekBarListener(progress -> {
+                    int percent = MIN_CONVERSATION_FONT_SCALE + progress;
+                    preferences.edit()
+                            .putInt(KEY_CONVERSATION_FONT_SCALE, percent)
+                            .apply();
+                    updateFloatSettingsLabels();
+                    // Dragging a 150-step slider can produce several callbacks
+                    // in one display frame. Coalesce them so Gecko receives only
+                    // the latest value without making the settings panel stutter.
+                    handler.removeCallbacks(conversationFontScaleApplier);
+                    handler.postDelayed(conversationFontScaleApplier, 16L);
+                })
+        );
+        floatSettingsPanel.addView(conversationFontScaleBar);
+
         floatThemeValue = settingsLabel("");
         floatSettingsPanel.addView(floatThemeValue);
+        LinearLayout themeRow = new LinearLayout(this);
+        themeRow.setOrientation(LinearLayout.HORIZONTAL);
+        themeRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams themeRowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(36)
+        );
+        themeRowParams.setMargins(0, dp(6), 0, 0);
+        floatSettingsPanel.addView(themeRow, themeRowParams);
+
         floatThemeDarkOption = floatThemeOptionButton(R.string.float_theme_dark, FLOAT_MENU_THEME_DARK);
-        floatSettingsPanel.addView(floatThemeDarkOption);
+        themeRow.addView(floatThemeDarkOption, compactSegmentParams(0));
         floatThemeLightOption = floatThemeOptionButton(R.string.float_theme_light, FLOAT_MENU_THEME_LIGHT);
-        floatSettingsPanel.addView(floatThemeLightOption);
+        themeRow.addView(floatThemeLightOption, compactSegmentParams(dp(5)));
         floatThemeSystemOption = floatThemeOptionButton(R.string.float_theme_system, FLOAT_MENU_THEME_SYSTEM);
-        floatSettingsPanel.addView(floatThemeSystemOption);
+        themeRow.addView(floatThemeSystemOption, compactSegmentParams(dp(5)));
+
+        floatGlassOption = new TextView(this);
+        floatGlassOption.setTextSize(12);
+        floatGlassOption.setGravity(Gravity.CENTER);
+        floatGlassOption.setPadding(dp(10), 0, dp(10), 0);
+        floatGlassOption.setOnClickListener(view -> {
+            preferences.edit()
+                    .putBoolean(KEY_NATIVE_LIQUID_GLASS, !nativeLiquidGlassEnabled())
+                    .apply();
+            refreshMiniMenuTheme();
+            applyNativeGlassState();
+        });
+        LinearLayout glassRow = new LinearLayout(this);
+        glassRow.setOrientation(LinearLayout.HORIZONTAL);
+        glassRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams glassRowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(38)
+        );
+        glassRowParams.setMargins(0, dp(8), 0, 0);
+        floatSettingsPanel.addView(glassRow, glassRowParams);
+        TextView glassLabel = settingsLabel(getString(R.string.float_liquid_glass));
+        glassLabel.setPadding(0, 0, 0, 0);
+        glassRow.addView(glassLabel, new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1f
+        ));
+        glassLabel.setGravity(Gravity.CENTER_VERTICAL);
+        glassRow.addView(floatGlassOption, new LinearLayout.LayoutParams(dp(92), dp(34)));
 
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -894,9 +1167,7 @@ public class MainActivity extends Activity {
         button.setGravity(Gravity.CENTER_VERTICAL);
         button.setPadding(dp(12), 0, dp(12), 0);
         button.setOnClickListener(view -> {
-            preferences.edit().putString(KEY_NOTIFICATION_MODE, mode).apply();
-            if (NOTIFICATION_MODE_END.equals(mode)) cancelPersistentTaskNotification();
-            else showPersistentConnectedNotificationIfNeeded();
+            switchNotificationMode(mode);
             updateNotificationSettingsLabels();
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
@@ -911,22 +1182,22 @@ public class MainActivity extends Activity {
 
     private TextView floatThemeOptionButton(int textRes, String theme) {
         TextView button = new TextView(this);
-        button.setTextSize(13);
-        button.setGravity(Gravity.CENTER_VERTICAL);
-        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setTextSize(12);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(5), 0, dp(5), 0);
         button.setOnClickListener(view -> {
             preferences.edit().putString(KEY_FLOAT_MENU_THEME, theme).apply();
             refreshMiniMenuTheme();
             updateFloatSettingsLabels();
         });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(38)
-        );
-        params.setMargins(0, dp(7), 0, 0);
-        button.setLayoutParams(params);
         button.setTag(textRes);
         return button;
+    }
+
+    private LinearLayout.LayoutParams compactSegmentParams(int leftMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(34), 1f);
+        params.setMargins(leftMargin, 0, 0, 0);
+        return params;
     }
 
     private TextView miniMenuButton(int textRes, View.OnClickListener listener) {
@@ -991,6 +1262,7 @@ public class MainActivity extends Activity {
         else {
             if (miniMenuScrim != null) miniMenuScrim.setVisibility(View.VISIBLE);
             miniMenu.setVisibility(View.VISIBLE);
+            applyNativeGlassState();
             if (miniButton != null) {
                 miniButton.setAlpha(1f);
                 snapFloatButtonToSide(true);
@@ -1003,6 +1275,7 @@ public class MainActivity extends Activity {
         if (miniMenu != null) miniMenu.setVisibility(View.GONE);
         if (floatSettingsPanel != null) floatSettingsPanel.setVisibility(View.GONE);
         if (notificationSettingsPanel != null) notificationSettingsPanel.setVisibility(View.GONE);
+        clearNativeBackdropBlurIfUnused();
         if (miniButton != null) {
             miniButton.setAlpha(floatIdleAlpha());
             snapFloatButtonToSide(false);
@@ -1060,6 +1333,105 @@ public class MainActivity extends Activity {
         return Math.max(0, Math.min(90, preferences.getInt(KEY_FLOAT_ALPHA, DEFAULT_FLOAT_ALPHA)));
     }
 
+    private int topInsetDp() {
+        return Math.max(
+                MIN_TOP_INSET_DP,
+                Math.min(MAX_TOP_INSET_DP, preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP))
+        );
+    }
+
+    private int conversationFontScalePercent() {
+        return Math.max(
+                MIN_CONVERSATION_FONT_SCALE,
+                Math.min(
+                        MAX_CONVERSATION_FONT_SCALE,
+                        preferences.getInt(
+                                KEY_CONVERSATION_FONT_SCALE,
+                                DEFAULT_CONVERSATION_FONT_SCALE
+                        )
+                )
+        );
+    }
+
+    private void migrateTopInsetDefault() {
+        SharedPreferences.Editor editor = preferences.edit();
+        boolean changed = false;
+        if (!preferences.getBoolean(KEY_TOP_INSET_V118_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_V118_MIGRATED, true);
+            changed = true;
+            if (!preferences.contains(KEY_TOP_INSET_DP)
+                    || preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP) == 28) {
+                editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            }
+        }
+        if (!preferences.getBoolean(KEY_TOP_INSET_V120_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_V120_MIGRATED, true);
+            changed = true;
+            // v1.19 stored its 0dp default explicitly. Move that old default to
+            // the new 20dp baseline while retaining other user-selected values.
+            if (!preferences.contains(KEY_TOP_INSET_DP)
+                    || preferences.getInt(KEY_TOP_INSET_DP, 0) == 0) {
+                editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            }
+        }
+        if (changed) editor.apply();
+    }
+
+    private void requestInterfaceInsets() {
+        updateTopInsetArea();
+        if (appHost == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            appHost.requestApplyInsets();
+        }
+    }
+
+    private void updateTopInsetArea() {
+        if (topInsetArea != null) {
+            ViewGroup.LayoutParams params = topInsetArea.getLayoutParams();
+            int height = dp(topInsetDp());
+            if (params != null && params.height != height) {
+                params.height = height;
+                topInsetArea.setLayoutParams(params);
+            }
+            topInsetArea.setBackground(topInsetBackground(isFloatMenuLight()));
+        }
+        boolean light = isFloatMenuLight();
+        Window window = getWindow();
+        // WebUI content must always render behind the status bar and cutout.
+        // topInsetArea is the only optional safe area, and a value of 0 means
+        // that no native view is allowed to cover the top of the page.
+        window.setStatusBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(attributes);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.view.WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(
+                        light
+                                ? android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                : 0,
+                        android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                );
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int flags = window.getDecorView().getSystemUiVisibility();
+            flags |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+            if (light) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            } else {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            }
+            window.getDecorView().setSystemUiVisibility(flags);
+        }
+    }
+
     private float floatIdleAlpha() {
         return (100 - floatButtonTransparencyPercent()) / 100f;
     }
@@ -1067,6 +1439,24 @@ public class MainActivity extends Activity {
     private String notificationMode() {
         String mode = preferences.getString(KEY_NOTIFICATION_MODE, NOTIFICATION_MODE_END);
         return NOTIFICATION_MODE_PERSISTENT.equals(mode) ? NOTIFICATION_MODE_PERSISTENT : NOTIFICATION_MODE_END;
+    }
+
+    private void switchNotificationMode(String requestedMode) {
+        String mode = NOTIFICATION_MODE_PERSISTENT.equals(requestedMode)
+                ? NOTIFICATION_MODE_PERSISTENT
+                : NOTIFICATION_MODE_END;
+        // commit() makes the mode visible to the foreground service before the
+        // immediate refresh below. Both modes keep the base service notification;
+        // only task-status presentation changes.
+        preferences.edit().putString(KEY_NOTIFICATION_MODE, mode).commit();
+        requestNotificationPermissionIfNeeded();
+        if (NOTIFICATION_MODE_END.equals(mode)) {
+            runningNotificationTasks.clear();
+        } else {
+            runningNotificationTasks.addAll(monitoredTaskStatusUrls.keySet());
+        }
+        syncNotificationMonitorService();
+        requestImmediateTaskStatusRefresh();
     }
 
     private String floatMenuTheme() {
@@ -1083,9 +1473,20 @@ public class MainActivity extends Activity {
         return mode != Configuration.UI_MODE_NIGHT_YES;
     }
 
+    private boolean nativeLiquidGlassEnabled() {
+        return preferences.getBoolean(KEY_NATIVE_LIQUID_GLASS, false);
+    }
+
     private void updateFloatSettingsLabels() {
         if (floatSizeValue != null) floatSizeValue.setText(getString(R.string.float_size_value, floatButtonSizeDp()));
         if (floatAlphaValue != null) floatAlphaValue.setText(getString(R.string.float_alpha_value, floatButtonTransparencyPercent()));
+        if (topInsetValue != null) topInsetValue.setText(getString(R.string.top_inset_value, topInsetDp()));
+        if (conversationFontScaleValue != null) {
+            conversationFontScaleValue.setText(getString(
+                    R.string.conversation_font_scale_value,
+                    conversationFontScalePercent()
+            ));
+        }
         if (floatThemeValue != null) {
             int label = FLOAT_MENU_THEME_LIGHT.equals(floatMenuTheme())
                     ? R.string.float_theme_light
@@ -1095,6 +1496,19 @@ public class MainActivity extends Activity {
         updateOptionButton(floatThemeDarkOption, FLOAT_MENU_THEME_DARK.equals(floatMenuTheme()));
         updateOptionButton(floatThemeLightOption, FLOAT_MENU_THEME_LIGHT.equals(floatMenuTheme()));
         updateOptionButton(floatThemeSystemOption, FLOAT_MENU_THEME_SYSTEM.equals(floatMenuTheme()));
+        if (floatGlassOption != null) {
+            boolean enabled = nativeLiquidGlassEnabled();
+            floatGlassOption.setText((enabled ? "●  " : "○  ") + getString(
+                    enabled ? R.string.float_liquid_glass_on : R.string.float_liquid_glass_off
+            ));
+            boolean light = isFloatMenuLight();
+            floatGlassOption.setTextColor(enabled
+                    ? light ? Color.rgb(0, 105, 72) : Color.rgb(48, 211, 157)
+                    : light ? Color.rgb(72, 76, 86) : Color.rgb(218, 222, 230));
+            floatGlassOption.setBackground(enabled
+                    ? optionSelectedBackground(light)
+                    : optionBackground(light));
+        }
     }
 
     private void updateNotificationSettingsLabels() {
@@ -1114,19 +1528,38 @@ public class MainActivity extends Activity {
         button.setText((selected ? "●  " : "○  ") + label);
         boolean light = isFloatMenuLight();
         button.setTextColor(selected
-                ? Color.rgb(78, 230, 176)
+                ? light ? Color.rgb(0, 105, 72) : Color.rgb(78, 230, 176)
                 : light ? Color.rgb(72, 76, 86) : Color.rgb(218, 222, 230));
         button.setBackground(selected ? optionSelectedBackground(light) : optionBackground(light));
     }
 
     private void refreshMiniMenuTheme() {
         boolean light = isFloatMenuLight();
-        if (miniMenu != null) miniMenu.setBackground(menuPanelBackground(light));
-        if (floatSettingsPanel != null) floatSettingsPanel.setBackground(menuInsetBackground(light));
-        if (notificationSettingsPanel != null) notificationSettingsPanel.setBackground(menuInsetBackground(light));
+        updateTopInsetArea();
+        if (miniMenu != null) {
+            miniMenu.setBackground(nativeLiquidGlassEnabled()
+                    ? liquidGlassPanelBackground(light, dp(26))
+                    : menuPanelBackground(light));
+        }
+        if (floatSettingsPanel != null) {
+            floatSettingsPanel.setBackground(nativeLiquidGlassEnabled()
+                    ? liquidGlassPanelBackground(light, dp(16))
+                    : menuInsetBackground(light));
+        }
+        if (notificationSettingsPanel != null) {
+            notificationSettingsPanel.setBackground(nativeLiquidGlassEnabled()
+                    ? liquidGlassPanelBackground(light, dp(16))
+                    : menuInsetBackground(light));
+        }
         for (TextView button : miniMenuButtons) {
             button.setTextColor(light ? Color.rgb(30, 34, 42) : Color.rgb(244, 244, 245));
             button.setBackground(optionBackground(light));
+        }
+        int labelColor = light
+                ? Color.rgb(27, 78, 62)
+                : Color.rgb(195, 236, 213);
+        for (TextView label : settingsLabels) {
+            label.setTextColor(labelColor);
         }
         updateFloatSettingsLabels();
         updateNotificationSettingsLabels();
@@ -1134,58 +1567,779 @@ public class MainActivity extends Activity {
         if (downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE) {
             renderDownloads();
         }
+        refreshFloatingButtonGlassStyle();
     }
 
-    @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
+    private void refreshFloatingButtonGlassStyle() {
+        if (miniButton == null) return;
+        // The floating launcher is the app icon itself, not a glass panel that
+        // contains the icon. Keep it edge-to-edge and only round/crop its corners.
+        miniButton.setPadding(0, 0, 0, 0);
+        miniButton.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        miniButton.setBackgroundColor(Color.TRANSPARENT);
+        miniButton.setElevation(0);
+        miniButton.setContentScale(1.05f);
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
     private void configureWebView() {
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(false);
-        settings.setSupportZoom(false);
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setTextZoom(100);
-        settings.setAllowContentAccess(true);
-        settings.setAllowFileAccess(true);
-        settings.setUserAgentString(settings.getUserAgentString() + " CodexMiniAndroidApp/1.1");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        }
-
-        CookieManager cookieManager = CookieManager.getInstance();
-        cookieManager.setAcceptCookie(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            cookieManager.setAcceptThirdPartyCookies(webView, true);
-        }
-
-        webView.addJavascriptInterface(new NativeBridge(), "CodexMiniNative");
+        mainMobileUserAgent = WebSettings.getDefaultUserAgent(this)
+                + " GPTMiniAndroidApp/1.1.0";
+        webView.setDelegate(createMainBrowserDelegate());
+        webView.setDesktopMode(false, mainMobileUserAgent, desktopUserAgent());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
-        webView.setWebViewClient(new AppWebViewClient());
-        webView.setWebChromeClient(new AppWebChromeClient());
-        webView.setDownloadListener(new AppDownloadListener());
+    }
+
+    private void openExternalPage(String rawUrl) {
+        String url = rawUrl == null ? "" : rawUrl.trim();
+        if (url.isEmpty()) return;
+        Uri uri = Uri.parse(url);
+        String scheme = uri.getScheme();
+        if (isInternalBrowserScheme(scheme)) {
+            return;
+        }
+        if (!isHttpScheme(scheme)) {
+            openSystemLink(uri);
+            return;
+        }
+
+        showApp();
+        hideDownloadsPanel();
+        showBrowserTransitionCover(2400L);
+        boolean creatingBrowser = externalWebView == null;
+        if (externalWebView == null) {
+            externalWebView = new AIMiniBrowserView(this, browserEngine);
+            externalBrowserContainer.removeAllViews();
+            externalBrowserContainer.addView(externalWebView, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+            ));
+            externalMobileUserAgent = WebSettings.getDefaultUserAgent(this);
+            externalWebView.setDelegate(createExternalBrowserDelegate());
+            externalWebView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        }
+
+        if (creatingBrowser) externalDesktopMode = false;
+        applyBrowserMode(externalWebView, externalDesktopMode, externalMobileUserAgent);
+        if (webView != null) webView.prepareForBackground(false);
+        externalWebView.prepareForForeground();
+        externalBrowserContainer.setVisibility(View.VISIBLE);
+        updateExternalBrowserMenu();
+        externalWebView.loadUrl(url);
+    }
+
+    private void toggleActiveBrowserMode() {
+        boolean externalActive = externalWebView != null
+                && externalBrowserContainer != null
+                && externalBrowserContainer.getVisibility() == View.VISIBLE;
+        AIMiniBrowserView target = externalActive ? externalWebView : webView;
+        prepareBrowserModeTransition(target, () -> {
+            if (externalActive) {
+                externalDesktopMode = !externalDesktopMode;
+                applyBrowserMode(externalWebView, externalDesktopMode, externalMobileUserAgent);
+            } else {
+                mainDesktopMode = !mainDesktopMode;
+                applyBrowserMode(webView, mainDesktopMode, mainMobileUserAgent);
+            }
+            updateExternalBrowserMenu();
+        });
+    }
+
+    private void prepareBrowserModeTransition(AIMiniBrowserView target, Runnable transition) {
+        if (target == null || transition == null) {
+            if (transition != null) transition.run();
+            return;
+        }
+        hideSoftKeyboard(target);
+        target.evaluateJavascript(
+                "(function(){try{var active=document.activeElement;"
+                        + "if(active&&active.blur){active.blur();}}catch(e){}})();",
+                null
+        );
+
+        int width = target.getWidth();
+        int height = target.getHeight();
+        if (width <= 0 || height <= 0 || browserFrame == null) {
+            transition.run();
+            return;
+        }
+
+        Bitmap snapshot;
+        try {
+            snapshot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        } catch (Throwable ignored) {
+            transition.run();
+            return;
+        }
+
+        int[] targetLocation = new int[2];
+        int[] frameLocation = new int[2];
+        target.getLocationInWindow(targetLocation);
+        browserFrame.getLocationInWindow(frameLocation);
+        Rect sourceRect = new Rect(
+                targetLocation[0],
+                targetLocation[1],
+                targetLocation[0] + width,
+                targetLocation[1] + height
+        );
+        try {
+            PixelCopy.request(getWindow(), sourceRect, snapshot, copyResult -> {
+                if (isFinishing() || isDestroyed()) {
+                    if (!snapshot.isRecycled()) snapshot.recycle();
+                    return;
+                }
+
+                ImageView transitionCover = new ImageView(this);
+                transitionCover.setBackgroundColor(Color.BLACK);
+                if (copyResult == PixelCopy.SUCCESS) {
+                    transitionCover.setImageBitmap(snapshot);
+                }
+                transitionCover.setScaleType(ImageView.ScaleType.FIT_XY);
+                transitionCover.setClickable(false);
+                FrameLayout.LayoutParams coverParams =
+                        new FrameLayout.LayoutParams(width, height);
+                coverParams.leftMargin = targetLocation[0] - frameLocation[0];
+                coverParams.topMargin = targetLocation[1] - frameLocation[1];
+                browserFrame.addView(transitionCover, coverParams);
+                transitionCover.bringToFront();
+
+                // Present the frozen frame first, then commit the viewport
+                // change underneath it. This hides Gecko's transient default
+                // document surface without replacing it with a black flash.
+                transitionCover.postOnAnimation(() -> {
+                    transition.run();
+                    handler.postDelayed(() -> {
+                        if (transitionCover.getParent() == browserFrame) {
+                            browserFrame.removeView(transitionCover);
+                        }
+                        transitionCover.setImageDrawable(null);
+                        if (!snapshot.isRecycled()) snapshot.recycle();
+                    }, 280);
+                });
+            }, handler);
+        } catch (Throwable ignored) {
+            if (!snapshot.isRecycled()) snapshot.recycle();
+            transition.run();
+        }
+    }
+
+    private boolean prepareMainNavigationTransition(
+            AIMiniBrowserView target,
+            String navigationUrl
+    ) {
+        String nextUrl = navigationUrl == null ? "" : navigationUrl.trim();
+        if (target == null || nextUrl.isEmpty()) return false;
+        if (browserFrame == null
+                || target != webView
+                || target.getVisibility() != View.VISIBLE
+                || !activityInForeground) {
+            target.loadUrl(nextUrl);
+            return true;
+        }
+
+        String currentUrl = target.getUrl();
+        if (sameVisibleNavigation(currentUrl, nextUrl)) return false;
+
+        pendingMainNavigationUrl = nextUrl;
+        if (mainNavigationCaptureRunning) return true;
+
+        int width = target.getWidth();
+        int height = target.getHeight();
+        if (width <= 0 || height <= 0) {
+            pendingMainNavigationUrl = null;
+            target.loadUrl(nextUrl);
+            return true;
+        }
+
+        Bitmap snapshot = reusableMainNavigationSnapshot(width, height);
+        if (snapshot == null) {
+            pendingMainNavigationUrl = null;
+            target.loadUrl(nextUrl);
+            return true;
+        }
+
+        int[] targetLocation = new int[2];
+        int[] frameLocation = new int[2];
+        target.getLocationInWindow(targetLocation);
+        browserFrame.getLocationInWindow(frameLocation);
+        Rect sourceRect = new Rect(
+                targetLocation[0],
+                targetLocation[1],
+                targetLocation[0] + width,
+                targetLocation[1] + height
+        );
+        long generation = ++mainNavigationTransitionGeneration;
+        mainNavigationCaptureRunning = true;
+        try {
+            PixelCopy.request(getWindow(), sourceRect, snapshot, copyResult -> {
+                mainNavigationCaptureRunning = false;
+                if (isFinishing()
+                        || isDestroyed()
+                        || generation != mainNavigationTransitionGeneration) {
+                    return;
+                }
+
+                String capturedNavigationUrl = pendingMainNavigationUrl;
+                pendingMainNavigationUrl = null;
+                if (capturedNavigationUrl == null || capturedNavigationUrl.isEmpty()) return;
+
+                // Some ColorOS builds report PixelCopy.SUCCESS while returning a
+                // fully black TextureView region. Reading Gecko's visible texture
+                // directly is reliable on those devices and also excludes the
+                // compositor's temporary loading cover.
+                boolean snapshotReady = target.copyVisibleTextureTo(snapshot)
+                        || copyResult == PixelCopy.SUCCESS;
+                Log.d(
+                        NAVIGATION_LOG_TAG,
+                        "transition-copy pixelCopy=" + copyResult
+                                + " snapshotReady=" + snapshotReady
+                );
+                if (snapshotReady) {
+                    showMainNavigationCover(
+                            snapshot,
+                            targetLocation,
+                            frameLocation,
+                            width,
+                            height,
+                            generation
+                    );
+                }
+
+                // Commit the navigation only after the frozen frame has reached
+                // the screen. This keeps WebUI's temporary shell/blank document
+                // hidden without fading a black layer over the finished page.
+                View frameGate = snapshotReady && mainNavigationCover != null
+                        ? mainNavigationCover
+                        : target;
+                frameGate.postOnAnimation(() -> frameGate.postOnAnimation(() -> {
+                    if (generation != mainNavigationTransitionGeneration) return;
+                    target.loadUrl(capturedNavigationUrl);
+                    handler.postDelayed(
+                            () -> hideMainNavigationCover(generation),
+                            MAIN_NAVIGATION_FALLBACK_MS
+                    );
+                }));
+            }, handler);
+        } catch (Throwable ignored) {
+            mainNavigationCaptureRunning = false;
+            pendingMainNavigationUrl = null;
+            target.loadUrl(nextUrl);
+        }
+        return true;
+    }
+
+    private Bitmap reusableMainNavigationSnapshot(int width, int height) {
+        if (mainNavigationSnapshot != null
+                && !mainNavigationSnapshot.isRecycled()
+                && mainNavigationSnapshot.getWidth() == width
+                && mainNavigationSnapshot.getHeight() == height) {
+            return mainNavigationSnapshot;
+        }
+        if (mainNavigationSnapshot != null && !mainNavigationSnapshot.isRecycled()) {
+            mainNavigationSnapshot.recycle();
+        }
+        mainNavigationSnapshot = null;
+        try {
+            mainNavigationSnapshot =
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        } catch (Throwable ignored) {
+        }
+        return mainNavigationSnapshot;
+    }
+
+    private void showMainNavigationCover(
+            Bitmap snapshot,
+            int[] targetLocation,
+            int[] frameLocation,
+            int width,
+            int height,
+            long generation
+    ) {
+        if (generation != mainNavigationTransitionGeneration || browserFrame == null) return;
+        if (mainNavigationCover == null) {
+            mainNavigationCover = new ImageView(this);
+            mainNavigationCover.setBackgroundColor(WEB_CONTENT_BACKGROUND_COLOR);
+            mainNavigationCover.setScaleType(ImageView.ScaleType.FIT_XY);
+            // Freeze interaction together with the pixels so a second tap cannot
+            // navigate the hidden page while the first transition is in flight.
+            mainNavigationCover.setClickable(true);
+            mainNavigationCover.setFocusable(false);
+        } else if (mainNavigationCover.getParent() instanceof ViewGroup
+                && mainNavigationCover.getParent() != browserFrame) {
+            ((ViewGroup) mainNavigationCover.getParent()).removeView(mainNavigationCover);
+        }
+
+        mainNavigationCover.animate().cancel();
+        mainNavigationCover.setAlpha(1f);
+        mainNavigationCover.setImageBitmap(snapshot);
+        FrameLayout.LayoutParams coverParams =
+                new FrameLayout.LayoutParams(width, height);
+        coverParams.leftMargin = targetLocation[0] - frameLocation[0];
+        coverParams.topMargin = targetLocation[1] - frameLocation[1];
+        if (mainNavigationCover.getParent() == browserFrame) {
+            mainNavigationCover.setLayoutParams(coverParams);
+        } else {
+            browserFrame.addView(mainNavigationCover, coverParams);
+        }
+        mainNavigationCover.setVisibility(View.VISIBLE);
+        mainNavigationCover.bringToFront();
+    }
+
+    private void scheduleMainNavigationReveal(
+            AIMiniBrowserView target,
+            boolean success
+    ) {
+        if (mainNavigationCover == null
+                || mainNavigationCover.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        long generation = mainNavigationTransitionGeneration;
+        if (!success || target == null) {
+            handler.postDelayed(() -> hideMainNavigationCover(generation), 80L);
+            return;
+        }
+        handler.postDelayed(
+                () -> probeMainNavigationContent(target, generation, 0L),
+                MAIN_NAVIGATION_MIN_REVEAL_DELAY_MS
+        );
+    }
+
+    private void probeMainNavigationContent(
+            AIMiniBrowserView target,
+            long generation,
+            long waitedMs
+    ) {
+        if (generation != mainNavigationTransitionGeneration
+                || mainNavigationCover == null
+                || mainNavigationCover.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        String readinessScript = "(function(){try{"
+                + "var text=(document.body&&document.body.innerText)||'';"
+                + "var shell=text.indexOf('手机同步到当前 GPT 对话')>=0;"
+                + "return !shell&&text.trim().length>100;"
+                + "}catch(e){return false;}})();";
+        target.evaluateJavascript(readinessScript, result -> {
+            if (generation != mainNavigationTransitionGeneration) return;
+            boolean ready = "true".equalsIgnoreCase(
+                    result == null ? "" : result.trim()
+            );
+            long nextWaitedMs = waitedMs + MAIN_NAVIGATION_REVEAL_POLL_MS;
+            if (ready || nextWaitedMs >= MAIN_NAVIGATION_MAX_REVEAL_DELAY_MS) {
+                if (mainNavigationCover == null) return;
+                mainNavigationCover.postOnAnimation(
+                        () -> mainNavigationCover.postOnAnimation(
+                                () -> hideMainNavigationCover(generation)
+                        )
+                );
+                return;
+            }
+            handler.postDelayed(
+                    () -> probeMainNavigationContent(
+                            target,
+                            generation,
+                            nextWaitedMs
+                    ),
+                    MAIN_NAVIGATION_REVEAL_POLL_MS
+            );
+        });
+    }
+
+    private void hideMainNavigationCover(long generation) {
+        if (generation != mainNavigationTransitionGeneration
+                || mainNavigationCover == null) {
+            return;
+        }
+        mainNavigationCover.animate().cancel();
+        mainNavigationCover.setVisibility(View.GONE);
+        mainNavigationCover.setAlpha(1f);
+        mainNavigationCover.setImageDrawable(null);
+    }
+
+    private void showBrowserTransitionCover(long fallbackDelayMs) {
+        if (browserFrame == null) return;
+        long generation = ++browserTransitionGeneration;
+        if (browserTransitionCover == null) {
+            browserTransitionCover = new View(this);
+            browserTransitionCover.setBackgroundColor(WEB_CONTENT_BACKGROUND_COLOR);
+            browserTransitionCover.setClickable(true);
+            browserTransitionCover.setFocusable(false);
+        } else if (browserTransitionCover.getParent() instanceof ViewGroup
+                && browserTransitionCover.getParent() != browserFrame) {
+            ((ViewGroup) browserTransitionCover.getParent()).removeView(browserTransitionCover);
+        }
+        if (browserTransitionCover.getParent() != browserFrame) {
+            browserFrame.addView(browserTransitionCover, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+            ));
+        }
+        browserTransitionCover.animate().cancel();
+        browserTransitionCover.setAlpha(1f);
+        browserTransitionCover.setVisibility(View.VISIBLE);
+        browserTransitionCover.bringToFront();
+        if (fallbackDelayMs > 0L) {
+            handler.postDelayed(
+                    () -> hideBrowserTransitionCover(generation),
+                    fallbackDelayMs
+            );
+        }
+    }
+
+    private void scheduleBrowserTransitionReveal(
+            AIMiniBrowserView target,
+            boolean success
+    ) {
+        scheduleBrowserTransitionReveal(target, success ? 180L : 80L);
+    }
+
+    private void scheduleBrowserTransitionReveal(
+            AIMiniBrowserView target,
+            long delayMs
+    ) {
+        if (browserTransitionCover == null
+                || browserTransitionCover.getVisibility() != View.VISIBLE
+                || target == null
+                || target != activeWebView()) {
+            return;
+        }
+        long generation = browserTransitionGeneration;
+        handler.postDelayed(() -> {
+            if (generation != browserTransitionGeneration
+                    || browserTransitionCover == null
+                    || browserTransitionCover.getVisibility() != View.VISIBLE) {
+                return;
+            }
+            browserTransitionCover.postOnAnimation(
+                    () -> browserTransitionCover.postOnAnimation(
+                            () -> hideBrowserTransitionCover(generation)
+                    )
+            );
+        }, Math.max(0L, delayMs));
+    }
+
+    private void hideBrowserTransitionCover(long generation) {
+        if (generation != browserTransitionGeneration
+                || browserTransitionCover == null) {
+            return;
+        }
+        browserTransitionCover.animate().cancel();
+        browserTransitionCover.setVisibility(View.GONE);
+        browserTransitionCover.setAlpha(1f);
+    }
+
+    private boolean sameVisibleNavigation(String firstUrl, String secondUrl) {
+        String first = firstUrl == null ? "" : firstUrl.trim();
+        String second = secondUrl == null ? "" : secondUrl.trim();
+        int firstHash = first.indexOf('#');
+        int secondHash = second.indexOf('#');
+        if (firstHash >= 0) first = first.substring(0, firstHash);
+        if (secondHash >= 0) second = second.substring(0, secondHash);
+        return first.equals(second);
+    }
+
+    private void applyBrowserMode(
+            AIMiniBrowserView target,
+            boolean desktopMode,
+            String mobileUserAgent
+    ) {
+        if (target == null) return;
+        target.setDesktopMode(desktopMode, mobileUserAgent, desktopUserAgent());
+        applyBrowserViewport(target, desktopMode);
+        // Updating Gecko session settings and the viewport in place avoids the
+        // white flash and page-state loss caused by a full reload.
+        handler.postDelayed(() -> applyBrowserViewport(target, desktopMode), 120);
+    }
+
+    private String desktopUserAgent() {
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 "
+                + "GPTMiniAndroidApp/1.1.0";
+    }
+
+    private void applyConversationFontScale(AIMiniBrowserView target) {
+        if (target == null || target != webView) return;
+        int percent = conversationFontScalePercent();
+        target.evaluateJavascript(
+                "(function(){try{"
+                        + "var value=" + percent + ";"
+                        + "window.__AIMiniPendingConversationFontScale=value;"
+                        + "if(window.__AIMiniSetConversationFontScale){"
+                        + "window.__AIMiniSetConversationFontScale(value);"
+                        + "}"
+                        + "}catch(e){}})();",
+                null
+        );
+    }
+
+    private void applyBrowserViewport(AIMiniBrowserView target, boolean desktopMode) {
+        if (target == null) return;
+        String content = desktopMode
+                ? "width=1280, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes"
+                : "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, "
+                        + "interactive-widget=resizes-content";
+        String script = "(function(){try{"
+                + "var desired=" + JSONObject.quote(content) + ";"
+                + "var desktop=" + (desktopMode ? "true" : "false") + ";"
+                + "var signature=desired+'|'+desktop;"
+                + "var previous=window.__AIMiniViewportSignature||'';"
+                + "window.__AIMiniViewportContent=desired;"
+                + "var changed=false;"
+                + "var meta=document.querySelector('meta[name=\"viewport\"]');"
+                + "if(!meta){meta=document.createElement('meta');meta.name='viewport';"
+                + "(document.head||document.documentElement).appendChild(meta);changed=true;}"
+                + "if(meta.getAttribute('content')!==desired){"
+                + "meta.setAttribute('content',desired);changed=true;}"
+                + "if(!window.__AIMiniViewportObserver){"
+                + "window.__AIMiniViewportObserver=new MutationObserver(function(){"
+                + "var current=document.querySelector('meta[name=\"viewport\"]');"
+                + "if(current&&current.getAttribute('content')!==window.__AIMiniViewportContent){"
+                + "current.setAttribute('content',window.__AIMiniViewportContent);"
+                + "}});"
+                + "window.__AIMiniViewportObserver.observe(document.head||document.documentElement,"
+                + "{subtree:true,childList:true,attributes:true,attributeFilter:['content']});"
+                + "}"
+                + "if(document.documentElement.classList.contains('ai-mini-desktop-mode')!==desktop){"
+                + "document.documentElement.classList.toggle('ai-mini-desktop-mode',desktop);"
+                + "changed=true;}"
+                + "var desktopStyle=document.getElementById('ai-mini-desktop-style');"
+                + "if(desktop){"
+                + "if(!desktopStyle){desktopStyle=document.createElement('style');"
+                + "desktopStyle.id='ai-mini-desktop-style';"
+                + "(document.head||document.documentElement).appendChild(desktopStyle);changed=true;}"
+                + "var css='html.ai-mini-desktop-mode,html.ai-mini-desktop-mode body{min-width:1100px!important;overflow-x:auto!important;}';"
+                + "if(desktopStyle.textContent!==css){desktopStyle.textContent=css;changed=true;}"
+                + "}else if(desktopStyle){desktopStyle.remove();changed=true;}"
+                + "window.__AIMiniViewportSignature=signature;"
+                + "if(changed||previous!==signature){"
+                + "requestAnimationFrame(function(){window.dispatchEvent(new Event('resize'));});"
+                + "setTimeout(function(){window.dispatchEvent(new Event('resize'));},96);"
+                + "}"
+                + "}catch(e){}})();";
+        target.evaluateJavascript(script, null);
+    }
+
+    private void updateExternalBrowserMenu() {
+        boolean active = externalWebView != null
+                && externalBrowserContainer != null
+                && externalBrowserContainer.getVisibility() == View.VISIBLE;
+        if (externalCloseButton != null) {
+            externalCloseButton.setVisibility(active ? View.VISIBLE : View.GONE);
+        }
+        if (externalModeButton != null) {
+            externalModeButton.setVisibility(View.VISIBLE);
+            boolean desktopMode = active ? externalDesktopMode : mainDesktopMode;
+            externalModeButton.setText(desktopMode
+                    ? R.string.switch_to_mobile_mode
+                    : R.string.switch_to_desktop_mode);
+        }
+    }
+
+    private AIMiniBrowserView activeWebView() {
+        if (externalWebView != null
+                && externalBrowserContainer != null
+                && externalBrowserContainer.getVisibility() == View.VISIBLE) {
+            return externalWebView;
+        }
+        return webView;
+    }
+
+    private void closeExternalPage() {
+        boolean wasVisible = externalWebView != null
+                && externalBrowserContainer != null
+                && externalBrowserContainer.getVisibility() == View.VISIBLE;
+        if (wasVisible) showBrowserTransitionCover(900L);
+        if (webView != null) webView.prepareForForeground();
+        if (externalBrowserContainer != null) externalBrowserContainer.setVisibility(View.GONE);
+        if (externalWebView != null) {
+            try {
+                externalWebView.stopLoading();
+                if (externalBrowserContainer != null) {
+                    externalBrowserContainer.removeView(externalWebView);
+                }
+                externalWebView.destroy();
+            } catch (Exception ignored) {
+            }
+            externalWebView = null;
+        }
+        externalMobileUserAgent = null;
+        externalDesktopMode = false;
+        updateExternalBrowserMenu();
+        if (wasVisible) scheduleBrowserTransitionReveal(webView, 140L);
+    }
+
+    private boolean isHttpScheme(String scheme) {
+        return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+    }
+
+    private boolean isInternalBrowserScheme(String scheme) {
+        return "about".equalsIgnoreCase(scheme)
+                || "blob".equalsIgnoreCase(scheme)
+                || "data".equalsIgnoreCase(scheme)
+                || "javascript".equalsIgnoreCase(scheme);
+    }
+
+    private boolean isSameMainDocument(String candidateUrl) {
+        String candidate = canonicalNavigationUrl(candidateUrl);
+        if (candidate.isEmpty()) return true;
+        String current = canonicalNavigationUrl(webView == null ? "" : webView.getUrl());
+        if (!current.isEmpty() && candidate.equals(current)) return true;
+        String saved = canonicalNavigationUrl(preferences.getString(KEY_LAST_URL, ""));
+        return !saved.isEmpty() && candidate.equals(saved);
+    }
+
+    private String canonicalNavigationUrl(String rawUrl) {
+        if (rawUrl == null) return "";
+        int hash = rawUrl.indexOf('#');
+        String value = hash >= 0 ? rawUrl.substring(0, hash) : rawUrl;
+        Uri uri = Uri.parse(value.trim());
+        if (isHttpScheme(uri.getScheme()) && uri.getEncodedAuthority() != null) {
+            String path = uri.getEncodedPath();
+            if (path == null || path.isEmpty()) path = "/";
+            while (path.endsWith("/") && path.length() > 1) {
+                path = path.substring(0, path.length() - 1);
+            }
+            // Codex Mini changes device/thread/token through query parameters
+            // while staying in the same WebUI document. Keep those navigations
+            // in the primary GeckoView; opening a second GeckoView separates the
+            // IME focus surface from the page that owns the two input patches.
+            return uri.getScheme().toLowerCase(Locale.ROOT)
+                    + "://"
+                    + uri.getEncodedAuthority().toLowerCase(Locale.ROOT)
+                    + path;
+        }
+        while (value.endsWith("/") && value.length() > 1) {
+            value = value.substring(0, value.length() - 1);
+        }
+        return value.trim();
+    }
+
+    private String inheritMainNavigationToken(String candidateUrl) {
+        String rawCandidate = candidateUrl == null ? "" : candidateUrl.trim();
+        if (rawCandidate.isEmpty() || !isSameMainDocument(rawCandidate)) return rawCandidate;
+        try {
+            Uri candidate = Uri.parse(rawCandidate);
+            if (!isHttpScheme(candidate.getScheme())) return rawCandidate;
+            String candidateToken = encodedQueryParameter(candidate, "token");
+            if (candidateToken != null && !candidateToken.isEmpty()) return rawCandidate;
+
+            String currentUrl = webView == null ? "" : webView.getUrl();
+            String savedUrl = preferences == null ? "" : preferences.getString(KEY_LAST_URL, "");
+            String inheritedToken = encodedQueryParameter(Uri.parse(currentUrl), "token");
+            if (inheritedToken == null || inheritedToken.isEmpty()) {
+                inheritedToken = encodedQueryParameter(Uri.parse(savedUrl), "token");
+            }
+            if (inheritedToken == null || inheritedToken.isEmpty()) return rawCandidate;
+
+            String encodedQuery = candidate.getEncodedQuery();
+            String tokenQuery = "token=" + inheritedToken;
+            Uri.Builder builder = candidate.buildUpon();
+            builder.encodedQuery(encodedQuery == null || encodedQuery.isEmpty()
+                    ? tokenQuery
+                    : encodedQuery + "&" + tokenQuery);
+            return builder.build().toString();
+        } catch (Exception ignored) {
+            return rawCandidate;
+        }
+    }
+
+    private String encodedQueryParameter(Uri uri, String requestedName) {
+        if (uri == null || requestedName == null) return null;
+        String encodedQuery = uri.getEncodedQuery();
+        if (encodedQuery == null || encodedQuery.isEmpty()) return null;
+        for (String pair : encodedQuery.split("&")) {
+            int separator = pair.indexOf('=');
+            String encodedName = separator >= 0 ? pair.substring(0, separator) : pair;
+            if (!requestedName.equals(Uri.decode(encodedName))) continue;
+            return separator >= 0 ? pair.substring(separator + 1) : "";
+        }
+        return null;
+    }
+
+    private String navigationUrlForLog(String rawUrl) {
+        try {
+            Uri uri = Uri.parse(rawUrl == null ? "" : rawUrl);
+            StringBuilder safe = new StringBuilder();
+            if (uri.getScheme() != null) safe.append(uri.getScheme()).append("://");
+            if (uri.getEncodedAuthority() != null) safe.append(uri.getEncodedAuthority());
+            if (uri.getEncodedPath() != null) safe.append(uri.getEncodedPath());
+            Set<String> names = uri.getQueryParameterNames();
+            if (!names.isEmpty()) safe.append("?params=").append(names);
+            return safe.toString();
+        } catch (Exception ignored) {
+            return "<invalid>";
+        }
+    }
+
+    private String navigationTokenFingerprint(String rawUrl) {
+        try {
+            String encoded = encodedQueryParameter(
+                    Uri.parse(rawUrl == null ? "" : rawUrl),
+                    "token"
+            );
+            if (encoded == null) return "none";
+            return encoded.length() + ":" + Integer.toHexString(encoded.hashCode());
+        } catch (Exception ignored) {
+            return "invalid";
+        }
+    }
+
+    private void openSystemLink(Uri uri) {
+        if (uri == null || isInternalBrowserScheme(uri.getScheme())) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+        } catch (ActivityNotFoundException ignored) {
+            Toast.makeText(this, R.string.no_app_for_link, Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void showWelcome() {
+        closeExternalPage();
+        waitingForMainPageReveal = false;
         appRoot.setVisibility(View.GONE);
+        appRoot.setAlpha(1f);
+        welcomeView.setAlpha(1f);
         welcomeView.setVisibility(View.VISIBLE);
         String lastUrl = preferences.getString(KEY_LAST_URL, "");
         configureContinueButton(lastUrl);
-        refreshSavedConnectionsSummary();
         welcomeUrlInput.setText("");
         welcomeUrlInput.clearFocus();
         hideSoftKeyboard(welcomeUrlInput);
     }
 
     private void showApp() {
+        waitingForMainPageReveal = false;
+        appRoot.setAlpha(1f);
         welcomeView.setVisibility(View.GONE);
+        welcomeView.setAlpha(1f);
         appRoot.setVisibility(View.VISIBLE);
+    }
+
+    private boolean prepareMainPageReveal() {
+        if (welcomeView == null || welcomeView.getVisibility() != View.VISIBLE) return false;
+        waitingForMainPageReveal = true;
+        appRoot.setAlpha(1f);
+        appRoot.setVisibility(View.VISIBLE);
+        welcomeView.setAlpha(1f);
+        welcomeView.bringToFront();
+        return true;
+    }
+
+    private void revealLoadedMainPage() {
+        if (!waitingForMainPageReveal || welcomeView == null) return;
+        waitingForMainPageReveal = false;
+        appRoot.setVisibility(View.VISIBLE);
+        welcomeView.animate().cancel();
+        // Fading two full-screen trees (the welcome layout and Gecko's texture)
+        // forces several expensive blended frames. Swap after two stable frames
+        // instead: the loaded WebUI appears at once without a black/white ramp.
+        welcomeView.postOnAnimation(() -> welcomeView.postOnAnimation(() -> {
+            if (waitingForMainPageReveal) return;
+            welcomeView.setVisibility(View.GONE);
+            welcomeView.setAlpha(1f);
+        }));
     }
 
     private void configureContinueButton(String lastUrl) {
@@ -1759,42 +2913,487 @@ public class MainActivity extends Activity {
         return value;
     }
 
-    private void showTaskStateNotification(String threadId, String threadName, String status) {
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+    private void handleTaskStateFromWeb(
+            String threadId,
+            String threadName,
+            String status,
+            String statusUrl
+    ) {
+        handleTaskStateFromWeb(threadId, threadName, status, statusUrl, "", 0L);
+    }
+
+    private void handleTaskStateFromWeb(
+            String threadId,
+            String threadName,
+            String status,
+            String statusUrl,
+            String summary,
+            long durationMs
+    ) {
+        String state = normalizeTaskState(status);
+        String normalizedName = normalizedTaskName(threadName);
+        String taskKey = notificationTaskKey(threadId, normalizedName);
+        String endpoint = backgroundSafeStatusEndpoint(statusUrl, threadId);
+        String previousEndpointKey = taskKeyForEndpoint(endpoint);
+        if (!activityInForeground) {
+            boolean alreadyTracked = monitoredTaskStatusUrls.containsKey(taskKey)
+                    || !previousEndpointKey.isEmpty();
+            // Once the native Service owns a background task, Gecko responses can
+            // arrive late or out of order after the Service has already completed
+            // it. Ignore those callbacks so they cannot re-add the task or replace
+            // the completion alert with a stale "running" notification. The only
+            // background callback still accepted is a first-time running event that
+            // raced with onPause by a few milliseconds.
+            if (alreadyTracked || !"running".equals(state)) return;
+        }
+        String previousEndpointName = previousEndpointKey.isEmpty()
+                ? ""
+                : monitoredTaskNames.get(previousEndpointKey);
+        if (!previousEndpointKey.isEmpty() && !previousEndpointKey.equals(taskKey)) {
+            monitoredTaskStatusUrls.remove(previousEndpointKey);
+            monitoredTaskNames.remove(previousEndpointKey);
+            Long startedAt = monitoredTaskStartedAt.remove(previousEndpointKey);
+            if (startedAt != null) monitoredTaskStartedAt.put(taskKey, startedAt);
+            if (runningNotificationTasks.remove(previousEndpointKey)) {
+                runningNotificationTasks.add(taskKey);
+            }
+        }
+        String existingName = monitoredTaskNames.containsKey(taskKey)
+                ? monitoredTaskNames.get(taskKey)
+                : previousEndpointName;
+        String notificationName = preferredTaskName(existingName, normalizedName);
+        if (monitoredTaskNames.containsKey(taskKey)
+                && !notificationName.equals(monitoredTaskNames.get(taskKey))) {
+            monitoredTaskNames.put(taskKey, notificationName);
+        }
+
+        if ("error".equals(state)) {
+            scheduleTaskErrorConfirmation(
+                    threadId,
+                    taskKey,
+                    notificationName,
+                    endpoint,
+                    summary,
+                    durationMs
+            );
             return;
         }
-        String state = status == null ? "" : status.trim();
-        boolean running = "running".equals(state) || "waiting".equals(state);
+        cancelPendingTaskError(taskKey);
+        if (!previousEndpointKey.isEmpty()) cancelPendingTaskError(previousEndpointKey);
+
+        applyResolvedTaskState(
+                threadId,
+                taskKey,
+                notificationName,
+                state,
+                endpoint,
+                summary,
+                durationMs
+        );
+    }
+
+    private void restoreMonitoredTasks() {
+        monitoredTaskStatusUrls.clear();
+        monitoredTaskNames.clear();
+        monitoredTaskStartedAt.clear();
+        runningNotificationTasks.clear();
+        String raw = preferences.getString(KEY_MONITORED_TASKS, "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject item = array.optJSONObject(index);
+                if (item == null) continue;
+                String key = item.optString("key", "").trim();
+                String endpoint = item.optString("endpoint", "").trim();
+                if (key.isEmpty() || endpoint.isEmpty()) continue;
+                monitoredTaskStatusUrls.put(key, endpoint);
+                monitoredTaskNames.put(
+                        key,
+                        normalizedTaskName(item.optString("name", ""))
+                );
+                monitoredTaskStartedAt.put(
+                        key,
+                        item.optLong("startedAt", System.currentTimeMillis())
+                );
+                runningNotificationTasks.add(key);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void persistMonitoredTasks() {
+        JSONArray array = new JSONArray();
+        for (Map.Entry<String, String> entry : monitoredTaskStatusUrls.entrySet()) {
+            String endpoint = entry.getValue();
+            if (endpoint == null || endpoint.trim().isEmpty()) continue;
+            try {
+                JSONObject item = new JSONObject();
+                item.put("key", entry.getKey());
+                item.put("threadId", entry.getKey());
+                item.put("name", normalizedTaskName(monitoredTaskNames.get(entry.getKey())));
+                item.put("endpoint", endpoint.trim());
+                item.put(
+                        "startedAt",
+                        monitoredTaskStartedAt.containsKey(entry.getKey())
+                                ? monitoredTaskStartedAt.get(entry.getKey())
+                                : System.currentTimeMillis()
+                );
+                array.put(item);
+            } catch (Exception ignored) {
+            }
+        }
+        preferences.edit().putString(KEY_MONITORED_TASKS, array.toString()).commit();
+        syncNotificationMonitorService();
+    }
+
+    private void syncNotificationMonitorService() {
+        if (preferences == null) return;
+        Intent intent = new Intent(this, AIMiniNotificationService.class)
+                .setAction(AIMiniNotificationService.ACTION_SYNC)
+                .putExtra(
+                        AIMiniNotificationService.EXTRA_RUNNING_COUNT,
+                        monitoredTaskStatusUrls.size()
+                );
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception ignored) {
+            showPersistentNotificationFallback();
+        }
+    }
+
+    private void applyResolvedTaskState(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String state,
+            String endpoint
+    ) {
+        applyResolvedTaskState(
+                threadId,
+                taskKey,
+                notificationName,
+                state,
+                endpoint,
+                "",
+                0L
+        );
+    }
+
+    private void applyResolvedTaskState(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String state,
+            String endpoint,
+            String summary,
+            long durationMs
+    ) {
+        boolean running = "running".equals(state);
+        boolean terminal = "complete".equals(state)
+                || "completed".equals(state)
+                || "done".equals(state)
+                || "success".equals(state)
+                || "error".equals(state)
+                || "failed".equals(state)
+                || "failure".equals(state)
+                || "aborted".equals(state)
+                || "interrupted".equals(state)
+                || "cancelled".equals(state)
+                || "canceled".equals(state);
+        boolean shouldUpdateNotification = true;
+        long terminalStartedAt = 0L;
+        if (running) {
+            boolean alreadyMonitored = monitoredTaskStatusUrls.containsKey(taskKey);
+            if (!monitoredTaskStartedAt.containsKey(taskKey)) {
+                monitoredTaskStartedAt.put(taskKey, System.currentTimeMillis());
+            }
+            if (!endpoint.isEmpty()) {
+                monitoredTaskStatusUrls.put(taskKey, endpoint);
+                if (!alreadyMonitored
+                        || !monitoredTaskNames.containsKey(taskKey)
+                        || (isPlaceholderTaskName(monitoredTaskNames.get(taskKey))
+                        && !isPlaceholderTaskName(notificationName))) {
+                    monitoredTaskNames.put(taskKey, notificationName);
+                }
+            }
+            shouldUpdateNotification = !alreadyMonitored
+                    || (NOTIFICATION_MODE_PERSISTENT.equals(notificationMode())
+                    && !runningNotificationTasks.contains(taskKey));
+        } else if (terminal) {
+            Long startedAt = monitoredTaskStartedAt.get(taskKey);
+            terminalStartedAt = startedAt == null ? 0L : startedAt;
+            monitoredTaskStatusUrls.remove(taskKey);
+            monitoredTaskNames.remove(taskKey);
+            monitoredTaskStartedAt.remove(taskKey);
+        }
+        persistMonitoredTasks();
+        if (shouldUpdateNotification) {
+            showTaskStateNotification(
+                    threadId,
+                    notificationName,
+                    state,
+                    summary,
+                    durationMs,
+                    terminalStartedAt
+            );
+        }
+        if (!activityInForeground && !monitoredTaskStatusUrls.isEmpty()) {
+            startBackgroundTaskPolling();
+        } else if (monitoredTaskStatusUrls.isEmpty()) {
+            handler.removeCallbacks(backgroundTaskPoller);
+        }
+    }
+
+    private void scheduleTaskErrorConfirmation(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String endpoint,
+            String summary,
+            long durationMs
+    ) {
+        long token = ++taskStateSequence;
+        pendingTaskErrorTokens.put(taskKey, token);
+        handler.postDelayed(
+                () -> confirmTaskError(
+                        threadId,
+                        taskKey,
+                        notificationName,
+                        endpoint,
+                        summary,
+                        durationMs,
+                        token
+                ),
+                TASK_ERROR_CONFIRM_DELAY_MS
+        );
+    }
+
+    private void confirmTaskError(
+            String threadId,
+            String taskKey,
+            String notificationName,
+            String endpoint,
+            String summary,
+            long durationMs,
+            long token
+    ) {
+        if (!isPendingTaskError(taskKey, token)) return;
+        if (endpoint == null || endpoint.trim().isEmpty()) {
+            pendingTaskErrorTokens.remove(taskKey);
+            applyResolvedTaskState(
+                    threadId,
+                    taskKey,
+                    notificationName,
+                    "error",
+                    "",
+                    summary,
+                    durationMs
+            );
+            return;
+        }
+
+        notificationIoExecutor.execute(() -> {
+            String latestState = "";
+            String latestSummary = "";
+            long latestDurationMs = 0L;
+            try {
+                JSONObject latestStatus = new JSONObject(httpGet(endpoint, 5500));
+                latestState = taskStateFromJson(latestStatus);
+                latestSummary = TaskNotificationStyle.summaryFromStatus(
+                        latestStatus,
+                        "error".equals(latestState)
+                );
+                Long startedAt = monitoredTaskStartedAt.get(taskKey);
+                latestDurationMs = TaskNotificationStyle.durationMsFromStatus(
+                        latestStatus,
+                        startedAt == null ? 0L : startedAt
+                );
+            } catch (Exception ignored) {
+                // If confirmation cannot be fetched, retain the original terminal
+                // error after the debounce delay rather than losing a real failure.
+            }
+            String confirmedState = latestState;
+            String confirmedSummary = latestSummary.isEmpty() ? summary : latestSummary;
+            long confirmedDurationMs = latestDurationMs > 0L ? latestDurationMs : durationMs;
+            handler.post(() -> {
+                if (!isPendingTaskError(taskKey, token)) return;
+                pendingTaskErrorTokens.remove(taskKey);
+                if (!confirmedState.isEmpty() && !"error".equals(confirmedState)) {
+                    handleTaskStateFromWeb(
+                            threadId,
+                            notificationName,
+                            confirmedState,
+                            endpoint,
+                            confirmedSummary,
+                            confirmedDurationMs
+                    );
+                    return;
+                }
+                applyResolvedTaskState(
+                        threadId,
+                        taskKey,
+                        notificationName,
+                        "error",
+                        endpoint,
+                        confirmedSummary,
+                        confirmedDurationMs
+                );
+            });
+        });
+    }
+
+    private boolean isPendingTaskError(String taskKey, long token) {
+        Long current = pendingTaskErrorTokens.get(taskKey);
+        return current != null && current == token;
+    }
+
+    private void cancelPendingTaskError(String taskKey) {
+        if (taskKey == null || taskKey.trim().isEmpty()) return;
+        pendingTaskErrorTokens.remove(taskKey);
+    }
+
+    private String taskKeyForEndpoint(String endpoint) {
+        if (endpoint == null || endpoint.trim().isEmpty()) return "";
+        String expected = endpoint.trim();
+        for (Map.Entry<String, String> entry : monitoredTaskStatusUrls.entrySet()) {
+            if (expected.equals(entry.getValue())) return entry.getKey();
+        }
+        return "";
+    }
+
+    private void startBackgroundTaskPolling() {
+        handler.removeCallbacks(backgroundTaskPoller);
+        // The Service owns background polling. Activity/Gecko timers can be frozen
+        // by Android as soon as the app leaves the foreground.
+        syncNotificationMonitorService();
+    }
+
+    private void pollTaskStatusesNatively() {
+        if (backgroundStatusPollRunning || monitoredTaskStatusUrls.isEmpty()) return;
+        Map<String, String> endpoints = new HashMap<>(monitoredTaskStatusUrls);
+        Map<String, String> names = new HashMap<>(monitoredTaskNames);
+        Map<String, Long> startedAtByTask = new HashMap<>(monitoredTaskStartedAt);
+        backgroundStatusPollRunning = true;
+        notificationIoExecutor.execute(() -> {
+            try {
+                for (Map.Entry<String, String> entry : endpoints.entrySet()) {
+                    if (activityInForeground) break;
+                    String taskKey = entry.getKey();
+                    String endpoint = entry.getValue();
+                    if (endpoint == null || endpoint.trim().isEmpty()) continue;
+                    try {
+                        JSONObject status = new JSONObject(httpGet(endpoint, 5500));
+                        String state = taskStateFromJson(status);
+                        if (state.trim().isEmpty()) continue;
+                        String threadId = status.optString("threadId", taskKey);
+                        String threadName = names.get(taskKey);
+                        boolean error = "error".equals(state);
+                        String summary = TaskNotificationStyle.summaryFromStatus(status, error);
+                        Long startedAt = startedAtByTask.get(taskKey);
+                        long durationMs = TaskNotificationStyle.durationMsFromStatus(
+                                status,
+                                startedAt == null ? 0L : startedAt
+                        );
+                        handler.post(() -> handleTaskStateFromWeb(
+                                threadId,
+                                threadName,
+                                state,
+                                endpoint,
+                                summary,
+                                durationMs
+                        ));
+                    } catch (Exception ignored) {
+                        // The WebUI bridge remains as a second polling path. A temporary
+                        // local-network failure must not remove a monitored task.
+                    }
+                }
+            } finally {
+                backgroundStatusPollRunning = false;
+            }
+        });
+    }
+
+    private void showTaskStateNotification(
+            String threadId,
+            String threadName,
+            String status,
+            String summary,
+            long durationMs,
+            long startedAt
+    ) {
+        String state = normalizeTaskState(status);
+        boolean running = "running".equals(state);
         boolean connected = "connected".equals(state);
-        boolean complete = "complete".equals(state);
-        boolean error = "error".equals(state);
+        boolean complete = "complete".equals(state)
+                || "completed".equals(state)
+                || "done".equals(state)
+                || "success".equals(state);
+        boolean error = "error".equals(state)
+                || "failed".equals(state)
+                || "failure".equals(state)
+                || "aborted".equals(state)
+                || "interrupted".equals(state)
+                || "cancelled".equals(state)
+                || "canceled".equals(state);
         boolean persistent = NOTIFICATION_MODE_PERSISTENT.equals(notificationMode());
         if ((running || connected) && !persistent) return;
         if (!running && !connected && !complete && !error) return;
 
-        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (manager == null) return;
-        ensureNotificationChannel(manager);
-
-        String name = threadName == null ? "" : threadName.trim();
-        if (name.isEmpty() || "选择线程".equals(name)) name = getString(R.string.task_complete_fallback);
+        String name = normalizedTaskName(threadName);
         String taskKey = notificationTaskKey(threadId, name);
         if (persistent) {
-            if (connected && !runningNotificationTasks.isEmpty()) return;
             if (running) {
                 runningNotificationTasks.add(taskKey);
-                manager.cancel(PERSISTENT_NOTIFICATION_ID);
             } else if (complete || error) {
                 runningNotificationTasks.remove(taskKey);
             }
+            updatePersistentNotificationService();
+            if (connected) return;
         }
+
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+
+        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        ensureNotificationChannels(manager);
+
+        int notificationId = connected ? PERSISTENT_NOTIFICATION_ID : taskNotificationId(threadId, name);
+        if (complete || error) {
+            if (!TaskNotificationStyle.claimTerminalNotification(
+                    this,
+                    threadId,
+                    name,
+                    error,
+                    startedAt
+            )) {
+                return;
+            }
+            Notification terminalNotification = TaskNotificationStyle.buildTerminalNotification(
+                    this,
+                    notificationId,
+                    NOTIFICATION_ALERT_CHANNEL_ID,
+                    threadId,
+                    name,
+                    error,
+                    summary,
+                    durationMs
+            );
+            manager.cancel(notificationId);
+            manager.notify(notificationId, terminalNotification);
+            return;
+        }
+
         String title = connected
                 ? getString(R.string.task_connected_title)
-                : running
-                ? getString(R.string.task_running_title)
-                : error ? getString(R.string.task_error_title) : getString(R.string.task_complete_title);
-        int notificationId = connected ? PERSISTENT_NOTIFICATION_ID : taskNotificationId(threadId, name);
+                : getString(R.string.task_running_title);
         boolean ongoing = persistent && (connected || running);
 
         Intent intent = new Intent(this, MainActivity.class);
@@ -1807,31 +3406,207 @@ public class MainActivity extends Activity {
         );
 
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+                ? new Notification.Builder(
+                        this,
+                        NOTIFICATION_STATUS_CHANNEL_ID
+                )
                 : new Notification.Builder(this);
-        builder.setSmallIcon(R.drawable.ic_launcher)
+        builder.setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(name)
                 .setStyle(new Notification.BigTextStyle().bigText(name))
                 .setContentIntent(pendingIntent)
                 .setOngoing(ongoing)
                 .setAutoCancel(!ongoing)
-                .setShowWhen(true);
+                .setShowWhen(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setOnlyAlertOnce(true)
+                .setVisibility(Notification.VISIBILITY_PUBLIC);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setPriority(Notification.PRIORITY_LOW);
+        }
 
+        if (persistent && running) {
+            // The previous state for this conversation may have used the alert channel.
+            // Recreate it on the low-importance status channel for the new run.
+            manager.cancel(notificationId);
+        }
         manager.notify(notificationId, builder.build());
-        if (persistent && (complete || error) && runningNotificationTasks.isEmpty()) {
-            handler.postDelayed(this::showPersistentConnectedNotificationIfNeeded, 900);
+    }
+
+    private String taskStateFromJson(JSONObject object) {
+        if (object == null) return "";
+        String raw = object.optString("status", "");
+        if (raw.trim().isEmpty()) raw = object.optString("state", "");
+        if (raw.trim().isEmpty()) raw = object.optString("phase", "");
+        if (raw.trim().isEmpty()
+                && (object.optBoolean("running", false)
+                || object.optBoolean("busy", false)
+                || object.optBoolean("active", false))) {
+            raw = "running";
+        }
+        if (raw.trim().isEmpty()
+                && (object.optBoolean("done", false)
+                || object.optBoolean("completed", false)
+                || object.optBoolean("finished", false))) {
+            raw = "complete";
+        }
+        Object errorValue = object.opt("error");
+        boolean hasError = hasMeaningfulTaskError(errorValue);
+        if (raw.trim().isEmpty()
+                && (object.optBoolean("failed", false)
+                || hasError
+                || (object.has("ok") && !object.optBoolean("ok", true)))) {
+            raw = "error";
+        }
+        return normalizeTaskState(raw);
+    }
+
+    private boolean hasMeaningfulTaskError(Object value) {
+        if (value == null || value == JSONObject.NULL) return false;
+        if (value instanceof Boolean) return (Boolean) value;
+        if (value instanceof Number) return ((Number) value).doubleValue() != 0d;
+        if (value instanceof JSONObject) return ((JSONObject) value).length() > 0;
+        if (value instanceof JSONArray) return ((JSONArray) value).length() > 0;
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) return false;
+        String normalized = text.toLowerCase(Locale.ROOT);
+        return !"false".equals(normalized)
+                && !"null".equals(normalized)
+                && !"none".equals(normalized)
+                && !"undefined".equals(normalized)
+                && !"{}".equals(normalized)
+                && !"[]".equals(normalized);
+    }
+
+    private String normalizeTaskState(String rawState) {
+        String state = rawState == null
+                ? ""
+                : rawState.trim().toLowerCase(Locale.ROOT);
+        switch (state) {
+            case "running":
+            case "waiting":
+            case "queued":
+            case "pending":
+            case "busy":
+            case "processing":
+            case "working":
+            case "active":
+            case "started":
+            case "starting":
+            case "streaming":
+                return "running";
+            case "completed":
+            case "complete":
+            case "done":
+            case "success":
+            case "succeeded":
+            case "finished":
+            case "idle":
+            case "ready":
+                return "complete";
+            case "error":
+            case "failed":
+            case "failure":
+            case "aborted":
+            case "interrupted":
+            case "cancelled":
+            case "canceled":
+            case "timeout":
+            case "timed_out":
+                return "error";
+            default:
+                return state;
         }
     }
 
+    private void requestImmediateTaskStatusRefresh() {
+        requestImmediateTaskStatusRefresh(webView);
+    }
+
+    private void requestImmediateTaskStatusRefresh(AIMiniBrowserView target) {
+        if (target == null) return;
+        target.evaluateJavascript(
+                "(function(){try{if(window.__AIMiniPollStatuses){window.__AIMiniPollStatuses();}}catch(e){}})();",
+                null
+        );
+    }
+
     private void showPersistentConnectedNotificationIfNeeded() {
-        if (!NOTIFICATION_MODE_PERSISTENT.equals(notificationMode())) return;
-        if (webView == null || webView.getUrl() == null || webView.getUrl().trim().isEmpty()) return;
-        showTaskStateNotification("", getString(R.string.task_idle_text), "connected");
+        updatePersistentNotificationService();
+    }
+
+    private void updatePersistentNotificationService() {
+        Intent intent = new Intent(this, AIMiniNotificationService.class)
+                .setAction(AIMiniNotificationService.ACTION_SYNC)
+                .putExtra(
+                        AIMiniNotificationService.EXTRA_RUNNING_COUNT,
+                        runningNotificationTasks.size()
+                );
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception ignored) {
+            // A direct notification update remains as a fallback on restricted vendor ROMs.
+            showPersistentNotificationFallback();
+        }
+    }
+
+    private void showPersistentNotificationFallback() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        ensureNotificationChannels(manager);
+        Intent launchIntent = new Intent(this, MainActivity.class);
+        launchIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                PERSISTENT_NOTIFICATION_ID,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+        boolean realtime = NOTIFICATION_MODE_PERSISTENT.equals(notificationMode());
+        int count = realtime ? monitoredTaskStatusUrls.size() : 0;
+        String title = realtime
+                ? getString(R.string.task_connected_title)
+                : getString(R.string.background_service_title);
+        String content = realtime
+                ? count > 0
+                    ? getResources().getQuantityString(
+                            R.plurals.task_running_summary,
+                            count,
+                            count
+                    )
+                    : getString(R.string.task_idle_text)
+                : getString(R.string.background_service_text);
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, NOTIFICATION_STATUS_CHANNEL_ID)
+                : new Notification.Builder(this);
+        builder.setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setStyle(new Notification.BigTextStyle().bigText(content))
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .setVisibility(Notification.VISIBILITY_PUBLIC);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setPriority(Notification.PRIORITY_LOW);
+        }
+        manager.notify(PERSISTENT_NOTIFICATION_ID, builder.build());
     }
 
     private int taskNotificationId(String threadId, String threadName) {
-        return 2000 + Math.abs(notificationTaskKey(threadId, threadName).hashCode() % 7000);
+        return 10000 + Math.abs(notificationTaskKey(threadId, threadName).hashCode() % 20000);
     }
 
     private String notificationTaskKey(String threadId, String threadName) {
@@ -1839,25 +3614,59 @@ public class MainActivity extends Activity {
         return key == null || key.trim().isEmpty() ? "current" : key.trim();
     }
 
-    private void cancelPersistentTaskNotification() {
-        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (manager == null) return;
-        manager.cancel(PERSISTENT_NOTIFICATION_ID);
-        for (String key : new HashSet<>(runningNotificationTasks)) {
-            manager.cancel(taskNotificationId(key, key));
+    private String normalizedTaskName(String threadName) {
+        String name = threadName == null ? "" : threadName.trim();
+        if (name.isEmpty() || "选择线程".equals(name)) {
+            return getString(R.string.task_complete_fallback);
         }
-        runningNotificationTasks.clear();
+        return name;
     }
 
-    private void ensureNotificationChannel(NotificationManager manager) {
+    private boolean isPlaceholderTaskName(String threadName) {
+        String name = threadName == null ? "" : threadName.trim();
+        return name.isEmpty()
+                || "选择线程".equals(name)
+                || getString(R.string.task_complete_fallback).equals(name);
+    }
+
+    private String preferredTaskName(String existing, String candidate) {
+        String current = existing == null ? "" : existing.trim();
+        String next = candidate == null ? "" : candidate.trim();
+        if (isPlaceholderTaskName(current) && !isPlaceholderTaskName(next)) return next;
+        if (!current.isEmpty()) return current;
+        return normalizedTaskName(next);
+    }
+
+    private void ensureNotificationChannels(NotificationManager manager) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationChannel channel = new NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
+        NotificationChannel statusChannel = new NotificationChannel(
+                NOTIFICATION_STATUS_CHANNEL_ID,
                 getString(R.string.notification_channel_tasks),
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription(getString(R.string.task_complete_title));
-        manager.createNotificationChannel(channel);
+        statusChannel.setDescription(getString(R.string.notification_channel_tasks));
+        statusChannel.setShowBadge(true);
+
+        NotificationChannel alertChannel = new NotificationChannel(
+                NOTIFICATION_ALERT_CHANNEL_ID,
+                getString(R.string.notification_channel_alerts),
+                NotificationManager.IMPORTANCE_HIGH
+        );
+        alertChannel.setDescription(getString(R.string.notification_channel_alerts_description));
+        alertChannel.enableVibration(true);
+        alertChannel.setVibrationPattern(new long[]{0, 180, 90, 180});
+        alertChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        alertChannel.setShowBadge(true);
+
+        manager.createNotificationChannel(statusChannel);
+        manager.createNotificationChannel(alertChannel);
+        manager.deleteNotificationChannel("ai_mini_task_status_v3");
+        manager.deleteNotificationChannel("ai_mini_task_alerts_v3");
+        manager.deleteNotificationChannel("ai_mini_task_status_v2");
+        manager.deleteNotificationChannel("ai_mini_task_alerts_v2");
+        manager.deleteNotificationChannel("ai_mini_task_status_v1");
+        manager.deleteNotificationChannel("ai_mini_task_alerts_v1");
+        manager.deleteNotificationChannel(LEGACY_NOTIFICATION_CHANNEL_ID);
     }
 
     private void loadUrl(String rawUrl) {
@@ -1875,7 +3684,8 @@ public class MainActivity extends Activity {
         availableLocalApiBase = null;
         pendingConnectionUrl = url;
         preferences.edit().putString(KEY_LAST_URL, url).apply();
-        showApp();
+        boolean revealingFromWelcome = prepareMainPageReveal();
+        if (!revealingFromWelcome) showApp();
         urlInput.setText(url);
         urlInput.clearFocus();
         hideSoftKeyboard(urlInput);
@@ -1884,6 +3694,127 @@ public class MainActivity extends Activity {
         webView.loadUrl(url);
         showPersistentConnectedNotificationIfNeeded();
         tryUpgradeToLocalRoute(url);
+    }
+
+    private String reloadFallbackUrl(AIMiniBrowserView target) {
+        if (target == null) return "";
+        String current = target.getUrl();
+        if (isUsableBrowserUrl(current)) return current;
+        if (target != webView || preferences == null) return "";
+        String saved = preferences.getString(KEY_LAST_URL, "");
+        return saved == null ? "" : saved.trim();
+    }
+
+    private boolean isUsableBrowserUrl(String url) {
+        if (url == null) return false;
+        String value = url.trim();
+        return !value.isEmpty()
+                && !"about:blank".equalsIgnoreCase(value)
+                && !"about:srcdoc".equalsIgnoreCase(value);
+    }
+
+    private void ensureVisibleBrowserContent(AIMiniBrowserView target) {
+        if (target == null || target != webView) return;
+        if (welcomeView != null && welcomeView.getVisibility() == View.VISIBLE) return;
+        if (isUsableBrowserUrl(target.getUrl())) return;
+        String fallback = reloadFallbackUrl(target);
+        if (fallback.isEmpty()) return;
+        target.loadUrl(fallback);
+    }
+
+    private void scheduleLongBackgroundBrowserRecovery(
+            AIMiniBrowserView target,
+            long backgroundDurationMs
+    ) {
+        long generation = ++browserHealthCheckGeneration;
+        if (target == null
+                || backgroundDurationMs < LONG_BACKGROUND_HEALTH_CHECK_MS) {
+            return;
+        }
+        handler.postDelayed(() -> {
+            if (!browserRecoveryStillValid(target, generation)) return;
+            ensureVisibleBrowserContent(target);
+            probeResumedBrowser(target, generation, 0);
+        }, RESUME_BRIDGE_RECOVERY_DELAY_MS);
+    }
+
+    private boolean browserRecoveryStillValid(
+            AIMiniBrowserView target,
+            long generation
+    ) {
+        return generation == browserHealthCheckGeneration
+                && activityInForeground
+                && !isFinishing()
+                && !isDestroyed()
+                && target != null
+                && target == activeWebView()
+                && target.isAttachedToWindow()
+                && target.getWindowToken() != null
+                && target.getWindowVisibility() == View.VISIBLE;
+    }
+
+    private void probeResumedBrowser(
+            AIMiniBrowserView target,
+            long generation,
+            int attempt
+    ) {
+        if (!browserRecoveryStillValid(target, generation)) return;
+        if (browserEngine == null || !browserEngine.isBridgeInstalled()) {
+            retryOrReloadResumedBrowser(target, generation, attempt);
+            return;
+        }
+        target.evaluateJavascript(
+                "(function(){return 'gpt-mini-alive';})();",
+                RESUME_BRIDGE_PROBE_TIMEOUT_MS,
+                result -> {
+                    if (!browserRecoveryStillValid(target, generation)) return;
+                    if ("gpt-mini-alive".equals(result)) {
+                        Log.d(NAVIGATION_LOG_TAG, "resume-recovery bridge healthy");
+                        return;
+                    }
+                    retryOrReloadResumedBrowser(target, generation, attempt);
+                }
+        );
+    }
+
+    private void retryOrReloadResumedBrowser(
+            AIMiniBrowserView target,
+            long generation,
+            int attempt
+    ) {
+        int nextAttempt = attempt + 1;
+        if (nextAttempt < RESUME_BRIDGE_PROBE_ATTEMPTS) {
+            handler.postDelayed(
+                    () -> probeResumedBrowser(target, generation, nextAttempt),
+                    RESUME_BRIDGE_PROBE_RETRY_MS
+            );
+            return;
+        }
+        beginResumedBrowserReload(target, generation);
+    }
+
+    private void beginResumedBrowserReload(
+            AIMiniBrowserView target,
+            long generation
+    ) {
+        if (!browserRecoveryStillValid(target, generation)) return;
+        Log.w(NAVIGATION_LOG_TAG, "resume-recovery bridge unavailable; trying reload");
+        target.cacheVisibleFrameForRecovery();
+        long pageStartBeforeReload = target.pageStartGeneration();
+        target.reload(reloadFallbackUrl(target));
+        handler.postDelayed(() -> {
+            if (!browserRecoveryStillValid(target, generation)) return;
+            if (target.pageStartGeneration() != pageStartBeforeReload) {
+                Log.d(NAVIGATION_LOG_TAG, "resume-recovery reload started");
+                return;
+            }
+            // Rebuilding the GeckoSession is the final fallback only. The Activity
+            // must still own a visible, attached browser after several bridge
+            // probes and a reload that failed to start.
+            Log.e(NAVIGATION_LOG_TAG, "resume-recovery reload stalled; rebuilding session");
+            target.cacheVisibleFrameForRecovery();
+            target.recoverContent(reloadFallbackUrl(target));
+        }, RESUME_RELOAD_START_TIMEOUT_MS);
     }
 
     private String normalizeUrl(String rawUrl) {
@@ -1897,6 +3828,14 @@ public class MainActivity extends Activity {
 
     private void tryUpgradeToLocalRoute(String pageUrl) {
         Uri uri = Uri.parse(pageUrl);
+        // A multi-device page resolves the selected profile's base URL and token
+        // from its own persisted device profile. Reusing the primary device's
+        // native local route here sends the secondary token to the wrong computer
+        // and produces a misleading "访问令牌不正确" error.
+        if (hasDeviceProfileSelection(uri)) {
+            availableLocalApiBase = null;
+            return;
+        }
         String token = uri.getQueryParameter("token");
         if (token == null || token.isEmpty() || isPrivateHost(uri.getHost())) return;
         if (localRouteProbeRunning) return;
@@ -1931,7 +3870,9 @@ public class MainActivity extends Activity {
     private void applyLocalRouteToPage(String localBase, int attempt) {
         if (webView == null || localBase == null || localBase.trim().isEmpty()) return;
         String current = webView.getUrl();
-        if (current == null || current.trim().isEmpty() || isPrivateHost(Uri.parse(current).getHost())) return;
+        if (current == null || current.trim().isEmpty()) return;
+        Uri currentUri = Uri.parse(current);
+        if (isPrivateHost(currentUri.getHost()) || hasDeviceProfileSelection(currentUri)) return;
         String baseLiteral = JSONObject.quote(normalizeBase(localBase));
         String script = "(function(){try{"
                 + "var base=" + baseLiteral + ";"
@@ -1970,9 +3911,20 @@ public class MainActivity extends Activity {
         String normalized = normalizeUrl(current);
         if (normalized.isEmpty()) return "";
         Uri uri = Uri.parse(normalized);
+        if (hasDeviceProfileSelection(uri)) return "";
         String token = uri.getQueryParameter("token");
         if (token == null || token.isEmpty() || isPrivateHost(uri.getHost())) return "";
         return normalized;
+    }
+
+    private boolean hasDeviceProfileSelection(Uri uri) {
+        if (uri == null || !uri.isHierarchical()) return false;
+        try {
+            String deviceId = uri.getQueryParameter("device");
+            return deviceId != null && !deviceId.trim().isEmpty();
+        } catch (UnsupportedOperationException ignored) {
+            return false;
+        }
     }
 
     private void registerNetworkRouteWatcher() {
@@ -2024,9 +3976,48 @@ public class MainActivity extends Activity {
         return base.toString();
     }
 
+    private String backgroundSafeStatusEndpoint(String rawEndpoint, String threadId) {
+        String endpoint = rawEndpoint == null ? "" : rawEndpoint.trim();
+        String savedUrl = preferences == null
+                ? ""
+                : preferences.getString(KEY_LAST_URL, "");
+        if (savedUrl == null || savedUrl.trim().isEmpty()) return endpoint;
+        try {
+            Uri saved = Uri.parse(normalizeUrl(savedUrl));
+            String token = saved.getQueryParameter("token");
+            if (!isHttpScheme(saved.getScheme())
+                    || saved.getHost() == null
+                    || token == null
+                    || token.trim().isEmpty()) {
+                return endpoint;
+            }
+
+            Uri source = endpoint.isEmpty() ? null : Uri.parse(endpoint);
+            String sourcePath = source == null ? "" : String.valueOf(source.getPath());
+            String apiFamily = sourcePath.contains("/claude/") ? "claude" : "codex";
+            String sourceThread = source == null ? "" : source.getQueryParameter("thread");
+            String resolvedThread = sourceThread == null || sourceThread.trim().isEmpty()
+                    ? threadId == null ? "" : threadId.trim()
+                    : sourceThread.trim();
+
+            Uri.Builder builder = Uri.parse(
+                    routeBaseForPage(saved) + "/" + apiFamily + "/status"
+            ).buildUpon();
+            builder.appendQueryParameter("token", token);
+            if (!resolvedThread.isEmpty()
+                    && !"current".equals(resolvedThread)
+                    && !resolvedThread.startsWith("pending-")) {
+                builder.appendQueryParameter("thread", resolvedThread);
+            }
+            return builder.build().toString();
+        } catch (Exception ignored) {
+            return endpoint;
+        }
+    }
+
     private boolean isPrivateHost(String host) {
         if (host == null) return false;
-        String value = host.toLowerCase();
+        String value = host.toLowerCase(Locale.ROOT);
         return "localhost".equals(value)
                 || value.startsWith("127.")
                 || value.startsWith("10.")
@@ -2074,10 +4065,41 @@ public class MainActivity extends Activity {
     private void injectMobileFixes() {
         String script = "(function(){"
                 + "try{"
-                + "if(window.__CodexMiniAndroidInjected){return;}"
-                + "window.__CodexMiniAndroidInjected=true;"
-                + "document.documentElement.classList.add('android-keyboard-mode');"
+                + "var detectLegacyComposer=function(){"
+                + "var form=document.querySelector("
+                + "'footer.composer-shell form#composer.composer');"
+                + "var legacy=!!(form&&form.querySelector('textarea#text')"
+                + "&&!form.classList.contains('codex-liquid-glass-original')"
+                + "&&!form.classList.contains('liquid-glass-react-surface'));"
+                + "document.documentElement.classList.toggle("
+                + "'ai-mini-legacy-composer',legacy);"
+                + "return legacy;};"
+                + "var legacyComposer=detectLegacyComposer();"
+                + "if(window.__AIMiniFixVersion==='1.25.9'){return legacyComposer;}"
+                + "window.__AIMiniFixVersion='1.25.9';"
+                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
+                + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
+                + "try{if(!detectLegacyComposer()){return false;}"
+                + "var density=Math.max(1,Number(window.devicePixelRatio)||1);"
+                + "var nativeCssPx=Math.max(0,Number(devicePixels)||0)/density;"
+                + "var trim=parseFloat(getComputedStyle(document.documentElement)"
+                + ".getPropertyValue('--keyboard-shift-trim'))||0;"
+                + "var cssPx=Math.max(0,nativeCssPx-Math.max(0,trim));"
+                + "var cssValue=cssPx.toFixed(2)+'px';"
+                + "document.documentElement.style.setProperty("
+                + "'--ai-mini-native-keyboard-shift',cssValue,'important');"
+                + "document.documentElement.style.setProperty("
+                + "'--keyboard-shift',cssValue,'important');"
+                + "document.documentElement.style.setProperty("
+                + "'--keyboard-inset',cssValue,'important');"
+                + "var isOpen=cssPx>0;"
+                + "var changed=window.__AIMiniLegacyKeyboardWasOpen!==isOpen;"
+                + "window.__AIMiniLegacyKeyboardWasOpen=isOpen;"
+                + "if(document.body){document.body.classList.toggle("
+                + "'keyboard-open',isOpen);}"
+                + "if(changed){window.dispatchEvent(new Event('resize'));}"
+                + "return true;}catch(ignore){return false;}};"
                 + "var meta=document.querySelector('meta[name=\"viewport\"]');"
                 + "if(meta){"
                 + "var c=meta.getAttribute('content')||'';"
@@ -2086,26 +4108,81 @@ public class MainActivity extends Activity {
                 + "meta.setAttribute('content',c);"
                 + "}"
                 + "var style=document.createElement('style');"
-                + "style.textContent=\"@font-face{font-family:'Snell Roundhand';src:url('https://" + FONT_HOST + SNELL_FONT_PATH + "') format('truetype');font-weight:400 900;font-style:normal;font-display:swap;}@font-face{font-family:'Bradley Hand';src:url('https://" + FONT_HOST + BRADLEY_FONT_PATH + "') format('truetype');font-weight:700;font-style:normal;font-display:swap;}@font-face{font-family:'Apple Chancery';src:url('https://" + FONT_HOST + CHANCERY_FONT_PATH + "') format('truetype');font-weight:400;font-style:normal;font-display:swap;} .composer-signature{font-family:'Snell Roundhand','Bradley Hand','Apple Chancery','Segoe Script',cursive!important;}\";"
+                + "style.textContent=" + JSONObject.quote(androidWebViewCss()) + ";"
                 + "document.head.appendChild(style);"
+                + "if(!window.__AIMiniKeyboardHooksVersion&&!window.__AIMiniKeyboardFallbackInstalled){"
+                + "window.__AIMiniKeyboardFallbackInstalled=true;"
                 + "var editable=function(el){return !!(el&&el.closest&&el.closest('textarea,input:not([type=button]):not([type=submit]):not([type=file]),[contenteditable=true]'));};"
-                + "var lastEditableTouchAt=0;"
-                + "var show=function(e){if(editable(e.target)&&window.CodexMiniNative){lastEditableTouchAt=Date.now();setTimeout(function(){CodexMiniNative.showKeyboard();},40);}};"
+                + "var lastEditableTouchAt=0,suppressFocusUntil=0;"
+                + "var intent=function(e){var now=Date.now();if(editable(e.target)){lastEditableTouchAt=now;suppressFocusUntil=0;}else{suppressFocusUntil=now+900;}};"
+                + "var show=function(e){if(editable(e.target)&&window.CodexMiniNative){lastEditableTouchAt=Date.now();suppressFocusUntil=0;setTimeout(function(){CodexMiniNative.showKeyboard();},40);}};"
+                + "document.addEventListener('pointerdown',intent,true);"
+                + "document.addEventListener('touchstart',intent,true);"
                 + "document.addEventListener('touchend',show,true);"
                 + "document.addEventListener('click',show,true);"
-                + "document.addEventListener('focusin',function(e){if(editable(e.target)&&Date.now()-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(function(){CodexMiniNative.showKeyboard();},40);}},true);"
-                + "var trackTaskState=function(data){try{if(!data||!window.CodexMiniNative){return;}var id=String(data.threadId||data.id||'current');var runningKey='__gptMiniRunning_'+id;var status=String(data.status||'');var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').trim():'当前会话';if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');var stateKey='__gptMiniState_'+id;if(sessionStorage.getItem(stateKey)!==status){sessionStorage.setItem(stateKey,status);CodexMiniNative.notifyTaskState(id,title,status);}return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__gptMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__gptMiniState_'+id);CodexMiniNative.notifyTaskState(id,title,status);}catch(e){}};"
-                + "var oldFetch=window.fetch;if(oldFetch&&!window.__GptMiniFetchHooked){window.__GptMiniFetchHooked=true;window.fetch=function(){var args=arguments;return oldFetch.apply(this,args).then(function(res){try{var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){res.clone().json().then(trackTaskState).catch(function(){});}}catch(e){}return res;});};}"
-                + "window.__CodexMiniKeyboardClosedFromNative=function(){try{var el=document.activeElement;if(editable(el)){el.blur();}document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-shift','0px');window.dispatchEvent(new Event('resize'));setTimeout(function(){window.dispatchEvent(new Event('resize'));},120);}catch(e){}};"
-                + "var sendBlob=function(a){try{if(!a||!a.href||a.href.indexOf('blob:')!==0||!window.CodexMiniNative){return false;}fetch(a.href).then(function(r){return r.blob();}).then(function(blob){var reader=new FileReader();reader.onloadend=function(){CodexMiniNative.saveDataUrlDownload(a.download||'download',blob.type||'',String(reader.result||''));};reader.readAsDataURL(blob);}).catch(function(err){CodexMiniNative.toast('Download failed');});return true;}catch(e){return false;}};"
+                + "document.addEventListener('focusin',function(e){if(!editable(e.target)){return;}var now=Date.now();if(now-lastEditableTouchAt>=900&&now<suppressFocusUntil){setTimeout(function(){try{e.target.blur();if(CodexMiniNative.hideKeyboard){CodexMiniNative.hideKeyboard();}}catch(ignore){}},0);return;}if(now-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(function(){CodexMiniNative.showKeyboard();},40);}},true);"
+                + "}"
+                + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var id=String(data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').trim():'当前会话';var endpoint='';try{endpoint=new URL(String(statusUrl||''),location.href).href;}catch(ignore){}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
+                + "var oldFetch=window.fetch;if(oldFetch&&!window.__AIMiniFetchHooked){window.__AIMiniFetchHooked=true;window.__AIMiniStatusPollers=window.__AIMiniStatusPollers||{};window.__AIMiniPollStatuses=function(){try{Object.keys(window.__AIMiniStatusPollers||{}).forEach(function(key){try{window.__AIMiniStatusPollers[key]();}catch(e){}});}catch(e){}};window.fetch=function(){var ctx=this,args=arguments;var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){try{var savedInput=args[0] instanceof Request?args[0].clone():args[0];var savedInit=args.length>1?args[1]:undefined;window.__AIMiniStatusPollers[u]=function(){try{var input=savedInput instanceof Request?savedInput.clone():savedInput;return oldFetch.call(window,input,savedInit).then(function(pollRes){try{pollRes.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}catch(e){}return pollRes;}).catch(function(){});}catch(e){return Promise.resolve();}};}catch(e){}}return oldFetch.apply(ctx,args).then(function(res){try{if(u.indexOf('/codex/status')>=0){res.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}}catch(e){}return res;});};}"
+                + "if(!window.__AIMiniKeyboardHooksVersion){window.__CodexMiniKeyboardClosedFromNative=function(){try{if(window.__AIMiniApplyLegacyKeyboardInset&&window.__AIMiniApplyLegacyKeyboardInset(0)){return;}document.body&&document.body.classList.remove('keyboard-open');document.documentElement.style.setProperty('--keyboard-inset','0px');window.dispatchEvent(new Event('resize'));}catch(e){}};}"
+                + "if(!window.__AIMiniDownloadHooksVersion){"
+                + "var bytesToBase64=function(bytes){var binary='';var step=32768;for(var i=0;i<bytes.length;i+=step){var part=bytes.subarray(i,Math.min(bytes.length,i+step));binary+=String.fromCharCode.apply(null,part);}return btoa(binary);};"
+                + "var sendBlobChunks=async function(blob,fileName,mimeType){var id='dl-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);var chunkSize=196608;CodexMiniNative.beginBlobDownload(id,fileName||'download',mimeType||blob.type||'',blob.size||0);try{var index=0;for(var offset=0;offset<blob.size;offset+=chunkSize){var buffer=await blob.slice(offset,Math.min(blob.size,offset+chunkSize)).arrayBuffer();CodexMiniNative.appendBlobDownload(id,index++,bytesToBase64(new Uint8Array(buffer)));}CodexMiniNative.finishBlobDownload(id);}catch(err){CodexMiniNative.cancelBlobDownload(id);CodexMiniNative.toast('Download failed');}};"
+                + "var sendBlob=function(a){try{if(!a||!a.href||!a.hasAttribute('download')||!window.CodexMiniNative){return false;}var href=String(a.href||'');if(href.indexOf('blob:')!==0&&href.indexOf('data:')!==0){return false;}fetch(href).then(function(r){return r.blob();}).then(function(blob){return sendBlobChunks(blob,a.download||'download',blob.type||'');}).catch(function(){CodexMiniNative.toast('Download failed');});return true;}catch(e){return false;}};"
                 + "var oldClick=HTMLAnchorElement.prototype.click;"
                 + "HTMLAnchorElement.prototype.click=function(){if(sendBlob(this)){return;}return oldClick.call(this);};"
                 + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[download]');if(sendBlob(a)){e.preventDefault();e.stopPropagation();}},true);"
+                + "}"
                 + "var fire=function(){window.dispatchEvent(new Event('resize'));};"
                 + "fire();setTimeout(fire,60);setTimeout(fire,180);setTimeout(fire,420);"
-                + "}catch(e){}"
+                + "return legacyComposer;"
+                + "}catch(e){return false;}"
                 + "})();";
-        webView.evaluateJavascript(script, null);
+        webView.evaluateJavascript(script, result -> {
+            boolean enabled = "true".equalsIgnoreCase(
+                    result == null ? "" : result.replace("\"", "").trim()
+            );
+            legacyComposerImeBridgeEnabled = enabled;
+            lastLegacyImeInsetBottom = -1;
+            if (enabled) {
+                notifyKeyboardInsetToWeb(appliedImeInsetBottom, keyboardWasOpen);
+            }
+        });
+    }
+
+    private String androidWebViewCss() {
+        return ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
+                + "'Apple Chancery','Segoe Script',cursive!important;}"
+                // Gecko can drop backdrop-filter descendants when their fixed
+                // ancestor is permanently promoted by translate3d/will-change.
+                // ADJUST_RESIZE already moves the visual viewport, so the WebUI's
+                // extra keyboard transform is unnecessary in the app.
+                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell{"
+                + "transform:none!important;transition:none!important;"
+                + "will-change:auto!important;}"
+                + "html.ai-mini-geckoview.ai-mini-legacy-composer .composer-shell,"
+                + "html.ai-mini-geckoview.ai-mini-legacy-composer .thread{"
+                + "transform:translate3d(0,calc(-1 * "
+                + "var(--ai-mini-native-keyboard-shift,0px)),0)!important;"
+                + "transition:none!important;"
+                + "will-change:transform!important;}"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original{"
+                + "background:rgba(255,255,255,.06)!important;"
+                + "border:1px solid rgba(255,255,255,.18)!important;"
+                + "border-radius:29px!important;"
+                + "box-shadow:0 12px 42px rgba(0,0,0,.27),"
+                + "inset 0 1px 0 rgba(255,255,255,.10),"
+                + "inset 0 -1px 0 rgba(0,0,0,.08)!important;"
+                + "overflow:hidden!important;isolation:isolate!important;}"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer.codex-liquid-glass-original>.liquid-glass-warp{"
+                + "display:block!important;filter:none!important;"
+                + "position:absolute!important;inset:-1px!important;"
+                + "border-radius:inherit!important;background:transparent!important;"
+                + "backdrop-filter:blur(6px) saturate(140%)!important;"
+                + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;"
+                + "opacity:1!important;pointer-events:none!important;}";
     }
 
     private void adaptPlainTextPageForMobile() {
@@ -2126,31 +4203,218 @@ public class MainActivity extends Activity {
         webView.evaluateJavascript(script, null);
     }
 
-    private void watchKeyboard(View root) {
+    private void installImeInsetHandling(View root) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            root.setOnApplyWindowInsetsListener((view, insets) -> {
+                // Android dispatches the animation's final Insets during the
+                // layout pass between onPrepare() and onStart(). Applying that
+                // value here makes the page jump to the end position before
+                // onProgress() starts, then forces GeckoView to lay out again
+                // for every animated frame. Let the animation callback own the
+                // transition and only use this listener outside an IME animation.
+                if (!imeAnimationRunning) {
+                    applyModernImeInsets(view, insets);
+                } else {
+                    lastModernImeUpdateAt = SystemClock.uptimeMillis();
+                }
+                return insets;
+            });
+            root.setWindowInsetsAnimationCallback(new WindowInsetsAnimation.Callback(
+                    WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+            ) {
+                @Override
+                public void onPrepare(WindowInsetsAnimation animation) {
+                    if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                        imeAnimationRunning = true;
+                        lastModernImeUpdateAt = SystemClock.uptimeMillis();
+                    }
+                }
+
+                @Override
+                public WindowInsets onProgress(
+                        WindowInsets insets,
+                        List<WindowInsetsAnimation> runningAnimations
+                ) {
+                    applyModernImeInsets(root, insets);
+                    return insets;
+                }
+
+                @Override
+                public void onEnd(WindowInsetsAnimation animation) {
+                    if ((animation.getTypeMask() & WindowInsets.Type.ime()) == 0) return;
+                    imeAnimationRunning = false;
+                    WindowInsets insets = root.getRootWindowInsets();
+                    if (insets != null) {
+                        applyModernImeInsets(root, insets);
+                    }
+                }
+            });
+            root.post(root::requestApplyInsets);
+        }
+
+        watchKeyboardLegacy(root);
+    }
+
+    private void applyModernImeInsets(View root, WindowInsets insets) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R
+                || insets == null
+                || appHost == null) {
+            return;
+        }
+        lastModernImeUpdateAt = SystemClock.uptimeMillis();
+        Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
+        Insets ime = insets.getInsets(WindowInsets.Type.ime());
+        boolean imeReportedVisible = insets.isVisible(WindowInsets.Type.ime())
+                || ime.bottom > navigation.bottom;
+        if (imeReportedVisible) modernImeInsetsReliable = true;
+
+        // Once this ROM has supplied real IME Insets, keep using them as the
+        // animation authority. getWindowVisibleDisplayFrame() commonly trails
+        // the closing animation by several frames; Math.max(ime, overlap) made
+        // the composer descend late and look sluggish on affected devices.
+        // ROMs that never provide usable IME Insets still retain the legacy
+        // visible-frame fallback below.
+        int visibleOverlap = 0;
+        int openThreshold = Math.max(dp(100), root.getHeight() / 6);
+        if (!modernImeInsetsReliable && !imeReportedVisible) {
+            visibleOverlap = visibleKeyboardOverlap(root);
+        }
+        boolean overlapFallbackVisible = !modernImeInsetsReliable
+                && visibleOverlap > openThreshold;
+        boolean imeVisible = imeReportedVisible || overlapFallbackVisible;
+        int keyboardBottom = imeReportedVisible
+                ? Math.max(0, ime.bottom)
+                : (overlapFallbackVisible ? visibleOverlap : 0);
+        // The modern glass composer follows the resized native host and must
+        // not receive a second CSS translation. The legacy composer was built
+        // for an overlaid visual viewport, so keep its Gecko surface full
+        // height and let the dedicated --ai-mini-native-keyboard-shift
+        // transform follow the IME instead. This keeps both variants on one
+        // movement path and prevents a double-keyboard-height offset.
+        int contentBottom = legacyComposerImeBridgeEnabled
+                ? Math.max(0, navigation.bottom)
+                : (imeVisible
+                        ? Math.max(navigation.bottom, keyboardBottom)
+                        : Math.max(0, navigation.bottom));
+        applyHostBottomInset(contentBottom);
+        // IME Insets can include the navigation-bar area on some ROMs. The
+        // legacy path already keeps that area as native host padding, so only
+        // send the keyboard portion above it to the WebUI transform.
+        int pageKeyboardBottom = imeVisible
+                ? (legacyComposerImeBridgeEnabled
+                        ? Math.max(0, keyboardBottom - navigation.bottom)
+                        : keyboardBottom)
+                : 0;
+        applyImeInset(root, pageKeyboardBottom);
+    }
+
+    private void applyHostBottomInset(int bottom) {
+        if (appHost == null) return;
+        int safeBottom = Math.max(0, bottom);
+        if (appHost.getPaddingBottom() != safeBottom) {
+            appHost.setPadding(0, 0, 0, safeBottom);
+        }
+    }
+
+    private int visibleKeyboardOverlap(View root) {
+        root.getWindowVisibleDisplayFrame(visibleDisplayFrame);
+        root.getLocationOnScreen(rootLocationOnScreen);
+        int visibleBottomInRoot = visibleDisplayFrame.bottom - rootLocationOnScreen[1];
+        return Math.max(0, root.getHeight() - visibleBottomInRoot);
+    }
+
+    private void applyImeInset(View root, int insetBottom) {
+        int safeInset = Math.max(0, insetBottom);
+        boolean isOpen = safeInset > dp(80);
+        // Some devices keep reporting the navigation-bar inset at the end of
+        // the IME closing animation. Never expose that residual value to the
+        // page, otherwise it can leave the WebUI in its keyboard-open state.
+        int effectiveInset = isOpen ? safeInset : 0;
+        appliedImeInsetBottom = effectiveInset;
+        if (legacyComposerImeBridgeEnabled) {
+            keyboardWasOpen = isOpen;
+            if (lastLegacyImeInsetBottom != effectiveInset) {
+                lastLegacyImeInsetBottom = effectiveInset;
+                notifyKeyboardInsetToWeb(effectiveInset, isOpen);
+            }
+            return;
+        }
+        lastLegacyImeInsetBottom = -1;
+        // The page patch only needs the open/closed transition. Dispatching
+        // JavaScript for every IME animation pixel caused avoidable jank and, on
+        // some ROMs, let stale legacy callbacks race the modern Insets callback.
+        if (keyboardWasOpen == isOpen) return;
+        keyboardWasOpen = isOpen;
+        notifyKeyboardInsetToWeb(effectiveInset, isOpen);
+    }
+
+    private void watchKeyboardLegacy(View root) {
         root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-            Rect rect = new Rect();
-            root.getWindowVisibleDisplayFrame(rect);
-            int totalHeight = root.getRootView().getHeight();
-            int hidden = Math.max(0, totalHeight - rect.bottom);
+            int hidden = visibleKeyboardOverlap(root);
+            int totalHeight = root.getHeight();
             boolean keyboardOpen = hidden > Math.max(dp(140), totalHeight / 5);
-            if (keyboardWasOpen && !keyboardOpen) notifyKeyboardClosedToWeb();
-            keyboardWasOpen = keyboardOpen;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowInsets insets = root.getRootWindowInsets();
+                boolean modernImeVisible = insets != null
+                        && insets.isVisible(WindowInsets.Type.ime());
+                long sinceModernUpdate = SystemClock.uptimeMillis() - lastModernImeUpdateAt;
+                if (modernImeVisible || sinceModernUpdate < 350L) return;
+
+                // Fallback for ROMs that stop dispatching IME Insets in an
+                // edge-to-edge window. It only takes over after modern Insets
+                // have gone quiet, so it cannot overwrite an active animation.
+                int navigationBottom = insets == null
+                        ? 0
+                        : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                applyHostBottomInset(legacyComposerImeBridgeEnabled
+                        ? navigationBottom
+                        : (keyboardOpen
+                                ? Math.max(navigationBottom, hidden)
+                                : navigationBottom));
+            }
+            applyImeInset(root, keyboardOpen ? hidden : 0);
         });
     }
 
-    private void notifyKeyboardClosedToWeb() {
-        if (webView == null) return;
-        webView.evaluateJavascript(
-                "window.__CodexMiniKeyboardClosedFromNative&&window.__CodexMiniKeyboardClosedFromNative();",
+    private void notifyKeyboardInsetToWeb(int insetDevicePixels, boolean open) {
+        AIMiniBrowserView target = activeWebView();
+        if (target == null) return;
+        target.evaluateJavascript(
+                "(function(){try{"
+                        + "var px=" + Math.max(0, insetDevicePixels) + ";"
+                        + "if(window.__AIMiniKeyboardInsetFromNative){"
+                        + "window.__AIMiniKeyboardInsetFromNative(px);return;}"
+                        + "if(window.__AIMiniApplyLegacyKeyboardInset"
+                        + "&&window.__AIMiniApplyLegacyKeyboardInset(px)){return;}"
+                        + "var cssPx=0;"
+                        + "document.body&&document.body.classList."
+                        + (open ? "add" : "remove")
+                        + "('keyboard-open');"
+                        + "document.documentElement.style.setProperty("
+                        + "'--keyboard-inset',cssPx+'px');"
+                        + "document.querySelectorAll('.composer-shell').forEach("
+                        + "function(el){if(el.style.getPropertyValue('bottom')==='0px'"
+                        + "&&el.style.getPropertyPriority('bottom')==='important'){"
+                        + "el.style.removeProperty('bottom');}});"
+                        + "window.dispatchEvent(new Event('resize'));"
+                        + "}catch(e){}})();",
                 null
         );
     }
 
-    private void showKeyboardForWebView() {
-        if (webView == null) return;
-        webView.requestFocus();
+    private void showKeyboardForBrowser(AIMiniBrowserView browser) {
+        AIMiniBrowserView target = browser == null ? activeWebView() : browser;
+        if (target == null) return;
+        target.setFocusable(true);
+        target.setFocusableInTouchMode(true);
+        target.requestFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imm != null) imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT);
+        if (imm != null) {
+            target.postDelayed(
+                    () -> imm.showSoftInput(target, InputMethodManager.SHOW_IMPLICIT),
+                    16
+            );
+        }
     }
 
     private void hideSoftKeyboard(View view) {
@@ -2164,9 +4428,7 @@ public class MainActivity extends Activity {
     }
 
     private void showDownloadsPanel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && webView != null) {
-            webView.setRenderEffect(RenderEffect.createBlurEffect(dp(8), dp(8), Shader.TileMode.CLAMP));
-        }
+        applyBackdropBlur(nativeLiquidGlassEnabled(), dp(10));
         refreshDownloadsTheme();
         if (downloadsScrim != null) downloadsScrim.setVisibility(View.VISIBLE);
         downloadsPanel.setVisibility(View.VISIBLE);
@@ -2182,10 +4444,39 @@ public class MainActivity extends Activity {
         updateDownloadManageControls();
         downloadsPanel.setVisibility(View.GONE);
         if (downloadsScrim != null) downloadsScrim.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && webView != null) {
-            webView.setRenderEffect(null);
-        }
+        clearNativeBackdropBlurIfUnused();
         handler.removeCallbacks(downloadPoller);
+    }
+
+    private void applyNativeGlassState() {
+        boolean menuVisible = miniMenu != null && miniMenu.getVisibility() == View.VISIBLE;
+        boolean downloadsVisible = downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE;
+        applyBackdropBlur(nativeLiquidGlassEnabled() && (menuVisible || downloadsVisible), dp(10));
+        if (miniMenuScrim != null) {
+            miniMenuScrim.setBackgroundColor(nativeLiquidGlassEnabled()
+                    ? Color.argb(isFloatMenuLight() ? 22 : 52, 0, 0, 0)
+                    : Color.TRANSPARENT);
+        }
+        if (downloadsScrim != null) {
+            downloadsScrim.setBackgroundColor(nativeLiquidGlassEnabled()
+                    ? Color.argb(isFloatMenuLight() ? 20 : 54, 0, 0, 0)
+                    : Color.argb(48, 0, 0, 0));
+        }
+    }
+
+    private void clearNativeBackdropBlurIfUnused() {
+        boolean menuVisible = miniMenu != null && miniMenu.getVisibility() == View.VISIBLE;
+        boolean downloadsVisible = downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE;
+        applyBackdropBlur(nativeLiquidGlassEnabled() && (menuVisible || downloadsVisible), dp(10));
+    }
+
+    private void applyBackdropBlur(boolean enabled, int radius) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
+        AIMiniBrowserView target = activeWebView();
+        if (target == null) return;
+        target.setRenderEffect(enabled
+                ? RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+                : null);
     }
 
     private TextView downloadHeaderTextButton(int textRes) {
@@ -2200,7 +4491,11 @@ public class MainActivity extends Activity {
 
     private void refreshDownloadsTheme() {
         boolean light = isFloatMenuLight();
-        if (downloadsPanel != null) downloadsPanel.setBackground(downloadsGlassBackground(light));
+        if (downloadsPanel != null) {
+            downloadsPanel.setBackground(nativeLiquidGlassEnabled()
+                    ? liquidGlassPanelBackground(light, dp(24))
+                    : downloadsGlassBackground(light));
+        }
         if (downloadsTitle != null) downloadsTitle.setTextColor(light ? Color.rgb(20, 28, 42) : Color.WHITE);
         styleDownloadHeaderButton(downloadManageButton, light);
         styleDownloadHeaderButton(downloadSelectAllButton, light);
@@ -2278,6 +4573,16 @@ public class MainActivity extends Activity {
     }
 
     private void startHttpDownload(String url, String userAgent, String contentDisposition, String mimeType) {
+        startHttpDownload(url, userAgent, contentDisposition, mimeType, "");
+    }
+
+    private void startHttpDownload(
+            String url,
+            String userAgent,
+            String contentDisposition,
+            String mimeType,
+            String cookie
+    ) {
         try {
             String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
@@ -2289,8 +4594,9 @@ public class MainActivity extends Activity {
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
             if (userAgent != null) request.addRequestHeader("User-Agent", userAgent);
-            String cookie = CookieManager.getInstance().getCookie(url);
-            if (cookie != null) request.addRequestHeader("Cookie", cookie);
+            if (cookie != null && !cookie.trim().isEmpty()) {
+                request.addRequestHeader("Cookie", cookie);
+            }
 
             DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
             long id = manager.enqueue(request);
@@ -2326,6 +4632,174 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void beginBlobDownload(JSONObject message) {
+        String downloadId = message.optString("downloadId", "").trim();
+        if (downloadId.isEmpty()) return;
+        cancelBlobDownload(downloadId, false);
+        try {
+            File directory = new File(getCacheDir(), "blob-downloads");
+            if (!directory.exists() && !directory.mkdirs()) {
+                throw new IllegalStateException("Cannot create blob cache");
+            }
+            File tempFile = File.createTempFile("ai-mini-", ".part", directory);
+            String fileName = safeFileName(message.optString("fileName", "download"));
+            String mimeType = message.optString("mimeType", "");
+            long totalBytes = Math.max(0L, message.optLong("totalBytes", 0L));
+            DownloadItem item = DownloadItem.forPendingBlob(
+                    downloadId,
+                    fileName,
+                    mimeType,
+                    totalBytes
+            );
+            PendingBlobDownload pending = new PendingBlobDownload(
+                    downloadId,
+                    fileName,
+                    mimeType,
+                    totalBytes,
+                    tempFile,
+                    new FileOutputStream(tempFile),
+                    item
+            );
+            pendingBlobDownloads.put(downloadId, pending);
+            handler.post(() -> {
+                removeDownloadWithTransferId(downloadId);
+                downloads.add(0, item);
+                persistDownloads();
+                showDownloadsPanel();
+                Toast.makeText(
+                        MainActivity.this,
+                        R.string.download_started,
+                        Toast.LENGTH_SHORT
+                ).show();
+            });
+        } catch (Exception error) {
+            handler.post(() -> Toast.makeText(
+                    MainActivity.this,
+                    R.string.download_failed,
+                    Toast.LENGTH_SHORT
+            ).show());
+        }
+    }
+
+    private void appendBlobDownload(JSONObject message) {
+        String downloadId = message.optString("downloadId", "").trim();
+        PendingBlobDownload pending = pendingBlobDownloads.get(downloadId);
+        if (pending == null) return;
+        int index = message.optInt("index", -1);
+        if (index != pending.nextIndex) {
+            cancelBlobDownload(downloadId);
+            return;
+        }
+        try {
+            byte[] bytes = Base64.decode(message.optString("data", ""), Base64.DEFAULT);
+            pending.output.write(bytes);
+            pending.writtenBytes += bytes.length;
+            pending.nextIndex++;
+            pending.item.downloadedBytes = pending.writtenBytes;
+            if (pending.item.totalBytes <= 0 && pending.expectedBytes > 0) {
+                pending.item.totalBytes = pending.expectedBytes;
+            }
+            long now = System.currentTimeMillis();
+            boolean refreshUi = now - pending.lastUiUpdateAt >= BLOB_PROGRESS_UI_INTERVAL_MS;
+            boolean persist = now - pending.lastPersistAt >= BLOB_PROGRESS_PERSIST_INTERVAL_MS;
+            if (refreshUi || persist) {
+                if (refreshUi) pending.lastUiUpdateAt = now;
+                if (persist) pending.lastPersistAt = now;
+                handler.post(() -> {
+                    if (persist) persistDownloads();
+                    if (refreshUi
+                            && downloadsPanel != null
+                            && downloadsPanel.getVisibility() == View.VISIBLE) {
+                        renderDownloads();
+                    }
+                });
+            }
+        } catch (Exception error) {
+            cancelBlobDownload(downloadId, true);
+        }
+    }
+
+    private void finishBlobDownload(String downloadId) {
+        PendingBlobDownload pending = pendingBlobDownloads.remove(downloadId);
+        if (pending == null) return;
+        try {
+            pending.output.close();
+            if (pending.expectedBytes > 0 && pending.writtenBytes != pending.expectedBytes) {
+                throw new IllegalStateException("Incomplete blob download");
+            }
+            try (InputStream input = new FileInputStream(pending.tempFile)) {
+                SavedFileResult savedFile = writeDownloadStream(
+                        pending.fileName,
+                        pending.mimeType,
+                        input
+                );
+                handler.post(() -> {
+                    pending.item.manualUri = savedFile.uri;
+                    pending.item.status = DownloadManager.STATUS_SUCCESSFUL;
+                    pending.item.downloadedBytes = savedFile.bytes;
+                    pending.item.totalBytes = savedFile.bytes;
+                    pending.item.downloadedAt = System.currentTimeMillis();
+                    persistDownloads();
+                    renderDownloadsIfVisible();
+                    Toast.makeText(
+                            MainActivity.this,
+                            R.string.download_complete,
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+            }
+        } catch (Exception error) {
+            markBlobDownloadFailed(pending);
+        } finally {
+            if (pending.tempFile.exists()) pending.tempFile.delete();
+        }
+    }
+
+    private void cancelBlobDownload(String downloadId) {
+        cancelBlobDownload(downloadId, true);
+    }
+
+    private void cancelBlobDownload(String downloadId, boolean markFailed) {
+        PendingBlobDownload pending = pendingBlobDownloads.remove(downloadId);
+        if (pending == null) return;
+        try {
+            pending.output.close();
+        } catch (Exception ignored) {
+        }
+        if (pending.tempFile.exists()) pending.tempFile.delete();
+        if (markFailed) markBlobDownloadFailed(pending);
+    }
+
+    private void markBlobDownloadFailed(PendingBlobDownload pending) {
+        handler.post(() -> {
+            pending.item.downloadedBytes = pending.writtenBytes;
+            pending.item.status = DownloadManager.STATUS_FAILED;
+            pending.item.downloadedAt = System.currentTimeMillis();
+            persistDownloads();
+            renderDownloadsIfVisible();
+            Toast.makeText(
+                    MainActivity.this,
+                    R.string.download_failed,
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+    }
+
+    private void renderDownloadsIfVisible() {
+        if (downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE) {
+            renderDownloads();
+        }
+    }
+
+    private void removeDownloadWithTransferId(String transferId) {
+        if (transferId == null || transferId.isEmpty()) return;
+        for (int index = downloads.size() - 1; index >= 0; index--) {
+            if (transferId.equals(downloads.get(index).transferId)) {
+                downloads.remove(index);
+            }
+        }
+    }
+
     private Uri writeDownloadFile(String fileName, String mimeType, byte[] bytes) throws Exception {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ContentValues values = new ContentValues();
@@ -2349,6 +4823,114 @@ public class MainActivity extends Activity {
             stream.write(bytes);
         }
         return Uri.fromFile(file);
+    }
+
+    private SavedFileResult writeDownloadStream(
+            String fileName,
+            String mimeType,
+            InputStream input
+    ) throws Exception {
+        return writeDownloadStream(fileName, mimeType, input, null);
+    }
+
+    private SavedFileResult writeDownloadStream(
+            String fileName,
+            String mimeType,
+            InputStream input,
+            DownloadProgressListener progressListener
+    ) throws Exception {
+        String safeName = safeFileName(fileName);
+        if (safeName.isEmpty()) safeName = "download";
+        String safeMime = mimeType == null || mimeType.trim().isEmpty()
+                ? "application/octet-stream"
+                : mimeType.split(";", 2)[0].trim();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, safeMime);
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            ContentResolver resolver = getContentResolver();
+            Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) throw new IllegalStateException("Cannot create download");
+            try {
+                long bytes;
+                try (OutputStream output = resolver.openOutputStream(uri, "w")) {
+                    if (output == null) throw new IllegalStateException("Cannot open download");
+                    bytes = copyStream(input, output, progressListener);
+                }
+                ContentValues completed = new ContentValues();
+                completed.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                resolver.update(uri, completed, null, null);
+                return new SavedFileResult(uri, bytes);
+            } catch (Exception error) {
+                resolver.delete(uri, null, null);
+                throw error;
+            }
+        }
+
+        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Cannot create downloads dir");
+        File file = uniqueFile(dir, safeName);
+        long bytes;
+        try (OutputStream output = new FileOutputStream(file)) {
+            bytes = copyStream(input, output, progressListener);
+        }
+        return new SavedFileResult(Uri.fromFile(file), bytes);
+    }
+
+    private long copyStream(InputStream input, OutputStream output) throws Exception {
+        return copyStream(input, output, null);
+    }
+
+    private long copyStream(
+            InputStream input,
+            OutputStream output,
+            DownloadProgressListener progressListener
+    ) throws Exception {
+        byte[] buffer = new byte[64 * 1024];
+        long total = 0;
+        int read;
+        while ((read = input.read(buffer)) >= 0) {
+            if (read == 0) continue;
+            output.write(buffer, 0, read);
+            total += read;
+            if (progressListener != null) progressListener.onProgress(total);
+        }
+        output.flush();
+        return total;
+    }
+
+    private File uniqueFile(File directory, String fileName) {
+        File candidate = new File(directory, fileName);
+        if (!candidate.exists()) return candidate;
+        int dot = fileName.lastIndexOf('.');
+        String stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+        String extension = dot > 0 ? fileName.substring(dot) : "";
+        for (int index = 1; index < 10000; index++) {
+            candidate = new File(directory, stem + " (" + index + ")" + extension);
+            if (!candidate.exists()) return candidate;
+        }
+        return new File(directory, stem + "-" + System.currentTimeMillis() + extension);
+    }
+
+    private void publishSavedDownload(
+            String fileName,
+            String mimeType,
+            SavedFileResult savedFile
+    ) {
+        handler.post(() -> {
+            downloads.add(0, DownloadItem.forSavedFile(
+                    fileName,
+                    mimeType,
+                    savedFile.uri,
+                    savedFile.bytes
+            ));
+            persistDownloads();
+            showDownloadsPanel();
+            Toast.makeText(this, R.string.download_complete, Toast.LENGTH_SHORT).show();
+        });
     }
 
     private void loadPersistedDownloads() {
@@ -2385,6 +4967,7 @@ public class MainActivity extends Activity {
         JSONObject object = new JSONObject();
         object.put("id", item.id);
         object.put("manual", item.manual);
+        object.put("transferId", item.transferId == null ? "" : item.transferId);
         object.put("manualUri", item.manualUri == null ? "" : item.manualUri.toString());
         object.put("fileName", item.fileName);
         object.put("mimeType", item.mimeType == null ? "" : item.mimeType);
@@ -2405,6 +4988,7 @@ public class MainActivity extends Activity {
         DownloadItem item = new DownloadItem(
                 object.optLong("id", -1),
                 manual,
+                object.optString("transferId", ""),
                 manualUri,
                 fileName,
                 object.optString("mimeType", "")
@@ -2416,6 +5000,11 @@ public class MainActivity extends Activity {
         item.totalBytes = object.optLong("totalBytes", 0);
         long downloadedAt = object.optLong("downloadedAt", 0);
         if (downloadedAt > 0) item.downloadedAt = downloadedAt;
+        if (!item.transferId.isEmpty()
+                && item.manualUri == null
+                && item.status != DownloadManager.STATUS_SUCCESSFUL) {
+            item.status = DownloadManager.STATUS_FAILED;
+        }
         return item;
     }
 
@@ -2489,17 +5078,22 @@ public class MainActivity extends Activity {
         }
 
         for (DownloadItem item : downloads) {
+            boolean liquidGlass = nativeLiquidGlassEnabled();
             FrameLayout card = new FrameLayout(this);
             card.setPadding(dp(12), dp(11), dp(12), dp(11));
             card.setBackground(strokedRect(
-                    light ? Color.argb(238, 255, 255, 255) : Color.argb(162, 22, 25, 32),
-                    light ? Color.rgb(218, 226, 238) : Color.argb(62, 255, 255, 255),
+                    liquidGlass
+                            ? light ? Color.argb(166, 255, 255, 255) : Color.argb(112, 26, 30, 38)
+                            : light ? Color.argb(238, 255, 255, 255) : Color.argb(162, 22, 25, 32),
+                    liquidGlass
+                            ? light ? Color.argb(170, 255, 255, 255) : Color.argb(84, 255, 255, 255)
+                            : light ? Color.rgb(218, 226, 238) : Color.argb(62, 255, 255, 255),
                     dp(18),
                     dp(1)
             ));
             LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(88)
+                    dp(item.isInProgress() ? 98 : 88)
             );
             cardParams.setMargins(0, 0, 0, dp(10));
             downloadsList.addView(card, cardParams);
@@ -2573,6 +5167,38 @@ public class MainActivity extends Activity {
             );
             metaParams.setMargins(0, dp(7), 0, 0);
             copy.addView(meta, metaParams);
+
+            if (item.isInProgress()) {
+                ProgressBar progress = new ProgressBar(
+                        this,
+                        null,
+                        android.R.attr.progressBarStyleHorizontal
+                );
+                progress.setMax(1000);
+                progress.setIndeterminate(item.totalBytes <= 0);
+                if (item.totalBytes > 0) {
+                    int progressValue = (int) Math.max(
+                            0,
+                            Math.min(1000, item.downloadedBytes * 1000 / item.totalBytes)
+                    );
+                    progress.setProgress(progressValue);
+                }
+                int progressColor = light
+                        ? Color.rgb(32, 174, 139)
+                        : Color.rgb(82, 226, 184);
+                int progressTrackColor = light
+                        ? Color.rgb(218, 230, 232)
+                        : Color.argb(72, 255, 255, 255);
+                progress.setProgressTintList(ColorStateList.valueOf(progressColor));
+                progress.setIndeterminateTintList(ColorStateList.valueOf(progressColor));
+                progress.setProgressBackgroundTintList(ColorStateList.valueOf(progressTrackColor));
+                LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(4)
+                );
+                progressParams.setMargins(0, dp(7), 0, 0);
+                copy.addView(progress, progressParams);
+            }
 
             if (!downloadManageMode) {
                 LinearLayout actions = new LinearLayout(this);
@@ -2752,11 +5378,39 @@ public class MainActivity extends Activity {
 
     private boolean deleteDownloadFile(DownloadItem item) {
         try {
+            if (!item.transferId.isEmpty() && pendingBlobDownloads.containsKey(item.transferId)) {
+                String transferId = item.transferId;
+                downloadIoExecutor.execute(() -> cancelBlobDownload(transferId, false));
+                return true;
+            }
+            if (!item.transferId.isEmpty()
+                    && item.manual
+                    && item.manualUri == null
+                    && item.transferId.startsWith("response-")) {
+                cancelledStreamDownloads.add(item.transferId);
+                return true;
+            }
             if (!item.manual) {
                 DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
                 if (manager == null) return false;
-                manager.remove(item.id);
-                return true;
+                Uri existingUri = queryDownloadManagerLocalUri(manager, item);
+                String localPath = resolveDownloadLocalPath(existingUri);
+
+                // Some OEM DownloadManager implementations (notably ColorOS) remove
+                // only their database row and leave the public Download file behind.
+                // Capture the exact COLUMN_LOCAL_URI first, because duplicate names
+                // may have been changed to "-1", "-2", etc. by DownloadManager.
+                deletePhysicalDownload(existingUri, localPath);
+                int removed = manager.remove(item.id);
+                boolean physicalDeleted = deletePhysicalDownload(existingUri, localPath);
+                if (!physicalDeleted) {
+                    Log.w(
+                            "GPTMiniDownload",
+                            "DownloadManager record removed but file remains: " + localPath
+                    );
+                }
+                return physicalDeleted
+                        && (removed > 0 || existingUri == null || !uriExists(existingUri));
             }
             Uri uri = item.manualUri;
             if (uri == null) return true;
@@ -2764,22 +5418,199 @@ public class MainActivity extends Activity {
                 File file = new File(uri.getPath());
                 return !file.exists() || file.delete();
             }
-            getContentResolver().delete(uri, null, null);
-            return true;
+            int deleted = getContentResolver().delete(uri, null, null);
+            return deleted > 0 || !uriExists(uri);
         } catch (Exception ignored) {
             return false;
+        }
+    }
+
+    private Uri queryDownloadManagerLocalUri(DownloadManager manager, DownloadItem item) {
+        Uri uri = null;
+        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(item.id))) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int localUriColumn = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+                if (localUriColumn >= 0) {
+                    String value = cursor.getString(localUriColumn);
+                    if (value != null && !value.trim().isEmpty()) {
+                        item.localUri = value;
+                        uri = Uri.parse(value);
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (uri == null && item.localUri != null && !item.localUri.trim().isEmpty()) {
+            uri = Uri.parse(item.localUri);
+        }
+        if (uri == null) uri = manager.getUriForDownloadedFile(item.id);
+        return uri;
+    }
+
+    private String resolveDownloadLocalPath(Uri uri) {
+        if (uri == null) return null;
+        if ("file".equalsIgnoreCase(uri.getScheme())) return uri.getPath();
+        if (!"content".equalsIgnoreCase(uri.getScheme())) return null;
+
+        try (Cursor cursor = getContentResolver().query(
+                uri,
+                new String[]{MediaStore.MediaColumns.DATA},
+                null,
+                null,
+                null
+        )) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int dataColumn = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                if (dataColumn >= 0) {
+                    String path = cursor.getString(dataColumn);
+                    if (path != null && !path.trim().isEmpty()) return path;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private boolean deletePhysicalDownload(Uri uri, String localPath) {
+        boolean hadTarget = uriExists(uri)
+                || (localPath != null && new File(localPath).exists());
+        if (!hadTarget) return true;
+
+        if (localPath != null && !localPath.trim().isEmpty()) {
+            File file = new File(localPath);
+            if (file.exists()) {
+                try {
+                    file.delete();
+                } catch (Exception ignored) {
+                }
+            }
+            deleteMediaStoreDownloadByPath(localPath);
+        }
+
+        if (uri != null && uriExists(uri)) {
+            try {
+                getContentResolver().delete(uri, null, null);
+            } catch (Exception ignored) {
+            }
+        }
+
+        boolean fileExists = localPath != null && new File(localPath).exists();
+        return !fileExists && !uriExists(uri);
+    }
+
+    private void deleteMediaStoreDownloadByPath(String localPath) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        try {
+            getContentResolver().delete(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    MediaStore.MediaColumns.DATA + "=?",
+                    new String[]{localPath}
+            );
+        } catch (Exception ignored) {
+        }
+    }
+
+    private boolean uriExists(Uri uri) {
+        if (uri == null) return false;
+        if ("file".equalsIgnoreCase(uri.getScheme())) {
+            String path = uri.getPath();
+            return path != null && new File(path).exists();
+        }
+        try (Cursor cursor = getContentResolver().query(
+                uri,
+                new String[]{OpenableColumns.DISPLAY_NAME},
+                null,
+                null,
+                null
+        )) {
+            return cursor != null && cursor.moveToFirst();
+        } catch (Exception ignored) {
+            try (InputStream input = getContentResolver().openInputStream(uri)) {
+                return input != null;
+            } catch (Exception secondError) {
+                return false;
+            }
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        activityInForeground = true;
+        long backgroundDurationMs = activityBackgroundedAtElapsed <= 0L
+                ? 0L
+                : Math.max(
+                        0L,
+                        SystemClock.elapsedRealtime() - activityBackgroundedAtElapsed
+                );
+        activityBackgroundedAtElapsed = 0L;
+        requestInterfaceInsets();
+        // The Service may have completed and removed tasks while Gecko/Activity was
+        // suspended. Reconcile the in-memory maps before refreshing notifications.
+        restoreMonitoredTasks();
+        AIMiniBrowserView visibleBrowser = activeWebView();
+        if (webView != null) {
+            if (webView == visibleBrowser) webView.prepareForForeground();
+            else webView.setBrowserActive(false);
+        }
+        if (externalWebView != null) {
+            if (externalWebView == visibleBrowser) externalWebView.prepareForForeground();
+            else externalWebView.setBrowserActive(false);
+        }
+        ensureVisibleBrowserContent(visibleBrowser);
+        scheduleLongBackgroundBrowserRecovery(visibleBrowser, backgroundDurationMs);
+        handler.removeCallbacks(backgroundTaskPoller);
         scheduleLocalRouteCheck(900);
+        // Let the compositor present the preserved frame before starting
+        // notification IPC, status polling and viewport maintenance.
+        handler.postDelayed(() -> {
+            if (!activityInForeground) return;
+            showPersistentConnectedNotificationIfNeeded();
+            requestImmediateTaskStatusRefresh();
+        }, 220);
+        handler.postDelayed(() -> {
+            if (activityInForeground) requestImmediateTaskStatusRefresh();
+        }, 1000);
+        handler.postDelayed(() -> {
+            if (!activityInForeground) return;
+            AIMiniBrowserView active = activeWebView();
+            if (active != null) {
+                applyBrowserViewport(active, active == externalWebView
+                        ? externalDesktopMode
+                        : mainDesktopMode);
+            }
+        }, 280);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        refreshMiniMenuTheme();
+        requestInterfaceInsets();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) requestInterfaceInsets();
     }
 
     @Override
     protected void onPause() {
+        activityInForeground = false;
+        activityBackgroundedAtElapsed = SystemClock.elapsedRealtime();
+        browserHealthCheckGeneration++;
         persistDownloads();
+        // Native Service polling owns task completion in the background. Suspending
+        // Gecko timers are not used for completion, while leaving the visible
+        // compositor active avoids a white TextureView surface in the task snapshot
+        // and when returning after the app has stayed in the background.
+        AIMiniBrowserView visibleBrowser = activeWebView();
+        if (webView != null) webView.prepareForBackground(webView == visibleBrowser);
+        if (externalWebView != null) {
+            externalWebView.prepareForBackground(externalWebView == visibleBrowser);
+        }
+        startBackgroundTaskPolling();
         super.onPause();
     }
 
@@ -2787,6 +5618,10 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putString(KEY_LAST_URL, urlInput.getText().toString());
+        outState.putBoolean(
+                KEY_WELCOME_VISIBLE_STATE,
+                welcomeView != null && welcomeView.getVisibility() == View.VISIBLE
+        );
         webView.saveState(outState);
     }
 
@@ -2794,6 +5629,17 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE) {
             hideDownloadsPanel();
+            return;
+        }
+        if (miniMenu != null && miniMenu.getVisibility() == View.VISIBLE) {
+            hideMiniMenu();
+            return;
+        }
+        if (externalWebView != null
+                && externalBrowserContainer != null
+                && externalBrowserContainer.getVisibility() == View.VISIBLE) {
+            if (externalWebView.canGoBack()) externalWebView.goBack();
+            else closeExternalPage();
             return;
         }
         if (webView != null && webView.canGoBack()) {
@@ -2814,20 +5660,67 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != FILE_CHOOSER_REQUEST) return;
 
-        ValueCallback<Uri[]> callback = filePathCallback;
-        filePathCallback = null;
-        if (callback == null) return;
+        ValueCallback<Uri[]> callback = pendingFilePathCallback;
+        AIMiniBrowserView chooserView = pendingFileChooserView;
+        pendingFilePathCallback = null;
+        pendingFileChooserView = null;
+        if (callback == null && chooserView == null) return;
 
         if (resultCode != RESULT_OK || data == null) {
-            callback.onReceiveValue(null);
+            if (chooserView != null) chooserView.completeFileChooser(null);
+            else if (callback != null) callback.onReceiveValue(null);
             return;
         }
 
-        Uri[] result = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
-        if (result == null && data.getData() != null) {
-            result = new Uri[]{data.getData()};
+        List<Uri> selectedUris = new ArrayList<>();
+        ClipData clipData = data.getClipData();
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); i++) {
+                Uri uri = clipData.getItemAt(i).getUri();
+                if (uri != null) selectedUris.add(uri);
+            }
+        } else if (data.getData() != null) {
+            selectedUris.add(data.getData());
         }
-        callback.onReceiveValue(result);
+        if (selectedUris.isEmpty()) {
+            if (chooserView != null) chooserView.completeFileChooser(null);
+            else if (callback != null) callback.onReceiveValue(null);
+            return;
+        }
+
+        uploadIoExecutor.execute(() -> {
+            try {
+                List<Uri> uploadUris = new ArrayList<>();
+                for (Uri selectedUri : selectedUris) {
+                    uploadUris.add(materializeUploadUri(selectedUri));
+                }
+                Uri[] resultUris = uploadUris.toArray(new Uri[0]);
+                handler.post(() -> {
+                    try {
+                        if (chooserView != null) chooserView.completeFileChooser(resultUris);
+                        else if (callback != null) callback.onReceiveValue(resultUris);
+                    } catch (Exception error) {
+                        if (chooserView != null) chooserView.completeFileChooser(null);
+                        else if (callback != null) callback.onReceiveValue(null);
+                        Toast.makeText(
+                                MainActivity.this,
+                                R.string.file_upload_failed,
+                                Toast.LENGTH_SHORT
+                        ).show();
+                    }
+                });
+            } catch (Exception error) {
+                handler.post(() -> {
+                    if (chooserView != null) chooserView.completeFileChooser(null);
+                    else if (callback != null) callback.onReceiveValue(null);
+                    Toast.makeText(
+                            MainActivity.this,
+                            R.string.file_upload_failed,
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+            }
+        });
     }
 
     @Override
@@ -2839,13 +5732,47 @@ public class MainActivity extends Activity {
             } else {
                 Toast.makeText(this, R.string.camera_permission_denied, Toast.LENGTH_SHORT).show();
             }
+        } else if (requestCode == NOTIFICATION_PERMISSION_REQUEST
+                && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            syncNotificationMonitorService();
         }
     }
 
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
-        cancelPersistentTaskNotification();
+        mainNavigationTransitionGeneration++;
+        pendingMainNavigationUrl = null;
+        mainNavigationCaptureRunning = false;
+        if (mainNavigationCover != null) {
+            mainNavigationCover.animate().cancel();
+            mainNavigationCover.setImageDrawable(null);
+            if (mainNavigationCover.getParent() instanceof ViewGroup) {
+                ((ViewGroup) mainNavigationCover.getParent()).removeView(mainNavigationCover);
+            }
+            mainNavigationCover = null;
+        }
+        if (mainNavigationSnapshot != null && !mainNavigationSnapshot.isRecycled()) {
+            mainNavigationSnapshot.recycle();
+        }
+        mainNavigationSnapshot = null;
+        monitoredTaskStatusUrls.clear();
+        monitoredTaskNames.clear();
+        monitoredTaskStartedAt.clear();
+        pendingTaskErrorTokens.clear();
+        downloadIoExecutor.shutdownNow();
+        uploadIoExecutor.shutdownNow();
+        notificationIoExecutor.shutdownNow();
+        for (PendingBlobDownload pending : pendingBlobDownloads.values()) {
+            try {
+                pending.output.close();
+            } catch (Exception ignored) {
+            }
+            if (pending.tempFile.exists()) pending.tempFile.delete();
+        }
+        pendingBlobDownloads.clear();
+        closeExternalPage();
         if (networkCallback != null) {
             try {
                 ConnectivityManager manager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
@@ -2857,6 +5784,10 @@ public class MainActivity extends Activity {
         if (webView != null) {
             webView.destroy();
             webView = null;
+        }
+        if (browserEngine != null) {
+            browserEngine.shutdown();
+            browserEngine = null;
         }
         super.onDestroy();
     }
@@ -2925,8 +5856,11 @@ public class MainActivity extends Activity {
         TextView view = new TextView(this);
         view.setText(text);
         view.setTextSize(13);
-        view.setTextColor(Color.rgb(195, 236, 213));
+        view.setTextColor(isFloatMenuLight()
+                ? Color.rgb(27, 78, 62)
+                : Color.rgb(195, 236, 213));
         view.setPadding(0, dp(8), 0, 0);
+        settingsLabels.add(view);
         return view;
     }
 
@@ -3003,6 +5937,29 @@ public class MainActivity extends Activity {
         return drawable;
     }
 
+    private GradientDrawable liquidGlassPanelBackground(boolean light, int radius) {
+        GradientDrawable drawable = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                light
+                        ? new int[]{
+                                Color.argb(194, 255, 255, 255),
+                                Color.argb(142, 239, 246, 252),
+                                Color.argb(176, 255, 255, 255)
+                        }
+                        : new int[]{
+                                Color.argb(174, 52, 57, 65),
+                                Color.argb(116, 18, 22, 29),
+                                Color.argb(154, 39, 45, 54)
+                        }
+        );
+        drawable.setCornerRadius(radius);
+        drawable.setStroke(
+                dp(1),
+                light ? Color.argb(205, 255, 255, 255) : Color.argb(98, 255, 255, 255)
+        );
+        return drawable;
+    }
+
     private GradientDrawable menuInsetBackground(boolean light) {
         GradientDrawable drawable = roundedRect(
                 light ? Color.argb(168, 255, 255, 255) : Color.argb(92, 255, 255, 255),
@@ -3039,11 +5996,21 @@ public class MainActivity extends Activity {
 
     private GradientDrawable welcomeCardBackground(int radius) {
         GradientDrawable drawable = new GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{Color.argb(160, 2, 16, 47), Color.argb(132, 1, 11, 32)}
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{
+                        Color.argb(190, 21, 45, 83),
+                        Color.argb(158, 7, 25, 58),
+                        Color.argb(178, 10, 47, 67)
+                }
         );
         drawable.setCornerRadius(radius);
-        drawable.setStroke(dp(1), Color.argb(130, 52, 103, 176));
+        drawable.setStroke(dp(1), Color.argb(148, 139, 203, 255));
+        return drawable;
+    }
+
+    private GradientDrawable topInsetBackground(boolean light) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(light ? Color.WHITE : Color.BLACK);
         return drawable;
     }
 
@@ -3060,23 +6027,446 @@ public class MainActivity extends Activity {
     private String readableBytes(long bytes) {
         if (bytes < 1024) return bytes + " B";
         double kb = bytes / 1024.0;
-        if (kb < 1024) return String.format("%.1f KB", kb);
+        if (kb < 1024) return String.format(Locale.ROOT, "%.1f KB", kb);
         double mb = kb / 1024.0;
-        if (mb < 1024) return String.format("%.1f MB", mb);
-        return String.format("%.1f GB", mb / 1024.0);
+        if (mb < 1024) return String.format(Locale.ROOT, "%.1f MB", mb);
+        return String.format(Locale.ROOT, "%.1f GB", mb / 1024.0);
     }
 
-    private String fontAssetForPath(String path) {
-        if (SNELL_FONT_PATH.equals(path)) return "fonts/SnellRoundhand.ttc";
-        if (BRADLEY_FONT_PATH.equals(path)) return "fonts/BradleyHandBold.ttf";
-        if (CHANCERY_FONT_PATH.equals(path)) return "fonts/AppleChancery.ttf";
-        return null;
+    private void handleNativeMessage(AIMiniBrowserView source, JSONObject message) {
+        String type = message.optString("type", "");
+        switch (type) {
+            case "bridgeReady":
+                handler.post(() -> applyConversationFontScale(source));
+                handler.postDelayed(
+                        () -> requestImmediateTaskStatusRefresh(source),
+                        350
+                );
+                break;
+            case "showKeyboard":
+                handler.post(() -> showKeyboardForBrowser(source));
+                break;
+            case "hideKeyboard":
+                handler.post(() -> hideSoftKeyboard(source));
+                break;
+            case "saveDataUrlDownload":
+                handler.post(() -> saveDataUrlDownload(
+                        message.optString("fileName", "download"),
+                        message.optString("mimeType", ""),
+                        message.optString("dataUrl", "")
+                ));
+                break;
+            case "beginBlobDownload":
+                downloadIoExecutor.execute(() -> beginBlobDownload(message));
+                break;
+            case "appendBlobDownload":
+                downloadIoExecutor.execute(() -> appendBlobDownload(message));
+                break;
+            case "finishBlobDownload":
+                downloadIoExecutor.execute(() -> finishBlobDownload(
+                        message.optString("downloadId", "")
+                ));
+                break;
+            case "cancelBlobDownload":
+                downloadIoExecutor.execute(() -> cancelBlobDownload(
+                        message.optString("downloadId", "")
+                ));
+                break;
+            case "startDownload":
+                handler.post(() -> startHttpDownload(
+                        message.optString("url", ""),
+                        message.optString("userAgent", ""),
+                        contentDispositionForName(message.optString("fileName", "")),
+                        message.optString("mimeType", ""),
+                        message.optString("cookie", "")
+                ));
+                break;
+            case "toast":
+                handler.post(() -> Toast.makeText(
+                        MainActivity.this,
+                        message.optString("message", ""),
+                        Toast.LENGTH_SHORT
+                ).show());
+                break;
+            case "notifyTaskState":
+                handler.post(() -> handleTaskStateFromWeb(
+                        message.optString("threadId", ""),
+                        message.optString("threadName", ""),
+                        message.optString("status", ""),
+                        "",
+                        message.optString("summary", ""),
+                        message.optLong("durationMs", 0L)
+                ));
+                break;
+            case "notifyTaskStateWithEndpoint":
+                handler.post(() -> handleTaskStateFromWeb(
+                        message.optString("threadId", ""),
+                        message.optString("threadName", ""),
+                        message.optString("status", ""),
+                        message.optString("statusUrl", ""),
+                        message.optString("summary", ""),
+                        message.optLong("durationMs", 0L)
+                ));
+                break;
+            default:
+                break;
+        }
     }
 
-    private String fontMimeType(String assetPath) {
-        return assetPath.endsWith(".ttc") ? "font/collection" : "font/ttf";
+    private AIMiniBrowserView.Delegate createMainBrowserDelegate() {
+        return new AIMiniBrowserView.Delegate() {
+            @Override
+            public boolean onLoadRequest(
+                    AIMiniBrowserView view,
+                    String rawUri,
+                    boolean hasUserGesture,
+                    int target
+            ) {
+                String candidate = rawUri == null ? "" : rawUri;
+                Uri uri = Uri.parse(candidate);
+                String scheme = uri.getScheme();
+                if (isHttpScheme(scheme)) {
+                    if (hasDeviceProfileSelection(uri)) {
+                        availableLocalApiBase = null;
+                        handler.removeCallbacks(localRouteRetryer);
+                    }
+                    String repaired = inheritMainNavigationToken(candidate);
+                    boolean sameMainDocument = isSameMainDocument(candidate);
+                    Log.d(
+                            NAVIGATION_LOG_TAG,
+                            "load gesture=" + hasUserGesture
+                                    + " target=" + target
+                                    + " sameMain=" + sameMainDocument
+                                    + " repaired=" + !repaired.equals(candidate)
+                                    + " token=" + navigationTokenFingerprint(candidate)
+                                    + " currentToken=" + navigationTokenFingerprint(view.getUrl())
+                                    + " url=" + navigationUrlForLog(candidate)
+                    );
+                    if (hasUserGesture
+                            && sameMainDocument
+                            && !sameVisibleNavigation(view.getUrl(), repaired)
+                            && prepareMainNavigationTransition(view, repaired)) {
+                        return true;
+                    }
+                    if (!repaired.equals(candidate)) {
+                        view.loadUrl(repaired);
+                        return true;
+                    }
+                    if (hasUserGesture && !sameMainDocument) {
+                        openExternalPage(candidate);
+                        return true;
+                    }
+                    return false;
+                }
+                if (isInternalBrowserScheme(scheme)) return true;
+                openSystemLink(uri);
+                return true;
+            }
+
+            @Override
+            public void onNewWindow(AIMiniBrowserView view, String uri) {
+                Uri target = Uri.parse(uri == null ? "" : uri);
+                if (!isHttpScheme(target.getScheme())) return;
+                if (isSameMainDocument(uri)) {
+                    String repaired = inheritMainNavigationToken(uri);
+                    Log.d(
+                            NAVIGATION_LOG_TAG,
+                            "new-window kept-main repaired=" + !repaired.equals(uri)
+                                    + " url=" + navigationUrlForLog(uri)
+                    );
+                    view.loadUrl(repaired);
+                    return;
+                }
+                openExternalPage(uri);
+            }
+
+            @Override
+            public void onLocationChange(AIMiniBrowserView view, String url) {
+                if (url != null
+                        && (url.startsWith("http://") || url.startsWith("https://"))
+                        && !urlInput.hasFocus()) {
+                    if (hasDeviceProfileSelection(Uri.parse(url))) {
+                        availableLocalApiBase = null;
+                        handler.removeCallbacks(localRouteRetryer);
+                    }
+                    String persistedUrl = inheritMainNavigationToken(url);
+                    Log.d(
+                            NAVIGATION_LOG_TAG,
+                            "location repaired=" + !persistedUrl.equals(url)
+                                    + " url=" + navigationUrlForLog(url)
+                    );
+                    urlInput.setText(persistedUrl);
+                    preferences.edit().putString(KEY_LAST_URL, persistedUrl).apply();
+                }
+            }
+
+            @Override
+            public void onPageFinished(AIMiniBrowserView view, String url, boolean success) {
+                scheduleMainNavigationReveal(view, success);
+                scheduleBrowserTransitionReveal(view, success);
+                if (!success) {
+                    pendingConnectionUrl = null;
+                    waitingForMainPageReveal = false;
+                    return;
+                }
+                pendingConnectionUrl = null;
+                injectMobileFixes();
+                adaptPlainTextPageForMobile();
+                applyConversationFontScale(view);
+                boolean nativeRouteAllowed = !hasDeviceProfileSelection(Uri.parse(url == null ? "" : url));
+                if (nativeRouteAllowed
+                        && availableLocalApiBase != null
+                        && !availableLocalApiBase.isEmpty()) {
+                    applyLocalRouteToPage(availableLocalApiBase, 0);
+                } else if (nativeRouteAllowed) {
+                    scheduleLocalRouteCheck(350);
+                }
+                applyBrowserViewport(view, mainDesktopMode);
+                showPersistentConnectedNotificationIfNeeded();
+                requestImmediateTaskStatusRefresh(view);
+                handler.postDelayed(
+                        () -> requestImmediateTaskStatusRefresh(view),
+                        850
+                );
+                handler.postDelayed(MainActivity.this::revealLoadedMainPage, 180);
+            }
+
+            @Override
+            public void onDownloadStart(
+                    AIMiniBrowserView view,
+                    String url,
+                    String userAgent,
+                    String contentDisposition,
+                    String mimeType,
+                    long contentLength
+            ) {
+                startHttpDownload(
+                        url,
+                        userAgent == null || userAgent.isEmpty() ? mainMobileUserAgent : userAgent,
+                        contentDisposition,
+                        mimeType == null ? "" : mimeType,
+                        ""
+                );
+            }
+
+            @Override
+            public boolean onShowFileChooser(
+                    AIMiniBrowserView view,
+                    ValueCallback<Uri[]> filePathCallback,
+                    WebChromeClient.FileChooserParams fileChooserParams
+            ) {
+                return beginFileChooser(view, filePathCallback, fileChooserParams);
+            }
+        };
     }
 
+    private AIMiniBrowserView.Delegate createExternalBrowserDelegate() {
+        return new AIMiniBrowserView.Delegate() {
+            @Override
+            public boolean onLoadRequest(
+                    AIMiniBrowserView view,
+                    String rawUri,
+                    boolean hasUserGesture,
+                    int target
+            ) {
+                Uri uri = Uri.parse(rawUri == null ? "" : rawUri);
+                String scheme = uri.getScheme();
+                if (isHttpScheme(scheme)) {
+                    return false;
+                }
+                if (isInternalBrowserScheme(scheme)) return true;
+                openSystemLink(uri);
+                return true;
+            }
+
+            @Override
+            public void onNewWindow(AIMiniBrowserView view, String uri) {
+                Uri target = Uri.parse(uri == null ? "" : uri);
+                if (externalWebView != null && isHttpScheme(target.getScheme())) {
+                    externalWebView.loadUrl(uri);
+                }
+            }
+
+            @Override
+            public void onPageFinished(AIMiniBrowserView view, String url, boolean success) {
+                scheduleBrowserTransitionReveal(view, success);
+                if (success) applyBrowserViewport(view, externalDesktopMode);
+            }
+
+            @Override
+            public void onDownloadStart(
+                    AIMiniBrowserView view,
+                    String url,
+                    String userAgent,
+                    String contentDisposition,
+                    String mimeType,
+                    long contentLength
+            ) {
+                startHttpDownload(
+                        url,
+                        userAgent == null || userAgent.isEmpty() ? externalMobileUserAgent : userAgent,
+                        contentDisposition,
+                        mimeType == null ? "" : mimeType,
+                        ""
+                );
+            }
+
+            @Override
+            public void onCloseRequest(AIMiniBrowserView view) {
+                closeExternalPage();
+            }
+
+            @Override
+            public boolean onShowFileChooser(
+                    AIMiniBrowserView view,
+                    ValueCallback<Uri[]> filePathCallback,
+                    WebChromeClient.FileChooserParams fileChooserParams
+            ) {
+                return beginFileChooser(view, filePathCallback, fileChooserParams);
+            }
+        };
+    }
+
+    // WebView 下载由 DownloadListener / page.js blob 桥接处理。
+
+
+
+    private String headerIgnoreCase(Map<String, String> headers, String name) {
+        if (headers == null || name == null) return "";
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (name.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue() == null ? "" : entry.getValue();
+            }
+        }
+        return "";
+    }
+
+    private long headerLong(Map<String, String> headers, String name) {
+        try {
+            String value = headerIgnoreCase(headers, name);
+            return value.isEmpty() ? 0L : Math.max(0L, Long.parseLong(value.trim()));
+        } catch (Exception ignored) {
+            return 0L;
+        }
+    }
+
+    private String contentDispositionForName(String fileName) {
+        String safeName = safeFileName(fileName);
+        if (safeName.isEmpty() || "download".equals(safeName)) return "";
+        return "attachment; filename=\"" + safeName.replace("\"", "") + "\"";
+    }
+
+    private boolean beginFileChooser(
+            AIMiniBrowserView view,
+            ValueCallback<Uri[]> filePathCallback,
+            WebChromeClient.FileChooserParams params
+    ) {
+        if (pendingFilePathCallback != null) {
+            try {
+                pendingFilePathCallback.onReceiveValue(null);
+            } catch (Exception ignored) {
+            }
+        }
+        pendingFilePathCallback = filePathCallback;
+        pendingFileChooserView = view;
+
+        Intent intent;
+        try {
+            if (params != null) {
+                intent = params.createIntent();
+            } else {
+                intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+            }
+        } catch (Exception error) {
+            intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+        }
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, FILE_CHOOSER_REQUEST);
+            return true;
+        } catch (ActivityNotFoundException error) {
+            pendingFilePathCallback = null;
+            pendingFileChooserView = null;
+            if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+            Toast.makeText(this, R.string.no_file_picker, Toast.LENGTH_SHORT).show();
+            return false;
+        }
+    }
+
+
+    private String[] normalizedMimeTypes(String[] mimeTypes) {
+        if (mimeTypes == null || mimeTypes.length == 0) return new String[]{"*/*"};
+        List<String> normalized = new ArrayList<>();
+        for (String mimeType : mimeTypes) {
+            if (mimeType == null) continue;
+            String value = mimeType.trim();
+            if (value.isEmpty() || !value.contains("/")) continue;
+            if (!normalized.contains(value)) normalized.add(value);
+        }
+        if (normalized.isEmpty()) normalized.add("*/*");
+        return normalized.toArray(new String[0]);
+    }
+
+    private Uri materializeUploadUri(Uri sourceUri) throws Exception {
+        if (sourceUri == null) throw new IllegalArgumentException("Missing upload URI");
+        if ("file".equalsIgnoreCase(sourceUri.getScheme())) return sourceUri;
+
+        File directory = new File(getCacheDir(), "webview-uploads");
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("Cannot create upload cache");
+        }
+        cleanOldFiles(directory, 24L * 60L * 60L * 1000L);
+
+        String displayName = queryDisplayName(sourceUri);
+        if (displayName.isEmpty()) displayName = "upload-" + System.currentTimeMillis();
+        File target = uniqueFile(directory, safeFileName(displayName));
+        try (InputStream input = getContentResolver().openInputStream(sourceUri);
+             OutputStream output = new FileOutputStream(target)) {
+            if (input == null) throw new IllegalStateException("Cannot read selected file");
+            copyStream(input, output);
+        }
+        return Uri.fromFile(target);
+    }
+
+    private String queryDisplayName(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(
+                uri,
+                new String[]{OpenableColumns.DISPLAY_NAME},
+                null,
+                null,
+                null
+        )) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (column >= 0) {
+                    String value = cursor.getString(column);
+                    if (value != null) return value.trim();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        String segment = uri.getLastPathSegment();
+        return segment == null ? "" : segment;
+    }
+
+    private void cleanOldFiles(File directory, long maxAgeMs) {
+        File[] files = directory.listFiles();
+        if (files == null) return;
+        long cutoff = System.currentTimeMillis() - maxAgeMs;
+        for (File file : files) {
+            if (file.isFile() && file.lastModified() < cutoff) file.delete();
+        }
+    }
+
+    /*
+     * Legacy Android WebView clients kept in source history for reference only.
+     * Legacy WebView client code (disabled). Active path uses AIMiniBrowserView.
+     *
     private final class NativeBridge {
         @JavascriptInterface
         public void showKeyboard() {
@@ -3095,7 +6485,27 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void notifyTaskState(String threadId, String threadName, String status) {
-            handler.post(() -> MainActivity.this.showTaskStateNotification(threadId, threadName, status));
+            handler.post(() -> MainActivity.this.handleTaskStateFromWeb(
+                    threadId,
+                    threadName,
+                    status,
+                    ""
+            ));
+        }
+
+        @JavascriptInterface
+        public void notifyTaskStateWithEndpoint(
+                String threadId,
+                String threadName,
+                String status,
+                String statusUrl
+        ) {
+            handler.post(() -> MainActivity.this.handleTaskStateFromWeb(
+                    threadId,
+                    threadName,
+                    status,
+                    statusUrl
+            ));
         }
     }
 
@@ -3118,13 +6528,34 @@ public class MainActivity extends Activity {
             Uri uri = request.getUrl();
             String scheme = uri.getScheme();
             if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                        && request.isForMainFrame()
+                        && request.hasGesture()) {
+                    openExternalPage(uri.toString());
+                    return true;
+                }
                 return false;
             }
-            try {
-                startActivity(new Intent(Intent.ACTION_VIEW, uri));
-            } catch (ActivityNotFoundException ignored) {
-                Toast.makeText(MainActivity.this, R.string.no_app_for_link, Toast.LENGTH_SHORT).show();
+            openSystemLink(uri);
+            return true;
+        }
+
+        @Override
+        @SuppressWarnings("deprecation")
+        public boolean shouldOverrideUrlLoading(WebView view, String url) {
+            Uri uri = Uri.parse(url);
+            String scheme = uri.getScheme();
+            if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                WebView.HitTestResult hit = view.getHitTestResult();
+                if (view == webView
+                        && hit != null
+                        && hit.getType() != WebView.HitTestResult.UNKNOWN_TYPE) {
+                    openExternalPage(url);
+                    return true;
+                }
+                return false;
             }
+            openSystemLink(uri);
             return true;
         }
 
@@ -3164,6 +6595,7 @@ public class MainActivity extends Activity {
             } else {
                 scheduleLocalRouteCheck(350);
             }
+            applyBrowserViewport(view, mainDesktopMode);
             CookieManager.getInstance().flush();
         }
 
@@ -3189,7 +6621,93 @@ public class MainActivity extends Activity {
         }
     }
 
+    private final class ExternalWebViewClient extends WebViewClient {
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            Uri uri = request.getUrl();
+            String scheme = uri.getScheme();
+            if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                return false;
+            }
+            openSystemLink(uri);
+            return true;
+        }
+
+        @Override
+        @SuppressWarnings("deprecation")
+        public boolean shouldOverrideUrlLoading(WebView view, String url) {
+            Uri uri = Uri.parse(url);
+            String scheme = uri.getScheme();
+            if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                return false;
+            }
+            openSystemLink(uri);
+            return true;
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            super.onPageFinished(view, url);
+            applyBrowserViewport(view, externalDesktopMode);
+            CookieManager.getInstance().flush();
+        }
+    }
+
     private final class AppWebChromeClient extends WebChromeClient {
+        @SuppressLint("SetJavaScriptEnabled")
+        @Override
+        public boolean onCreateWindow(
+                WebView sourceView,
+                boolean isDialog,
+                boolean isUserGesture,
+                Message resultMsg
+        ) {
+            WebView popup = new WebView(MainActivity.this);
+            popup.getSettings().setJavaScriptEnabled(true);
+            popup.getSettings().setDomStorageEnabled(true);
+            popup.setWebViewClient(new WebViewClient() {
+                private boolean handled;
+
+                private boolean handlePopupUrl(String url) {
+                    if (handled || url == null || url.trim().isEmpty() || "about:blank".equals(url)) {
+                        return false;
+                    }
+                    handled = true;
+                    handler.post(() -> {
+                        openExternalPage(url);
+                        try {
+                            popup.stopLoading();
+                            popup.destroy();
+                        } catch (Exception ignored) {
+                        }
+                    });
+                    return true;
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                    return handlePopupUrl(request.getUrl().toString());
+                }
+
+                @Override
+                public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                    super.onPageStarted(view, url, favicon);
+                    handlePopupUrl(url);
+                }
+            });
+
+            WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+            transport.setWebView(popup);
+            resultMsg.sendToTarget();
+            return true;
+        }
+
+        @Override
+        public void onCloseWindow(WebView window) {
+            if (window == externalWebView) closeExternalPage();
+            else super.onCloseWindow(window);
+        }
+
         @Override
         public boolean onShowFileChooser(
                 WebView webView,
@@ -3219,10 +6737,59 @@ public class MainActivity extends Activity {
         }
     }
 
+    */
+
+    private static final class SavedFileResult {
+        final Uri uri;
+        final long bytes;
+
+        SavedFileResult(Uri uri, long bytes) {
+            this.uri = uri;
+            this.bytes = bytes;
+        }
+    }
+
+    private interface DownloadProgressListener {
+        void onProgress(long bytes);
+    }
+
+    private static final class PendingBlobDownload {
+        final String id;
+        final String fileName;
+        final String mimeType;
+        final long expectedBytes;
+        final File tempFile;
+        final OutputStream output;
+        final DownloadItem item;
+        int nextIndex;
+        long writtenBytes;
+        long lastUiUpdateAt;
+        long lastPersistAt;
+
+        PendingBlobDownload(
+                String id,
+                String fileName,
+                String mimeType,
+                long expectedBytes,
+                File tempFile,
+                OutputStream output,
+                DownloadItem item
+        ) {
+            this.id = id;
+            this.fileName = fileName;
+            this.mimeType = mimeType == null ? "" : mimeType;
+            this.expectedBytes = expectedBytes;
+            this.tempFile = tempFile;
+            this.output = output;
+            this.item = item;
+        }
+    }
+
     private static final class DownloadItem {
         final long id;
         final boolean manual;
-        final Uri manualUri;
+        final String transferId;
+        Uri manualUri;
         final String fileName;
         String mimeType;
         String localUri;
@@ -3231,9 +6798,17 @@ public class MainActivity extends Activity {
         long totalBytes;
         long downloadedAt;
 
-        private DownloadItem(long id, boolean manual, Uri manualUri, String fileName, String mimeType) {
+        private DownloadItem(
+                long id,
+                boolean manual,
+                String transferId,
+                Uri manualUri,
+                String fileName,
+                String mimeType
+        ) {
             this.id = id;
             this.manual = manual;
+            this.transferId = transferId == null ? "" : transferId;
             this.manualUri = manualUri;
             this.fileName = fileName;
             this.mimeType = mimeType == null ? "" : mimeType;
@@ -3241,16 +6816,35 @@ public class MainActivity extends Activity {
         }
 
         static DownloadItem forDownloadManager(long id, String fileName, String mimeType) {
-            DownloadItem item = new DownloadItem(id, false, null, fileName, mimeType);
+            DownloadItem item = new DownloadItem(id, false, "", null, fileName, mimeType);
             item.status = DownloadManager.STATUS_PENDING;
             return item;
         }
 
         static DownloadItem forSavedFile(String fileName, String mimeType, Uri uri, long bytes) {
-            DownloadItem item = new DownloadItem(-1, true, uri, fileName, mimeType);
+            DownloadItem item = new DownloadItem(-1, true, "", uri, fileName, mimeType);
             item.status = DownloadManager.STATUS_SUCCESSFUL;
             item.downloadedBytes = bytes;
             item.totalBytes = bytes;
+            return item;
+        }
+
+        static DownloadItem forPendingBlob(
+                String transferId,
+                String fileName,
+                String mimeType,
+                long totalBytes
+        ) {
+            DownloadItem item = new DownloadItem(
+                    -1,
+                    true,
+                    transferId,
+                    null,
+                    fileName,
+                    mimeType
+            );
+            item.status = DownloadManager.STATUS_RUNNING;
+            item.totalBytes = totalBytes;
             return item;
         }
 
@@ -3258,7 +6852,14 @@ public class MainActivity extends Activity {
             return status == DownloadManager.STATUS_SUCCESSFUL;
         }
 
+        boolean isInProgress() {
+            return status == DownloadManager.STATUS_PENDING
+                    || status == DownloadManager.STATUS_RUNNING
+                    || status == DownloadManager.STATUS_PAUSED;
+        }
+
         String key() {
+            if (!transferId.isEmpty()) return "transfer:" + transferId;
             if (manualUri != null) return "manual:" + manualUri;
             return "download:" + id;
         }
@@ -3284,50 +6885,6 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
             return context.getString(R.string.saved_connection_default);
-        }
-    }
-
-    private final class ChatGptIconView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint logoPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Bitmap logoBitmap;
-        private final Rect src = new Rect();
-        private final RectF dst = new RectF();
-
-        ChatGptIconView(Context context) {
-            super(context);
-            logoBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.ic_chatgpt);
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            float width = getWidth();
-            float height = getHeight();
-            float radius = Math.min(width, height) * 0.28f;
-            paint.setShader(new LinearGradient(
-                    0,
-                    0,
-                    width,
-                    height,
-                    new int[]{Color.rgb(52, 102, 255), Color.rgb(70, 216, 204)},
-                    null,
-                    Shader.TileMode.CLAMP
-            ));
-            canvas.drawRoundRect(0, 0, width, height, radius, radius, paint);
-            paint.setShader(null);
-
-            if (logoBitmap == null) return;
-            src.set(0, 0, logoBitmap.getWidth(), logoBitmap.getHeight());
-            float inset = Math.min(width, height) * 0.14f;
-            dst.set(inset, inset, width - inset, height - inset);
-            logoPaint.setColorFilter(new android.graphics.ColorMatrixColorFilter(new float[]{
-                    0, 0, 0, 0, 255,
-                    0, 0, 0, 0, 255,
-                    0, 0, 0, 0, 255,
-                    -1, 0, 0, 0, 255
-            }));
-            canvas.drawBitmap(logoBitmap, src, dst, logoPaint);
         }
     }
 
@@ -3542,9 +7099,15 @@ public class MainActivity extends Activity {
 
         private final Path clipPath = new Path();
         private final RectF bounds = new RectF();
+        private float contentScale = 1f;
 
         RoundedIconView(Context context) {
             super(context);
+        }
+
+        void setContentScale(float scale) {
+            contentScale = Math.max(1f, Math.min(1.12f, scale));
+            invalidate();
         }
 
         @Override
@@ -3561,6 +7124,9 @@ public class MainActivity extends Activity {
         protected void onDraw(Canvas canvas) {
             int saveCount = canvas.save();
             canvas.clipPath(clipPath);
+            if (contentScale > 1f) {
+                canvas.scale(contentScale, contentScale, getWidth() / 2f, getHeight() / 2f);
+            }
             super.onDraw(canvas);
             canvas.restoreToCount(saveCount);
         }
