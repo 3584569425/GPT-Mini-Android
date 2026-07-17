@@ -174,6 +174,9 @@ public class MainActivity extends Activity {
     private final List<TextView> miniMenuNavSubtitles = new ArrayList<>();
     private final List<TextView> miniMenuNavChevrons = new ArrayList<>();
     private final List<View> miniMenuNavIcons = new ArrayList<>();
+    private final List<View> miniMenuActionButtons = new ArrayList<>();
+    private final List<TextView> miniMenuActionLabels = new ArrayList<>();
+    private final List<View> miniMenuActionIcons = new ArrayList<>();
     private final List<View> miniMenuSettingsRows = new ArrayList<>();
     private final List<TextView> miniMenuSectionTitles = new ArrayList<>();
     private final Set<String> runningNotificationTasks = new HashSet<>();
@@ -955,7 +958,7 @@ public class MainActivity extends Activity {
         miniMenu.setOrientation(LinearLayout.VERTICAL);
         miniMenu.setPadding(dp(12), dp(12), dp(12), dp(12));
         miniMenu.setBackground(menuPanelBackground(isFloatMenuLight()));
-        miniMenu.setElevation(dp(18));
+        miniMenu.setElevation(dp(24));
         miniMenu.setVisibility(View.GONE);
         miniMenu.setClickable(true);
         FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(
@@ -1018,45 +1021,42 @@ public class MainActivity extends Activity {
         externalCloseButton.setVisibility(View.GONE);
         miniMenuRootPage.addView(externalCloseButton);
 
+        // 一行三按钮：桌面模式 / 回到首页 / 刷新
+        LinearLayout quickRow = new LinearLayout(this);
+        quickRow.setOrientation(LinearLayout.HORIZONTAL);
+        quickRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams quickRowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        quickRowParams.setMargins(0, 0, 0, dp(10));
+        miniMenuRootPage.addView(quickRow, quickRowParams);
+
         externalModeLabel = new TextView(this);
-        externalModeButton = createMiniNavRow(
-                getString(R.string.switch_to_desktop_mode),
-                getString(R.string.mini_menu_mode_subtitle),
+        externalModeButton = createMiniActionButton(
+                getString(R.string.mini_menu_action_desktop),
                 "mode",
-                false,
                 view -> {
                     hideMiniMenu();
                     toggleActiveBrowserMode();
                 },
                 externalModeLabel
         );
-        miniMenuRootPage.addView(externalModeButton);
+        quickRow.addView(externalModeButton, miniActionParams(0));
 
-        miniMenuRootPage.addView(createMiniNavRow(
-                getString(R.string.downloads_title),
-                getString(R.string.mini_menu_downloads_subtitle),
-                "downloads",
-                false,
-                view -> {
-                    hideMiniMenu();
-                    showDownloadsPanel();
-                }
-        ));
-        miniMenuRootPage.addView(createMiniNavRow(
-                getString(R.string.return_home),
-                getString(R.string.mini_menu_home_subtitle),
+        quickRow.addView(createMiniActionButton(
+                getString(R.string.mini_menu_action_home),
                 "home",
-                false,
                 view -> {
                     hideMiniMenu();
                     showWelcome();
-                }
-        ));
-        miniMenuRootPage.addView(createMiniNavRow(
-                getString(R.string.refresh_page),
-                getString(R.string.mini_menu_refresh_subtitle),
+                },
+                null
+        ), miniActionParams(dp(8)));
+
+        quickRow.addView(createMiniActionButton(
+                getString(R.string.mini_menu_action_refresh),
                 "refresh",
-                false,
                 view -> {
                     hideMiniMenu();
                     AIMiniBrowserView activeWebView = activeWebView();
@@ -1064,6 +1064,18 @@ public class MainActivity extends Activity {
                         showBrowserTransitionCover(2400L);
                         activeWebView.reload(reloadFallbackUrl(activeWebView));
                     }
+                },
+                null
+        ), miniActionParams(dp(8)));
+
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.downloads_title),
+                getString(R.string.mini_menu_downloads_subtitle),
+                "downloads",
+                true,
+                view -> {
+                    hideMiniMenu();
+                    showDownloadsPanel();
                 }
         ));
         miniMenuRootPage.addView(createMiniNavRow(
@@ -1378,6 +1390,54 @@ public class MainActivity extends Activity {
         view.setBackground(thumbTrack);
     }
 
+    private LinearLayout.LayoutParams miniActionParams(int leftMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+        );
+        params.setMargins(leftMargin, 0, 0, 0);
+        return params;
+    }
+
+    private View createMiniActionButton(
+            String label,
+            String iconKind,
+            View.OnClickListener listener,
+            TextView reuseLabel
+    ) {
+        LinearLayout button = new LinearLayout(this);
+        button.setOrientation(LinearLayout.VERTICAL);
+        button.setGravity(Gravity.CENTER_HORIZONTAL);
+        button.setPadding(dp(6), dp(12), dp(6), dp(10));
+        button.setMinimumHeight(dp(86));
+        button.setOnClickListener(listener);
+        miniMenuActionButtons.add(button);
+
+        View icon = createMiniNavIcon(iconKind);
+        miniMenuActionIcons.add(icon);
+        miniMenuNavIcons.add(icon);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(40), dp(40));
+        iconParams.gravity = Gravity.CENTER_HORIZONTAL;
+        button.addView(icon, iconParams);
+
+        TextView labelView = reuseLabel != null ? reuseLabel : new TextView(this);
+        labelView.setText(label);
+        labelView.setTextSize(11.5f);
+        labelView.setGravity(Gravity.CENTER);
+        labelView.setPadding(0, dp(8), 0, 0);
+        labelView.setMaxLines(2);
+        labelView.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        miniMenuActionLabels.add(labelView);
+        miniMenuNavTitles.add(labelView);
+        miniMenuButtons.add(labelView);
+        button.addView(labelView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        return button;
+    }
+
     private View createMiniNavRow(
             String title,
             String subtitle,
@@ -1450,15 +1510,16 @@ public class MainActivity extends Activity {
     private View createMiniNavIcon(String kind) {
         TextView icon = new TextView(this);
         icon.setGravity(Gravity.CENTER);
-        icon.setTextSize(14);
+        icon.setTextSize(16);
         icon.setTypeface(Typeface.DEFAULT_BOLD);
+        // 使用清晰的符号图标，三键快捷区与导航行共用。
         String glyph = "•";
-        if ("close".equals(kind)) glyph = "×";
-        else if ("mode".equals(kind)) glyph = "⧉";
+        if ("close".equals(kind)) glyph = "✕";
+        else if ("mode".equals(kind)) glyph = "▢";
         else if ("downloads".equals(kind)) glyph = "↓";
         else if ("home".equals(kind)) glyph = "⌂";
         else if ("refresh".equals(kind)) glyph = "↻";
-        else if ("appearance".equals(kind)) glyph = "◐";
+        else if ("appearance".equals(kind)) glyph = "✦";
         else if ("notification".equals(kind)) glyph = "◔";
         icon.setText(glyph);
         icon.setTag(kind);
@@ -2036,6 +2097,12 @@ public class MainActivity extends Activity {
         for (View row : miniMenuSettingsRows) {
             row.setBackground(settingsNavRowBackground(light, glass));
         }
+        for (View action : miniMenuActionButtons) {
+            action.setBackground(settingsActionButtonBackground(light, glass));
+        }
+        for (TextView actionLabel : miniMenuActionLabels) {
+            actionLabel.setTextColor(light ? Color.rgb(28, 32, 40) : Color.rgb(236, 240, 246));
+        }
         for (TextView title : miniMenuNavTitles) {
             title.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
         }
@@ -2094,17 +2161,34 @@ public class MainActivity extends Activity {
     }
 
     private GradientDrawable settingsNavRowBackground(boolean light, boolean glass) {
+        // WebUI: glass rows ~ rgba(255,255,255,.032~/.06)；非玻璃 ~ .045
         GradientDrawable drawable = roundedRect(
                 light
-                        ? (glass ? Color.argb(90, 255, 255, 255) : Color.argb(18, 0, 0, 0))
-                        : (glass ? Color.argb(28, 255, 255, 255) : Color.argb(18, 255, 255, 255)),
+                        ? (glass ? Color.argb(72, 255, 255, 255) : Color.argb(16, 0, 0, 0))
+                        : (glass ? Color.argb(18, 255, 255, 255) : Color.argb(14, 255, 255, 255)),
                 dp(17)
         );
         drawable.setStroke(
                 dp(1),
                 light
-                        ? (glass ? Color.argb(70, 255, 255, 255) : Color.argb(20, 0, 0, 0))
-                        : (glass ? Color.argb(40, 255, 255, 255) : Color.argb(18, 255, 255, 255))
+                        ? (glass ? Color.argb(55, 255, 255, 255) : Color.argb(16, 0, 0, 0))
+                        : (glass ? Color.argb(30, 255, 255, 255) : Color.argb(0, 255, 255, 255))
+        );
+        return drawable;
+    }
+
+    private GradientDrawable settingsActionButtonBackground(boolean light, boolean glass) {
+        GradientDrawable drawable = roundedRect(
+                light
+                        ? (glass ? Color.argb(88, 255, 255, 255) : Color.argb(20, 0, 0, 0))
+                        : (glass ? Color.argb(24, 255, 255, 255) : Color.argb(18, 255, 255, 255)),
+                dp(18)
+        );
+        drawable.setStroke(
+                dp(1),
+                light
+                        ? (glass ? Color.argb(70, 255, 255, 255) : Color.argb(22, 0, 0, 0))
+                        : (glass ? Color.argb(42, 255, 255, 255) : Color.argb(24, 255, 255, 255))
         );
         return drawable;
     }
@@ -2140,10 +2224,18 @@ public class MainActivity extends Activity {
             fg = light ? Color.rgb(31, 111, 208) : Color.argb(242, 178, 225, 255);
             bg = light ? Color.argb(28, 31, 111, 208) : Color.argb(36, 142, 203, 255);
             border = light ? Color.argb(40, 31, 111, 208) : Color.argb(48, 142, 203, 255);
-        } else if ("home".equals(kind) || "refresh".equals(kind) || "downloads".equals(kind)) {
-            fg = light ? Color.rgb(23, 122, 76) : Color.argb(240, 111, 222, 162);
-            bg = light ? Color.argb(28, 23, 122, 76) : Color.argb(34, 65, 201, 125);
-            border = light ? Color.argb(40, 23, 122, 76) : Color.argb(48, 116, 222, 165);
+        } else if ("home".equals(kind)) {
+            fg = light ? Color.rgb(23, 122, 76) : Color.argb(242, 120, 230, 170);
+            bg = light ? Color.argb(30, 23, 122, 76) : Color.argb(40, 48, 180, 120);
+            border = light ? Color.argb(44, 23, 122, 76) : Color.argb(56, 110, 220, 165);
+        } else if ("refresh".equals(kind)) {
+            fg = light ? Color.rgb(120, 70, 200) : Color.argb(242, 190, 170, 255);
+            bg = light ? Color.argb(28, 120, 70, 200) : Color.argb(40, 120, 90, 220);
+            border = light ? Color.argb(42, 120, 70, 200) : Color.argb(54, 170, 140, 255);
+        } else if ("downloads".equals(kind)) {
+            fg = light ? Color.rgb(20, 130, 100) : Color.argb(240, 111, 222, 162);
+            bg = light ? Color.argb(28, 20, 130, 100) : Color.argb(36, 65, 201, 125);
+            border = light ? Color.argb(40, 20, 130, 100) : Color.argb(48, 116, 222, 165);
         } else if ("close".equals(kind)) {
             fg = light ? Color.rgb(180, 60, 50) : Color.argb(242, 255, 145, 132);
             bg = light ? Color.argb(28, 190, 70, 58) : Color.argb(34, 255, 119, 103);
@@ -2753,8 +2845,8 @@ public class MainActivity extends Activity {
         if (externalModeLabel != null) {
             boolean desktopMode = active ? externalDesktopMode : mainDesktopMode;
             externalModeLabel.setText(desktopMode
-                    ? R.string.switch_to_mobile_mode
-                    : R.string.switch_to_desktop_mode);
+                    ? R.string.mini_menu_action_mobile
+                    : R.string.mini_menu_action_desktop);
         }
     }
 
@@ -5236,7 +5328,7 @@ public class MainActivity extends Activity {
         if (miniMenuScrim != null) {
             // 不用整页 RenderEffect 时，略加强 scrim 以保留玻璃菜单的景深感。
             miniMenuScrim.setBackgroundColor(nativeLiquidGlassEnabled()
-                    ? Color.argb(isFloatMenuLight() ? 36 : 78, 0, 0, 0)
+                    ? Color.argb(isFloatMenuLight() ? 48 : 120, 0, 0, 0)
                     : Color.TRANSPARENT);
         }
         if (downloadsScrim != null) {
@@ -6724,24 +6816,26 @@ public class MainActivity extends Activity {
     }
 
     private GradientDrawable liquidGlassPanelBackground(boolean light, int radius) {
+        // 贴近 WebUI 设置卡液态玻璃观感：磨砂深色/浅色底，不完全透出背后文字。
+        // 原生无法对单层做 backdrop-filter，用更高不透明度 + 高光描边模拟 frosted glass。
         GradientDrawable drawable = new GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 light
                         ? new int[]{
-                                Color.argb(194, 255, 255, 255),
-                                Color.argb(142, 239, 246, 252),
-                                Color.argb(176, 255, 255, 255)
+                                Color.argb(236, 250, 251, 253),
+                                Color.argb(228, 238, 242, 248),
+                                Color.argb(232, 248, 249, 252)
                         }
                         : new int[]{
-                                Color.argb(174, 52, 57, 65),
-                                Color.argb(116, 18, 22, 29),
-                                Color.argb(154, 39, 45, 54)
+                                Color.argb(238, 42, 44, 50),
+                                Color.argb(244, 24, 25, 30),
+                                Color.argb(236, 32, 34, 40)
                         }
         );
         drawable.setCornerRadius(radius);
         drawable.setStroke(
                 dp(1),
-                light ? Color.argb(205, 255, 255, 255) : Color.argb(98, 255, 255, 255)
+                light ? Color.argb(120, 255, 255, 255) : Color.argb(58, 255, 255, 255)
         );
         return drawable;
     }
