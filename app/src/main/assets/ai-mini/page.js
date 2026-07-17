@@ -1005,8 +1005,8 @@
 
 
   function installDownloadHooks() {
-    if (window.__AIMiniDownloadHooksVersion === "1.17") return;
-    window.__AIMiniDownloadHooksVersion = "1.17";
+    if (window.__AIMiniDownloadHooksVersion === "1.18") return;
+    window.__AIMiniDownloadHooksVersion = "1.18";
 
     const objectUrls = new Map();
     const originalCreateObjectURL = URL.createObjectURL.bind(URL);
@@ -1083,11 +1083,54 @@
       return response.blob();
     }
 
+    function notifyDownloadStarted(fileName) {
+      try {
+        const name = String(fileName || "").trim();
+        if (window.CodexMiniNative && window.CodexMiniNative.toast) {
+          window.CodexMiniNative.toast(
+            name && name !== "download" && name !== "attachment"
+              ? ("已开始下载：" + name)
+              : "已开始下载"
+          );
+        }
+      } catch (_) {}
+    }
+
+    // WebUI 附件预览右上角“下载”会先 fetch 整个文件再触发 a[download]。
+    // 大文件期间无感知延迟，点击当下立刻提示，避免误点重复下载。
+    if (!window.__AIMiniDownloadClickFeedback) {
+      window.__AIMiniDownloadClickFeedback = true;
+      document.addEventListener("click", function (event) {
+        try {
+          const target = event && event.target;
+          if (!target || !target.closest) return;
+          const btn = target.closest(
+            "#file-preview-download, .file-preview-download, a[download], [data-ai-mini-download]"
+          );
+          if (!btn) return;
+          const fileName = btn.getAttribute("download")
+            || btn.getAttribute("data-file-name")
+            || (document.getElementById("file-preview-title")
+                && document.getElementById("file-preview-title").textContent)
+            || "";
+          notifyDownloadStarted(fileName);
+          window.__AIMiniDownloadClickFeedbackRecent = true;
+          setTimeout(function () {
+            window.__AIMiniDownloadClickFeedbackRecent = false;
+          }, 8000);
+        } catch (_) {}
+      }, true);
+    }
+
     function interceptDownloadAnchor(anchor) {
       if (!anchor || !anchor.hasAttribute("download") || !anchor.href) return false;
       const href = String(anchor.href || "");
       const fileName = String(anchor.download || "download");
       const mimeType = String(anchor.type || "");
+      // 若点击监听已提示过，这里不再重复；程序化 link.click() 也会走这里。
+      if (!window.__AIMiniDownloadClickFeedbackRecent) {
+        notifyDownloadStarted(fileName);
+      }
 
       if (href.indexOf("data:") === 0) {
         fetch(href)

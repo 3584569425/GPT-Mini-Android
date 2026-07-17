@@ -1021,7 +1021,7 @@ public class MainActivity extends Activity {
         externalCloseButton.setVisibility(View.GONE);
         miniMenuRootPage.addView(externalCloseButton);
 
-        // 一行三按钮：桌面模式 / 回到首页 / 刷新
+        // 一行四按钮：桌面模式 / 连接页 / 刷新 / 下载
         LinearLayout quickRow = new LinearLayout(this);
         quickRow.setOrientation(LinearLayout.HORIZONTAL);
         quickRow.setGravity(Gravity.CENTER);
@@ -1052,7 +1052,7 @@ public class MainActivity extends Activity {
                     showWelcome();
                 },
                 null
-        ), miniActionParams(dp(8)));
+        ), miniActionParams(dp(6)));
 
         quickRow.addView(createMiniActionButton(
                 getString(R.string.mini_menu_action_refresh),
@@ -1066,18 +1066,17 @@ public class MainActivity extends Activity {
                     }
                 },
                 null
-        ), miniActionParams(dp(8)));
+        ), miniActionParams(dp(6)));
 
-        miniMenuRootPage.addView(createMiniNavRow(
-                getString(R.string.downloads_title),
-                getString(R.string.mini_menu_downloads_subtitle),
+        quickRow.addView(createMiniActionButton(
+                getString(R.string.mini_menu_action_downloads),
                 "downloads",
-                true,
                 view -> {
                     hideMiniMenu();
                     showDownloadsPanel();
-                }
-        ));
+                },
+                null
+        ), miniActionParams(dp(6)));
         miniMenuRootPage.addView(createMiniNavRow(
                 getString(R.string.interface_settings),
                 getString(R.string.mini_menu_interface_subtitle),
@@ -1409,23 +1408,23 @@ public class MainActivity extends Activity {
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.VERTICAL);
         button.setGravity(Gravity.CENTER_HORIZONTAL);
-        button.setPadding(dp(6), dp(12), dp(6), dp(10));
-        button.setMinimumHeight(dp(86));
+        button.setPadding(dp(4), dp(8), dp(4), dp(8));
+        button.setMinimumHeight(dp(72));
         button.setOnClickListener(listener);
         miniMenuActionButtons.add(button);
 
         View icon = createMiniNavIcon(iconKind);
         miniMenuActionIcons.add(icon);
         miniMenuNavIcons.add(icon);
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(40), dp(40));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(32), dp(32));
         iconParams.gravity = Gravity.CENTER_HORIZONTAL;
         button.addView(icon, iconParams);
 
         TextView labelView = reuseLabel != null ? reuseLabel : new TextView(this);
         labelView.setText(label);
-        labelView.setTextSize(11.5f);
+        labelView.setTextSize(10.5f);
         labelView.setGravity(Gravity.CENTER);
-        labelView.setPadding(0, dp(8), 0, 0);
+        labelView.setPadding(0, dp(6), 0, 0);
         labelView.setMaxLines(2);
         labelView.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
         miniMenuActionLabels.add(labelView);
@@ -5147,22 +5146,9 @@ public class MainActivity extends Activity {
         // - host 默认只留 navigation；仅当 ADJUST_RESIZE 在边缘到边缘下失效
         //   （可见区域仍被键盘挡住）时，现代 glass 才用 host padding 补一次。
         // - 现代 glass 的 CSS transform 保持 0；legacy 走 keyboard-shift。
-        int overlap = visibleKeyboardOverlap(root);
-        // ADJUST_RESIZE 生效时，root 已随窗口缩小，visible frame 几乎铺满 root，
-        // overlap 接近 0；失效时 overlap 约等于键盘高度。
-        boolean adjustResizeActive = !imeVisible
-                || overlap < Math.max(dp(80), Math.max(1, keyboardBottom) / 3);
-        int contentBottom;
-        if (legacyComposerImeBridgeEnabled) {
-            // legacy：表面保持全高，靠 CSS shift 抬输入区（同 Gecko legacy）。
-            contentBottom = Math.max(0, navigation.bottom);
-        } else if (imeVisible && !adjustResizeActive) {
-            // 系统没真正 resize：由 host 垫一次键盘高度。
-            contentBottom = Math.max(navigation.bottom, keyboardBottom);
-        } else {
-            // 系统已 resize：host 绝不能再垫键盘，否则双倍黑块。
-            contentBottom = Math.max(0, navigation.bottom);
-        }
+        // 不再根据 overlap 判断是否 host 垫键盘：OPPO/ColorOS 上该判断失真
+        // 会导致双倍抬升/黑空洞。现代与 legacy 的 host 都只保留导航栏高度。
+        int contentBottom = Math.max(0, navigation.bottom);
         applyHostBottomInset(contentBottom);
         int pageKeyboardBottom;
         if (!imeVisible) {
@@ -5170,7 +5156,8 @@ public class MainActivity extends Activity {
         } else if (legacyComposerImeBridgeEnabled) {
             pageKeyboardBottom = Math.max(0, keyboardBottom - navigation.bottom);
         } else {
-            // 现代：只同步 open 状态，page.js / CSS 会把 shift 置 0。
+            // 现代：只同步 open 状态（非 0 即可），page.js 会把视觉 shift 置 0。
+            // 传真实键盘高度给 page.js 判定 open；不再用它做 layout padding。
             pageKeyboardBottom = Math.max(0, keyboardBottom - navigation.bottom);
         }
         applyImeInset(root, pageKeyboardBottom);
@@ -5236,13 +5223,8 @@ public class MainActivity extends Activity {
                         ? 0
                         : insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
                 // fallback 与 applyModernImeInsets 对齐。
-                if (legacyComposerImeBridgeEnabled) {
-                    applyHostBottomInset(navigationBottom);
-                } else {
-                    applyHostBottomInset(keyboardOpen
-                            ? Math.max(navigationBottom, hidden)
-                            : navigationBottom);
-                }
+                // 现代 WebView 一律不垫键盘；legacy 也只保留导航栏。
+                applyHostBottomInset(navigationBottom);
             }
             // legacy：CSS shift；现代：仅 open 状态（shift 在 page.js 置 0）。
             applyImeInset(root, keyboardOpen ? hidden : 0);
@@ -5489,6 +5471,7 @@ public class MainActivity extends Activity {
 
     private void saveDataUrlDownload(String fileName, String mimeType, String dataUrl) {
         try {
+            Toast.makeText(this, R.string.download_started, Toast.LENGTH_SHORT).show();
             int comma = dataUrl.indexOf(',');
             if (!dataUrl.startsWith("data:") || comma < 0) throw new IllegalArgumentException("Invalid data URL");
             String meta = dataUrl.substring(5, comma);
@@ -5544,11 +5527,6 @@ public class MainActivity extends Activity {
                 downloads.add(0, item);
                 persistDownloads();
                 showDownloadsPanel();
-                Toast.makeText(
-                        MainActivity.this,
-                        R.string.download_started,
-                        Toast.LENGTH_SHORT
-                ).show();
             });
         } catch (Exception error) {
             handler.post(() -> Toast.makeText(
@@ -6937,6 +6915,8 @@ public class MainActivity extends Activity {
                 ));
                 break;
             case "beginBlobDownload":
+                // 点击反馈已由 page.js 在 capture 阶段立即 toast；
+                // 这里不再二次提示，避免大文件 fetch 完成后重复弹窗。
                 downloadIoExecutor.execute(() -> beginBlobDownload(message));
                 break;
             case "appendBlobDownload":
