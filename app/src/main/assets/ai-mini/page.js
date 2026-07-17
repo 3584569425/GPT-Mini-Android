@@ -718,30 +718,146 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // WebView/Chromium liquid-glass safe perf patch (1.21).
-    // Keep frosted glass look (blur/saturate/translucent) and disable only the
-    // expensive SVG feDisplacementMap path via CSS. No MutationObserver and no
-    // DOM surgery during WebUI boot — those caused blank/broken entry on 1.1.8.
-    if (window.__AIMiniGeckoGlassVersion === "1.21") return;
+    // 1.22: keep frosted glass + survive multi-device switch.
+    // WebUI device switch uses location.replace() and reloads per-device appearance.
+    // Android keyboard defaults force liquidGlassEnabled=false for every new device
+    // profile, which turns the whole liquid-glass UI off. Chromium WebUI also runs
+    // classList.toggle('ai-mini-geckoview', false) and strips our host mark.
+    // Fix: seed preferred glass into device-scoped localStorage at document-start
+    // (before WebUI early boot), skip android false-defaults, and lightly re-assert
+    // host classes/CSS only (no storage fight with Pro entitlement).
+    if (window.__AIMiniGeckoGlassVersion === "1.22") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.21";
-
-    try {
-      const root = document.documentElement;
-      if (root) {
-        root.classList.add("ai-mini-webview");
-        // Reuse WebUI's existing gecko glass CSS path (filter:none + blur).
-        root.classList.add("ai-mini-geckoview");
-      }
-    } catch (_) {}
+    window.__AIMiniGeckoGlassVersion = "1.22";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
-    const oldStyle = document.getElementById(STYLE_ID);
-    if (oldStyle) oldStyle.remove();
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = `
-      /* ===== host layout (keyboard) ===== */
+    const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
+    const PROFILE_KEY = "codexMini.deviceProfiles.v1";
+    const ACTIVE_DEVICE_KEY = "codexMini.activeDevice.v1";
+
+    function deviceScopeId(baseUrl) {
+      const value = String(baseUrl || "default");
+      let hash = 2166136261;
+      for (let i = 0; i < value.length; i += 1) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(36);
+    }
+
+    function safeJsonParse(raw, fallback) {
+      try {
+        if (!raw) return fallback;
+        return JSON.parse(raw);
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function writePreferGlass(on) {
+      try { localStorage.setItem(PREFER_KEY, on ? "1" : "0"); } catch (_) {}
+    }
+
+    function readPreferGlass() {
+      try {
+        const value = localStorage.getItem(PREFER_KEY);
+        if (value === "1") return true;
+        if (value === "0") return false;
+      } catch (_) {}
+      return scanAnyDeviceGlassEnabled();
+    }
+
+    function scanAnyDeviceGlassEnabled() {
+      try {
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = localStorage.key(i) || "";
+          if (!/appearanceSettings\.v1$/.test(key) && key !== "codexMini.appearanceSettings.v1") {
+            continue;
+          }
+          const settings = safeJsonParse(localStorage.getItem(key), null);
+          if (settings && settings.liquidGlassEnabled === true) return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+
+    function activeDeviceProfile() {
+      const profiles = safeJsonParse((function () {
+        try { return localStorage.getItem(PROFILE_KEY); } catch (_) { return null; }
+      })(), []);
+      let activeId = "";
+      try { activeId = localStorage.getItem(ACTIVE_DEVICE_KEY) || ""; } catch (_) {}
+      if (!activeId) {
+        try { activeId = new URLSearchParams(location.search || "").get("device") || ""; } catch (_) {}
+      }
+      if (Array.isArray(profiles)) {
+        const found = profiles.find(function (item) { return item && item.id === activeId; });
+        if (found) return found;
+      }
+      return null;
+    }
+
+    function appearanceKeyForScope(scope) {
+      return "codexMini.device." + scope + ".appearanceSettings.v1";
+    }
+    function defaultsKeyForScope(scope) {
+      return "codexMini.device." + scope + ".androidAppearanceDefaults.v1";
+    }
+    function userTouchedKeyForScope(scope) {
+      return "codexMini.device." + scope + ".appearanceSettings.userTouched.v1";
+    }
+
+    function seedActiveDeviceGlassPreference() {
+      if (scanAnyDeviceGlassEnabled()) writePreferGlass(true);
+      if (!readPreferGlass()) return false;
+
+      const scopes = [];
+      const profile = activeDeviceProfile();
+      const baseUrl = profile && profile.baseUrl ? String(profile.baseUrl) : "";
+      if (baseUrl) scopes.push(deviceScopeId(baseUrl));
+      try {
+        const profiles = safeJsonParse(localStorage.getItem(PROFILE_KEY), []);
+        if (Array.isArray(profiles)) {
+          profiles.forEach(function (item) {
+            if (!item || !item.baseUrl) return;
+            const scope = deviceScopeId(String(item.baseUrl));
+            if (scopes.indexOf(scope) < 0) scopes.push(scope);
+          });
+        }
+      } catch (_) {}
+
+      scopes.forEach(function (scope) {
+        try {
+          const touched = localStorage.getItem(userTouchedKeyForScope(scope)) === "1";
+          const key = appearanceKeyForScope(scope);
+          const current = safeJsonParse(localStorage.getItem(key), {}) || {};
+          // Respect explicit per-device user toggle after they opened settings.
+          if (touched && current.liquidGlassEnabled === false) return;
+          const next = Object.assign({}, current, { liquidGlassEnabled: true });
+          localStorage.setItem(key, JSON.stringify(next));
+          // Skip ensureAndroidAppearanceDefaults() false merge on this scope.
+          localStorage.setItem(defaultsKeyForScope(scope), "1");
+        } catch (_) {}
+      });
+
+      try {
+        const globalKey = "codexMini.appearanceSettings.v1";
+        const current = safeJsonParse(localStorage.getItem(globalKey), {}) || {};
+        if (current.liquidGlassEnabled !== false) {
+          localStorage.setItem(globalKey, JSON.stringify(Object.assign({}, current, {
+            liquidGlassEnabled: true
+          })));
+        }
+      } catch (_) {}
+      return true;
+    }
+
+    function ensureStyle() {
+      let style = document.getElementById(STYLE_ID);
+      if (style) return style;
+      style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent = `
       html.ai-mini-webview,
       html.ai-mini-webview body {
         height: 100% !important;
@@ -755,8 +871,10 @@
         transition: none !important;
         will-change: auto !important;
       }
-      html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,
-      html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell {
+      /* Match WebUI gecko path: absolute composer keeps glass sampling after device switch */
+      html.ai-mini-geckoview .composer-shell,
+      html.ai-mini-webview .composer-shell {
+        position: absolute !important;
         bottom: 0 !important;
         margin-bottom: 0 !important;
       }
@@ -768,14 +886,11 @@
         transition: none !important;
         will-change: transform !important;
       }
-
-      /* ===== liquid glass: CSS-only disable heavy displacement, keep frost ===== */
       html.ai-mini-webview:not(.liquid-glass-off),
       html.ai-mini-geckoview:not(.liquid-glass-off) {
         --liquid-glass-filter: none !important;
         --liquid-glass-backdrop: blur(6px) saturate(140%) !important;
       }
-
       html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-warp,
       html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-warp,
       html.ai-mini-webview:not(.liquid-glass-off) .task-plan-dock-card::before,
@@ -787,8 +902,6 @@
         backdrop-filter: blur(6px) saturate(140%) !important;
         -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
       }
-
-      /* Composer glass surface — match Gecko mobile look */
       html.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original,
       html.ai-mini-geckoview:not(.liquid-glass-off) .composer.codex-liquid-glass-original {
         background: rgba(255,255,255,.06) !important;
@@ -815,8 +928,6 @@
         opacity: 1 !important;
         pointer-events: none !important;
       }
-
-      /* Light theme readability */
       html.theme-light.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original,
       html.theme-light.ai-mini-geckoview:not(.liquid-glass-off) .composer.codex-liquid-glass-original {
         background: rgba(255,255,255,.42) !important;
@@ -827,23 +938,68 @@
           inset 0 -1px 0 rgba(20,30,45,.06) !important;
       }
     `;
+      try { (document.head || document.documentElement).appendChild(style); } catch (_) {}
+      return style;
+    }
+
+    function reassertHostMarks() {
+      try {
+        const root = document.documentElement;
+        if (!root) return;
+        root.classList.add("ai-mini-webview");
+        root.classList.add("ai-mini-geckoview");
+        root.classList.add("android-keyboard-mode");
+        if (document.body) document.body.classList.add("android-keyboard-mode");
+        ensureStyle();
+        // Learn preference only when glass is visibly on.
+        if (!root.classList.contains("liquid-glass-off")) writePreferGlass(true);
+      } catch (_) {}
+    }
+
+    // Document-start: seed storage before WebUI early appearance script.
     try {
-      (document.head || document.documentElement).appendChild(style);
+      if (scanAnyDeviceGlassEnabled()) writePreferGlass(true);
+      seedActiveDeviceGlassPreference();
     } catch (_) {}
 
-    // Soft re-assert host classes after late WebUI class rewrites. CSS-only.
-    [300, 1200, 3000].forEach(function (delay) {
-      setTimeout(function () {
-        try {
-          const root = document.documentElement;
-          if (!root) return;
-          root.classList.add("ai-mini-webview");
-          root.classList.add("ai-mini-geckoview");
-          if (!document.getElementById(STYLE_ID) && (document.head || document.documentElement)) {
-            (document.head || document.documentElement).appendChild(style);
-          }
-        } catch (_) {}
-      }, delay);
+    reassertHostMarks();
+    window.__AIMiniReassertLiquidGlass = function (reason) {
+      // Native inject / delayed hooks may call this after device navigation.
+      try {
+        if (reason === "native-inject" || reason === "pageshow") {
+          seedActiveDeviceGlassPreference();
+        }
+      } catch (_) {}
+      reassertHostMarks();
+    };
+
+    if (!window.__AIMiniGlassHostObserver) {
+      try {
+        let scheduled = 0;
+        const obs = new MutationObserver(function () {
+          if (scheduled) return;
+          scheduled = 1;
+          setTimeout(function () {
+            scheduled = 0;
+            reassertHostMarks();
+          }, 0);
+        });
+        if (document.documentElement) {
+          obs.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ["class"]
+          });
+          window.__AIMiniGlassHostObserver = obs;
+        }
+      } catch (_) {}
+    }
+
+    [0, 50, 200, 800, 2000, 5000].forEach(function (delay) {
+      setTimeout(function () { reassertHostMarks(); }, delay);
+    });
+    window.addEventListener("pageshow", function () {
+      try { seedActiveDeviceGlassPreference(); } catch (_) {}
+      reassertHostMarks();
     });
   }
 
