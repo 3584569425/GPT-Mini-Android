@@ -273,6 +273,14 @@ final class AIMiniBrowserView extends FrameLayout {
         settings.setUserAgentString(ua);
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(desktopMode);
+        // Desktop mode must keep pinch-zoom enabled like a normal browser.
+        settings.setSupportZoom(true);
+        settings.setBuiltInZoomControls(true);
+        settings.setDisplayZoomControls(false);
+        try {
+            webView.getSettings().setSupportZoom(true);
+        } catch (Throwable ignored) {
+        }
     }
 
     void setBrowserActive(boolean active) {

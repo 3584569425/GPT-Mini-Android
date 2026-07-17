@@ -1659,9 +1659,174 @@
     });
   }
 
+  function installUiGestureFixes() {
+    // 1.1.11: settings popup scroll when taller than viewport; desktop pinch-zoom.
+    if (window.__AIMiniUiGestureFixesVersion === "1.11") return;
+    if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
+    window.__AIMiniUiGestureFixesVersion = "1.11";
+
+    const STYLE_ID = "ai-mini-ui-gesture-fixes";
+    function ensureStyle() {
+      let style = document.getElementById(STYLE_ID);
+      if (!style) {
+        style = document.createElement("style");
+        style.id = STYLE_ID;
+        try { (document.head || document.documentElement).appendChild(style); } catch (_) {}
+      }
+      style.textContent = `
+        /* Settings / menus taller than the screen: scroll inside the card only */
+        html.ai-mini-webview .settings-card.is-open,
+        html.ai-mini-geckoview .settings-card.is-open,
+        html.ai-mini-webview .model-menu-card.is-open,
+        html.ai-mini-geckoview .model-menu-card.is-open,
+        html.ai-mini-webview .permission-menu-card.is-open,
+        html.ai-mini-geckoview .permission-menu-card.is-open,
+        html.ai-mini-webview .reasoning-menu-card.is-open,
+        html.ai-mini-geckoview .reasoning-menu-card.is-open,
+        html.ai-mini-webview .composer-menu-card.is-open,
+        html.ai-mini-geckoview .composer-menu-card.is-open,
+        html.ai-mini-webview .thread-action-card.is-open,
+        html.ai-mini-geckoview .thread-action-card.is-open,
+        html.ai-mini-webview .context-quick-card.is-open,
+        html.ai-mini-geckoview .context-quick-card.is-open,
+        html.ai-mini-webview .guardian-info-modal.is-open .guardian-info-card,
+        html.ai-mini-geckoview .guardian-info-modal.is-open .guardian-info-card {
+          max-height: min(86svh, calc(100dvh - 24px)) !important;
+          max-height: min(86vh, calc(100vh - 24px)) !important;
+          overflow-x: hidden !important;
+          overflow-y: auto !important;
+          -webkit-overflow-scrolling: touch !important;
+          overscroll-behavior: contain !important;
+          touch-action: pan-y !important;
+        }
+
+        /* Desktop mode: allow browser-like pinch zoom (WebUI defaults to pan-only) */
+        html.ai-mini-desktop-mode,
+        html.ai-mini-desktop-mode body {
+          touch-action: pan-x pan-y pinch-zoom !important;
+          -ms-touch-action: pan-x pan-y pinch-zoom !important;
+        }
+        html.ai-mini-desktop-mode body {
+          /* Keep layout, but do not block zoom gestures */
+          overscroll-behavior-y: auto !important;
+        }
+      `;
+    }
+    ensureStyle();
+
+    const SCROLLABLE_POPUP =
+      ".settings-card.is-open, .model-menu-card.is-open, .permission-menu-card.is-open, "
+      + ".reasoning-menu-card.is-open, .composer-menu-card.is-open, .thread-action-card.is-open, "
+      + ".context-quick-card.is-open, .thread-menu.is-open, .approval-sheet.is-open, "
+      + ".guardian-info-modal.is-open .guardian-info-card, .new-thread-card, .file-preview-body";
+
+    function nearestScrollablePopup(target) {
+      if (!target || typeof target.closest !== "function") return null;
+      return target.closest(SCROLLABLE_POPUP);
+    }
+
+    // WebUI lockPageScrollToThread() preventDefaults any vertical move outside its
+    // allow-list, and settings-card is not on that list. Register early in capture
+    // and stopImmediatePropagation so native overflow scrolling can work.
+    if (!window.__AIMiniPopupScrollTouchPatch) {
+      window.__AIMiniPopupScrollTouchPatch = true;
+      document.addEventListener("touchmove", function (event) {
+        try {
+          if (!event.touches || event.touches.length !== 1) return;
+          const popup = nearestScrollablePopup(event.target);
+          if (!popup) return;
+          // Let the card handle its own pan-y; block WebUI page-lock preventDefault.
+          if (typeof event.stopImmediatePropagation === "function") {
+            event.stopImmediatePropagation();
+          } else {
+            event.stopPropagation();
+          }
+        } catch (_) {}
+      }, { capture: true, passive: true });
+    }
+
+    function clampOpenSettingsCard() {
+      try {
+        const card = document.querySelector(".settings-card.is-open");
+        if (!card) return;
+        const viewportHeight = window.innerHeight
+          || (document.documentElement && document.documentElement.clientHeight)
+          || 0;
+        if (viewportHeight <= 0) return;
+        const margin = 10;
+        const maxHeight = Math.max(160, viewportHeight - margin * 2);
+        const currentMax = parseFloat(card.style.maxHeight) || 0;
+        if (Math.abs(currentMax - maxHeight) > 1) {
+          card.style.maxHeight = maxHeight + "px";
+        }
+        card.style.overflowY = "auto";
+        const rect = card.getBoundingClientRect();
+        let top = rect.top;
+        if (rect.bottom > viewportHeight - margin) {
+          top = Math.max(margin, viewportHeight - margin - rect.height);
+        }
+        if (top < margin) top = margin;
+        if (Math.abs(rect.top - top) > 1) {
+          card.style.top = Math.round(top) + "px";
+        }
+      } catch (_) {}
+    }
+
+    if (!window.__AIMiniSettingsClampObserver) {
+      try {
+        let clampScheduled = 0;
+        const scheduleClamp = function () {
+          if (clampScheduled) return;
+          clampScheduled = 1;
+          setTimeout(function () {
+            clampScheduled = 0;
+            clampOpenSettingsCard();
+          }, 50);
+        };
+        const start = function () {
+          const card = document.querySelector(".settings-card");
+          if (card) {
+            const obs = new MutationObserver(scheduleClamp);
+            obs.observe(card, {
+              attributes: true,
+              attributeFilter: ["class", "style"],
+              childList: true,
+              subtree: true
+            });
+            window.__AIMiniSettingsClampObserver = obs;
+          }
+          clampOpenSettingsCard();
+        };
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", start, { once: true });
+        } else {
+          start();
+        }
+        // Settings card is created with the WebUI shell; retry a few times.
+        [200, 800, 2000, 5000].forEach(function (delay) {
+          setTimeout(function () {
+            if (!window.__AIMiniSettingsClampObserver) start();
+            else clampOpenSettingsCard();
+          }, delay);
+        });
+        window.addEventListener("resize", scheduleClamp);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", scheduleClamp);
+        }
+      } catch (_) {}
+    }
+
+    // Re-assert desktop pinch CSS if host rewrites styles.
+    [300, 1200, 3000].forEach(function (delay) {
+      setTimeout(ensureStyle, delay);
+    });
+  }
+
+
   installKeyboardHooks();
   installConversationFontScale();
   installGeckoLiquidGlassFallback();
+  installUiGestureFixes();
   installDownloadHooks();
   installTaskHooks();
 

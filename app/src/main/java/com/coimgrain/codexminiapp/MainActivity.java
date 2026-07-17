@@ -2269,7 +2269,7 @@ public class MainActivity extends Activity {
                 + "if(!desktopStyle){desktopStyle=document.createElement('style');"
                 + "desktopStyle.id='ai-mini-desktop-style';"
                 + "(document.head||document.documentElement).appendChild(desktopStyle);changed=true;}"
-                + "var css='html.ai-mini-desktop-mode,html.ai-mini-desktop-mode body{min-width:1100px!important;overflow-x:auto!important;}';"
+                + "var css='html.ai-mini-desktop-mode,html.ai-mini-desktop-mode body{min-width:1100px!important;overflow-x:auto!important;touch-action:pan-x pan-y pinch-zoom!important;-ms-touch-action:pan-x pan-y pinch-zoom!important;}';"
                 + "if(desktopStyle.textContent!==css){desktopStyle.textContent=css;changed=true;}"
                 + "}else if(desktopStyle){desktopStyle.remove();changed=true;}"
                 + "window.__AIMiniViewportSignature=signature;"
