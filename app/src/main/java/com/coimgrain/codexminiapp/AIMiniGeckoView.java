@@ -100,7 +100,11 @@ final class AIMiniGeckoView extends GeckoView {
         this.engine = engine;
         session = createSession();
         setSession(session);
-        setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW);
+        // SurfaceView is generally more efficient for continuous page scrolling
+        // than TextureView on devices with weaker GPU composition. Keep the
+        // GeckoView engine unchanged; this only changes the Android display
+        // backend used to present its frames.
+        setViewBackend(GeckoView.BACKEND_SURFACE_VIEW);
         setBackgroundColor(PAGE_BACKGROUND_COLOR);
         setAutofillEnabled(true);
         engine.register(this);
