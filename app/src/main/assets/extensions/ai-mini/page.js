@@ -97,18 +97,24 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.26") return;
-    window.__AIMiniKeyboardHooksVersion = "1.26";
+    if (window.__AIMiniKeyboardHooksVersion === "1.27") return;
+    window.__AIMiniKeyboardHooksVersion = "1.27";
 
     let lastEditable = null;
     let keyboardOpen = false;
     let nativeKeyboardInsetDevicePixels = 0;
     let revealFrame = 0;
     let revealTimers = new Set();
+    let viewportRevealTimer = 0;
     let lastKeyboardRequestAt = 0;
     let lastDirectEditableInteractionAt = 0;
     let suppressProgrammaticFocusUntil = 0;
     let keyboardCssPrepared = false;
+    let keyboardStyleCleanupDone = false;
+    let cachedComposer = null;
+    let cachedComposerTrim = null;
+    let lastKeyboardCssValue = "";
+    let lastKeyboardCssLegacy = null;
     let viewportClosing = false;
     let lastVisualViewportHeight = window.visualViewport
       ? window.visualViewport.height
@@ -119,9 +125,16 @@
     );
 
     function usesLegacyKeyboardShift() {
-      const composer = document.querySelector(
-        "footer.composer-shell form#composer.composer"
-      );
+      let composer = cachedComposer;
+      if (!composer || !composer.isConnected) {
+        composer = document.querySelector(
+          "footer.composer-shell form#composer.composer"
+        );
+        if (composer !== cachedComposer) {
+          cachedComposer = composer;
+          cachedComposerTrim = null;
+        }
+      }
       const legacy = !!(
         composer
         && composer.querySelector("textarea#text")
@@ -155,15 +168,23 @@
       // --keyboard-shift-trim (56px in Android keyboard mode). Moving by the
       // full native IME height leaves that reserved area above the keyboard,
       // which looks like an extra upward offset on high-density phones.
-      const trimValue = legacyComposer
-        ? parseFloat(getComputedStyle(document.documentElement)
-          .getPropertyValue("--keyboard-shift-trim")) || 0
-        : 0;
+      if (legacyComposer && cachedComposerTrim === null) {
+        cachedComposerTrim = parseFloat(
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--keyboard-shift-trim")
+        ) || 0;
+      }
+      const trimValue = legacyComposer ? cachedComposerTrim || 0 : 0;
       const cssPixels = legacyComposer
         ? Math.max(0, nativeCssPixels - Math.max(0, trimValue))
         : 0;
       const cssValue = cssPixels.toFixed(2) + "px";
       const priority = legacyComposer ? "important" : "";
+      if (keyboardCssPrepared
+          && lastKeyboardCssValue === cssValue
+          && lastKeyboardCssLegacy === legacyComposer) {
+        return legacyComposer;
+      }
       document.documentElement.style.setProperty(
         "--ai-mini-native-keyboard-shift",
         cssValue,
@@ -179,14 +200,19 @@
         cssValue,
         priority
       );
-      const staleStyle = document.getElementById("ai-mini-keyboard-inset-style");
-      if (staleStyle) staleStyle.remove();
-      document.querySelectorAll(".composer-shell").forEach(function (shell) {
-        if (shell.style.getPropertyValue("bottom") === "0px"
-            && shell.style.getPropertyPriority("bottom") === "important") {
-          shell.style.removeProperty("bottom");
-        }
-      });
+      if (!keyboardStyleCleanupDone) {
+        const staleStyle = document.getElementById("ai-mini-keyboard-inset-style");
+        if (staleStyle) staleStyle.remove();
+        document.querySelectorAll(".composer-shell").forEach(function (shell) {
+          if (shell.style.getPropertyValue("bottom") === "0px"
+              && shell.style.getPropertyPriority("bottom") === "important") {
+            shell.style.removeProperty("bottom");
+          }
+        });
+        keyboardStyleCleanupDone = true;
+      }
+      lastKeyboardCssValue = cssValue;
+      lastKeyboardCssLegacy = legacyComposer;
       keyboardCssPrepared = true;
       return legacyComposer;
     }
@@ -301,10 +327,30 @@
         cancelAnimationFrame(revealFrame);
         revealFrame = 0;
       }
+      if (viewportRevealTimer) {
+        clearTimeout(viewportRevealTimer);
+        viewportRevealTimer = 0;
+      }
       revealTimers.forEach(function (timer) {
         clearTimeout(timer);
       });
       revealTimers.clear();
+    }
+
+    function scheduleViewportReveal() {
+      if (viewportClosing
+          || !(keyboardOpen || editableFor(document.activeElement))) {
+        return;
+      }
+      if (viewportRevealTimer) clearTimeout(viewportRevealTimer);
+      // visualViewport emits resize/scroll for nearly every IME animation
+      // frame. Running scrollIntoView and geometry reads on every callback
+      // forces repeated layout and makes the animation stutter on some
+      // devices. Use one trailing correction after the viewport settles.
+      viewportRevealTimer = setTimeout(function () {
+        viewportRevealTimer = 0;
+        revealEditable();
+      }, 48);
     }
 
     function revealEditable(delay) {
@@ -444,6 +490,7 @@
 
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", function () {
+        const wasOpen = keyboardOpen;
         const currentHeight = window.visualViewport.height || 0;
         viewportClosing = lastVisualViewportHeight > 0
           && currentHeight > lastVisualViewportHeight + 1;
@@ -452,14 +499,12 @@
         updateKeyboardState();
         if (!viewportClosing
             && (keyboardOpen || editableFor(document.activeElement))) {
-          revealEditable();
+          if (!wasOpen && keyboardOpen) revealEditable();
+          scheduleViewportReveal();
         }
       });
       window.visualViewport.addEventListener("scroll", function () {
-        if (!viewportClosing
-            && (keyboardOpen || editableFor(document.activeElement))) {
-          revealEditable();
-        }
+        scheduleViewportReveal();
       });
     }
 

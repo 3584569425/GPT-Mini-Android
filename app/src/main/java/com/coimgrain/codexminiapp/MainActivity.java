@@ -4265,8 +4265,6 @@ public class MainActivity extends Activity {
         lastModernImeUpdateAt = SystemClock.uptimeMillis();
         Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
         Insets ime = insets.getInsets(WindowInsets.Type.ime());
-        int visibleOverlap = visibleKeyboardOverlap(root);
-        int openThreshold = Math.max(dp(100), root.getHeight() / 6);
         boolean imeReportedVisible = insets.isVisible(WindowInsets.Type.ime())
                 || ime.bottom > navigation.bottom;
         if (imeReportedVisible) modernImeInsetsReliable = true;
@@ -4277,6 +4275,11 @@ public class MainActivity extends Activity {
         // the composer descend late and look sluggish on affected devices.
         // ROMs that never provide usable IME Insets still retain the legacy
         // visible-frame fallback below.
+        int visibleOverlap = 0;
+        int openThreshold = Math.max(dp(100), root.getHeight() / 6);
+        if (!modernImeInsetsReliable && !imeReportedVisible) {
+            visibleOverlap = visibleKeyboardOverlap(root);
+        }
         boolean overlapFallbackVisible = !modernImeInsetsReliable
                 && visibleOverlap > openThreshold;
         boolean imeVisible = imeReportedVisible || overlapFallbackVisible;
