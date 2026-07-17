@@ -263,6 +263,8 @@ public class MainActivity extends Activity {
     private boolean keyboardWasOpen;
     private int appliedImeInsetBottom;
     private int lastLegacyImeInsetBottom = -1;
+    private int lastModernImeInsetBottom = -1;
+    private long lastModernImeNotifyAt;
     private long lastModernImeUpdateAt;
     private boolean imeAnimationRunning;
     private boolean modernImeInsetsReliable;
@@ -4951,6 +4953,7 @@ public class MainActivity extends Activity {
             );
             legacyComposerImeBridgeEnabled = enabled;
             lastLegacyImeInsetBottom = -1;
+            lastModernImeInsetBottom = -1;
             if (enabled) {
                 notifyKeyboardInsetToWeb(appliedImeInsetBottom, keyboardWasOpen);
             }
@@ -5118,9 +5121,13 @@ public class MainActivity extends Activity {
         lastModernImeUpdateAt = SystemClock.uptimeMillis();
         Insets navigation = insets.getInsets(WindowInsets.Type.navigationBars());
         Insets ime = insets.getInsets(WindowInsets.Type.ime());
-        boolean imeReportedVisible = insets.isVisible(WindowInsets.Type.ime())
-                || ime.bottom > navigation.bottom;
-        if (imeReportedVisible) modernImeInsetsReliable = true;
+        // ColorOS can briefly mark the IME visible while still reporting a
+        // zero/near-zero IME rectangle. Treat visibility alone as a state
+        // hint, not as usable geometry; otherwise the first zero inset makes
+        // the native path "reliable" and prevents the visible-frame fallback
+        // from ever moving the composer.
+        boolean imeHasGeometry = ime.bottom > navigation.bottom + 1;
+        if (imeHasGeometry) modernImeInsetsReliable = true;
 
         // Once this ROM has supplied real IME Insets, keep using them as the
         // animation authority. getWindowVisibleDisplayFrame() commonly trails
@@ -5130,13 +5137,13 @@ public class MainActivity extends Activity {
         // visible-frame fallback below.
         int visibleOverlap = 0;
         int openThreshold = Math.max(dp(100), root.getHeight() / 6);
-        if (!modernImeInsetsReliable && !imeReportedVisible) {
+        if (!modernImeInsetsReliable && !imeHasGeometry) {
             visibleOverlap = visibleKeyboardOverlap(root);
         }
         boolean overlapFallbackVisible = !modernImeInsetsReliable
                 && visibleOverlap > openThreshold;
-        boolean imeVisible = imeReportedVisible || overlapFallbackVisible;
-        int keyboardBottom = imeReportedVisible
+        boolean imeVisible = imeHasGeometry || overlapFallbackVisible;
+        int keyboardBottom = imeHasGeometry
                 ? Math.max(0, ime.bottom)
                 : (overlapFallbackVisible ? visibleOverlap : 0);
         // WebView 键盘策略（与 Gecko 不同）：
@@ -5195,12 +5202,21 @@ public class MainActivity extends Activity {
             return;
         }
         lastLegacyImeInsetBottom = -1;
-        // Modern glass: only sync open/closed. Pixel values still go through so
-        // page.js can set keyboardOpen=true (it keys off px>0), but page.js and
-        // CSS force the visual shift to 0 for non-legacy composers. Dispatching
-        // every animation frame causes jank, so only notify on state change.
-        if (keyboardWasOpen == isOpen) return;
+        // Modern WebView can keep the viewport overlaid on ColorOS. Send the
+        // animated inset at a modest rate so page.js can apply its fallback;
+        // the final frame is delivered after the animation ends.
+        long now = SystemClock.uptimeMillis();
+        boolean stateChanged = keyboardWasOpen != isOpen;
+        boolean insetChanged = lastModernImeInsetBottom != effectiveInset;
+        if (!stateChanged && !insetChanged) return;
+        if (!stateChanged
+                && imeAnimationRunning
+                && now - lastModernImeNotifyAt < 32L) {
+            return;
+        }
         keyboardWasOpen = isOpen;
+        lastModernImeInsetBottom = effectiveInset;
+        lastModernImeNotifyAt = now;
         notifyKeyboardInsetToWeb(effectiveInset, isOpen);
     }
 
@@ -5214,7 +5230,20 @@ public class MainActivity extends Activity {
                 boolean modernImeVisible = insets != null
                         && insets.isVisible(WindowInsets.Type.ime());
                 long sinceModernUpdate = SystemClock.uptimeMillis() - lastModernImeUpdateAt;
-                if (modernImeVisible || sinceModernUpdate < 350L) return;
+                if (modernImeVisible) {
+                    // If the ROM exposed only a zero-sized "visible" IME
+                    // frame, retry the modern calculation here so the
+                    // visible-display-frame fallback can recover the actual
+                    // overlap. Once real geometry has been observed, the
+                    // animation/insets path remains the sole authority.
+                    if (!modernImeInsetsReliable) {
+                        applyModernImeInsets(root, insets);
+                        if (modernImeInsetsReliable) return;
+                    } else {
+                        return;
+                    }
+                }
+                if (sinceModernUpdate < 350L) return;
 
                 // Fallback for ROMs that stop dispatching IME Insets in an
                 // edge-to-edge window. It only takes over after modern Insets
@@ -5237,20 +5266,59 @@ public class MainActivity extends Activity {
         target.evaluateJavascript(
                 "(function(){try{"
                         + "var px=" + Math.max(0, insetDevicePixels) + ";"
+                        + "var handled=false;"
                         + "if(window.__AIMiniKeyboardInsetFromNative){"
-                        + "window.__AIMiniKeyboardInsetFromNative(px);return;}"
-                        + "if(window.__AIMiniApplyLegacyKeyboardInset"
-                        + "&&window.__AIMiniApplyLegacyKeyboardInset(px)){return;}"
-                        + "var cssPx=0;"
+                        + "window.__AIMiniKeyboardInsetFromNative(px);"
+                        + "handled=true;}"
+                        + "if(!handled&&window.__AIMiniApplyLegacyKeyboardInset"
+                        + "&&window.__AIMiniApplyLegacyKeyboardInset(px)){"
+                        + "handled=true;}"
+                        // Android WebView occasionally exposes the page
+                        // bridge function from a different JS world. Keep a
+                        // small native-side DOM fallback so a successful
+                        // evaluateJavascript call still moves the modern
+                        // composer when the function's closure cannot update
+                        // its own CSS state.
+                        + "var root=document.documentElement;"
+                        + "var composer=document.querySelector("
+                        + "'footer.composer-shell form#composer.composer');"
+                        + "var legacy=!!(composer&&composer.querySelector('textarea#text')"
+                        + "&&!composer.classList.contains('codex-liquid-glass-original')"
+                        + "&&!composer.classList.contains('liquid-glass-react-surface'));"
+                        + "if(!legacy){"
+                        + "var density=Math.max(1,Number(window.devicePixelRatio)||1);"
+                        + "var cssPx=Math.max(0,px/density);"
+                        + "var viewport=window.visualViewport;"
+                        + "var largest=Math.max(window.innerHeight||0,"
+                        + "document.documentElement.clientHeight||0);"
+                        + "var current=viewport&&viewport.height>0"
+                        + "?viewport.height:largest;"
+                        + "var resized=px>0&&largest-current>Math.max(90,largest*.16);"
+                        + "var overlay=px>0&&!resized;"
+                        + "root.style.setProperty('--ai-mini-native-keyboard-shift',"
+                        + "(overlay?cssPx:0).toFixed(2)+'px','important');"
+                        + "root.style.setProperty('--keyboard-inset','0px','important');"
+                        + "root.style.setProperty('--keyboard-shift','0px','important');"
+                        + "root.classList.toggle('ai-mini-ime-overlay-fallback',overlay);"
+                        + "document.body&&document.body.classList.toggle('keyboard-open',px>80);"
+                        + "document.querySelectorAll('.composer-shell').forEach(function(el){"
+                        + "el.style.setProperty('transform',overlay"
+                        + "?('translate3d(0,-'+cssPx.toFixed(2)+'px,0)'):'none','important');});"
+                        + "window.__AIMiniLastNativeInsetDevicePixels=px;"
+                        + "window.__AIMiniKeyboardViewportResized=resized;"
+                        + "window.__AIMiniKeyboardOverlayFallback=overlay;"
+                        + "}"
+                        + "if(legacy&&!handled){"
                         + "document.body&&document.body.classList."
                         + (open ? "add" : "remove")
                         + "('keyboard-open');"
                         + "document.documentElement.style.setProperty("
-                        + "'--keyboard-inset',cssPx+'px');"
+                        + "'--keyboard-inset','0px');"
                         + "document.querySelectorAll('.composer-shell').forEach("
                         + "function(el){if(el.style.getPropertyValue('bottom')==='0px'"
                         + "&&el.style.getPropertyPriority('bottom')==='important'){"
                         + "el.style.removeProperty('bottom');}});"
+                        + "}"
                         + "window.dispatchEvent(new Event('resize'));"
                         + "}catch(e){}})();",
                 null

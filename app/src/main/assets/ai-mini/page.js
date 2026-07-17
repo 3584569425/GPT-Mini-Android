@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.28") return;
-    window.__AIMiniKeyboardHooksVersion = "1.28";
+    if (window.__AIMiniKeyboardHooksVersion === "1.29") return;
+    window.__AIMiniKeyboardHooksVersion = "1.29";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -115,6 +115,7 @@
     let cachedComposerTrim = null;
     let lastKeyboardCssValue = "";
     let lastKeyboardCssLegacy = null;
+    let lastKeyboardCssOverlay = null;
     let viewportClosing = false;
     let lastVisualViewportHeight = window.visualViewport
       ? window.visualViewport.height
@@ -150,19 +151,30 @@
 
     function applyNativeKeyboardInset(force) {
       if (keyboardCssPrepared && !force) return;
-      // Android uses ADJUST_RESIZE and Gecko's viewport now follows the
-      // animated View bounds. Applying the physical IME height again would
-      // move the composer twice and leave it near the top of the screen. Also
-      // avoid mutating bottom/transform on the fixed shell: Gecko may stop
-      // compositing backdrop-filter descendants after that layer mutation.
-      //
-      // An older Codex mini WebUI uses a textarea#text inside form#composer
-      // and intentionally keeps the visual viewport overlaid. That variant
-      // requires its original --keyboard-shift transform, so only restore the
-      // native inset for that exact DOM signature.
+      // Chromium WebView normally keeps this page's visual viewport overlaid
+      // while the IME is visible. Some ColorOS frames intermittently fail to
+      // resize the WebView, so the modern composer needs a CSS fallback in
+      // that case. If the viewport really did resize, keep the fallback at 0
+      // to avoid moving it twice.
       const legacyComposer = usesLegacyKeyboardShift();
       const density = Math.max(1, Number(window.devicePixelRatio) || 1);
       const nativeCssPixels = nativeKeyboardInsetDevicePixels / density;
+      const viewport = window.visualViewport;
+      const layoutHeight = Math.max(
+        1,
+        window.innerHeight || 0,
+        document.documentElement ? document.documentElement.clientHeight : 0
+      );
+      const currentHeight = viewport && viewport.height > 0
+        ? viewport.height
+        : layoutHeight;
+      const viewportDelta = Math.max(0, largestViewportHeight - currentHeight);
+      const viewportResized = keyboardOpen
+        && viewportDelta > Math.max(90, largestViewportHeight * 0.16);
+      const overlayFallback = !legacyComposer
+        && keyboardOpen
+        && !viewportResized
+        && nativeCssPixels > 0;
       // This WebUI intentionally reserves a bottom safe area under the
       // composer and exposes the matching compensation as
       // --keyboard-shift-trim (56px in Android keyboard mode). Moving by the
@@ -177,12 +189,13 @@
       const trimValue = legacyComposer ? cachedComposerTrim || 0 : 0;
       const cssPixels = legacyComposer
         ? Math.max(0, nativeCssPixels - Math.max(0, trimValue))
-        : 0;
+        : (overlayFallback ? nativeCssPixels : 0);
       const cssValue = cssPixels.toFixed(2) + "px";
-      const priority = legacyComposer ? "important" : "";
+      const priority = (legacyComposer || overlayFallback) ? "important" : "";
       if (keyboardCssPrepared
           && lastKeyboardCssValue === cssValue
-          && lastKeyboardCssLegacy === legacyComposer) {
+          && lastKeyboardCssLegacy === legacyComposer
+          && lastKeyboardCssOverlay === overlayFallback) {
         return legacyComposer;
       }
       document.documentElement.style.setProperty(
@@ -192,14 +205,21 @@
       );
       document.documentElement.style.setProperty(
         "--keyboard-inset",
-        cssValue,
-        priority
+        legacyComposer ? cssValue : "0px",
+        legacyComposer ? "important" : ""
       );
       document.documentElement.style.setProperty(
         "--keyboard-shift",
-        cssValue,
-        priority
+        legacyComposer ? cssValue : "0px",
+        legacyComposer ? "important" : ""
       );
+      document.documentElement.classList.toggle(
+        "ai-mini-ime-overlay-fallback",
+        overlayFallback
+      );
+      window.__AIMiniLastNativeInsetDevicePixels = nativeKeyboardInsetDevicePixels;
+      window.__AIMiniKeyboardViewportResized = viewportResized;
+      window.__AIMiniKeyboardOverlayFallback = overlayFallback;
       if (!keyboardStyleCleanupDone) {
         const staleStyle = document.getElementById("ai-mini-keyboard-inset-style");
         if (staleStyle) staleStyle.remove();
@@ -213,6 +233,7 @@
       }
       lastKeyboardCssValue = cssValue;
       lastKeyboardCssLegacy = legacyComposer;
+      lastKeyboardCssOverlay = overlayFallback;
       keyboardCssPrepared = true;
       return legacyComposer;
     }
@@ -512,6 +533,10 @@
         lastVisualViewportHeight = currentHeight;
         if (viewportClosing) cancelPendingReveals();
         updateKeyboardState();
+        // ColorOS may report an overlaid viewport first and resize it a few
+        // frames later. Re-evaluate the fallback after every viewport resize
+        // so it cannot remain applied after a real resize.
+        if (keyboardOpen) applyNativeKeyboardInset(true);
         if (!viewportClosing
             && (keyboardOpen || editableFor(document.activeElement))) {
           if (!wasOpen && keyboardOpen) revealEditable();
@@ -870,6 +895,15 @@
         transform: none !important;
         transition: none !important;
         will-change: auto !important;
+      }
+      /* ColorOS fallback: if the WebView viewport stays full-height while
+         the IME overlays it, move only the composer shell. Keep the thread
+         still so the glass surface does not get a second full-page shift. */
+      html.ai-mini-webview.ai-mini-ime-overlay-fallback:not(.ai-mini-legacy-composer) .composer-shell,
+      html.ai-mini-geckoview.ai-mini-ime-overlay-fallback:not(.ai-mini-legacy-composer) .composer-shell {
+        transform: translate3d(0, calc(-1 * var(--ai-mini-native-keyboard-shift, 0px)), 0) !important;
+        transition: none !important;
+        will-change: transform !important;
       }
       /* Match WebUI gecko path: absolute composer keeps glass sampling after device switch */
       html.ai-mini-geckoview .composer-shell,
