@@ -431,7 +431,7 @@ public class MainActivity extends Activity {
         topInsetArea = new View(this);
         root.addView(topInsetArea, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(topInsetDp())
+                resolvedNativeTopInsetPx()
         ));
         updateTopInsetArea();
 
@@ -1340,6 +1340,43 @@ public class MainActivity extends Activity {
         );
     }
 
+    /**
+     * 原生顶部占位像素。
+     * WebView/Chromium 会额外提供 safe-area-inset-top；页面侧会清零该值，
+     * 因此由原生 topInsetArea 单独承担顶部避让：
+     * - 用户设为 0：完全沉浸，允许与状态栏重叠
+     * - 用户 > 0：取 max(用户设定, 状态栏高度)，避免“状态栏 + 用户值”双重叠加
+     */
+    private int resolvedNativeTopInsetPx() {
+        int userPx = dp(topInsetDp());
+        if (userPx <= 0) return 0;
+        int statusPx = currentStatusBarTopPx();
+        return Math.max(userPx, statusPx);
+    }
+
+    private int currentStatusBarTopPx() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowInsets insets = getWindow().getDecorView().getRootWindowInsets();
+                if (insets != null) {
+                    return Math.max(
+                            0,
+                            insets.getInsets(
+                                    WindowInsets.Type.statusBars()
+                                            | WindowInsets.Type.displayCutout()
+                            ).top
+                    );
+                }
+            } else {
+                Rect frame = new Rect();
+                getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);
+                return Math.max(0, frame.top);
+            }
+        } catch (Exception ignored) {
+        }
+        return 0;
+    }
+
     private int conversationFontScalePercent() {
         return Math.max(
                 MIN_CONVERSATION_FONT_SCALE,
@@ -1388,7 +1425,11 @@ public class MainActivity extends Activity {
     private void updateTopInsetArea() {
         if (topInsetArea != null) {
             ViewGroup.LayoutParams params = topInsetArea.getLayoutParams();
-            int height = dp(topInsetDp());
+            // WebView/Chromium 会把 statusBars/cutout 再作为 safe-area-inset-top
+            // 注入到页面；原生 topInsetArea 若再叠一层就会把顶部功能栏顶得过远。
+            // 这里只保留“用户设定”的原生顶部高度，状态栏避让改由 WebView
+            // 消费系统 insets + 页面侧清零 safe-area 完成，避免双重计算。
+            int height = resolvedNativeTopInsetPx();
             if (params != null && params.height != height) {
                 params.height = height;
                 topInsetArea.setLayoutParams(params);
@@ -4077,7 +4118,7 @@ public class MainActivity extends Activity {
                 + "var legacyComposer=detectLegacyComposer();"
                 + "if(window.__AIMiniFixVersion==='1.25.9'){return legacyComposer;}"
                 + "window.__AIMiniFixVersion='1.25.9';"
-                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');"
+                + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview');window.__AIMiniZeroTopSafeArea=true;try{var m=document.querySelector('meta[name=viewport]');if(m){var c=m.getAttribute('content')||'';if(c.indexOf('viewport-fit')<0){m.setAttribute('content',c+', viewport-fit=cover');}}document.documentElement.style.setProperty('padding-top','0px','important');if(document.body){document.body.style.setProperty('padding-top','0px','important');}}catch(ignore){}"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
                 + "try{if(!detectLegacyComposer()){return false;}"
@@ -4151,7 +4192,24 @@ public class MainActivity extends Activity {
     }
 
     private String androidWebViewCss() {
-        return ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
+        // Chromium WebView 会按系统状态栏填充 safe-area-inset-top；
+        // App 已用原生 topInsetArea 控制顶部避让，这里清零页面侧顶部安全区，
+        // 防止顶部模型/功能栏被顶到离状态栏过远。
+        return "html.ai-mini-geckoview,html.ai-mini-webview{"
+                + "padding-top:0!important;margin-top:0!important;}"
+                + "html.ai-mini-geckoview body,html.ai-mini-webview body{"
+                + "padding-top:0!important;margin-top:0!important;}"
+                + "html.ai-mini-geckoview,html.ai-mini-webview{"
+                + "--sat:0px;--ai-mini-safe-top:0px;}"
+                + "@supports (top:env(safe-area-inset-top)){"
+                + "html.ai-mini-geckoview .fixed,html.ai-mini-webview .fixed,"
+                + "html.ai-mini-geckoview [class*='top-bar'],html.ai-mini-webview [class*='top-bar'],"
+                + "html.ai-mini-geckoview [class*='TopBar'],html.ai-mini-webview [class*='TopBar'],"
+                + "html.ai-mini-geckoview [class*='model'],html.ai-mini-webview [class*='model'],"
+                + "html.ai-mini-geckoview [class*='toolbar'],html.ai-mini-webview [class*='toolbar']"
+                + "{padding-top:0!important;}"
+                + "}"
+                + ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
                 + "'Apple Chancery','Segoe Script',cursive!important;}"
                 // Gecko can drop backdrop-filter descendants when their fixed
                 // ancestor is permanently promoted by translate3d/will-change.

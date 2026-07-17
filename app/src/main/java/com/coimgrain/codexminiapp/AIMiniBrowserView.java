@@ -5,6 +5,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,6 +14,7 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
@@ -448,6 +450,17 @@ final class AIMiniBrowserView extends FrameLayout {
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        // 消费顶部系统栏 insets，避免 Chromium 再把状态栏高度当作
+        // safe-area-inset-top 注入页面，与原生 topInsetArea 双重避让。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            webView.setOnApplyWindowInsetsListener((w, insets) -> {
+                Insets top = insets.getInsets(
+                        WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout()
+                );
+                if (top.top <= 0) return insets;
+                return insets.inset(0, top.top, 0, 0);
+            });
+        }
         webView.addJavascriptInterface(new BridgeInterface(), "AIMiniNative");
         // 兼容 page.js 中 window.CodexMiniNative 直接调用路径：
         // page.js 通过 CustomEvent 发送，但仍保留旧接口名给遗留脚本。
