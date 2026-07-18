@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.34") return;
-    window.__AIMiniKeyboardHooksVersion = "1.34";
+    if (window.__AIMiniKeyboardHooksVersion === "1.35") return;
+    window.__AIMiniKeyboardHooksVersion = "1.35";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -116,6 +116,10 @@
     let lastKeyboardCssValue = "";
     let lastKeyboardCssLegacy = null;
     let viewportClosing = false;
+    let composerScrollLockFrame = 0;
+    let composerScrollLockUntil = 0;
+    let composerScrollLockEntries = [];
+    let composerScrollLockSawKeyboard = false;
     let lastVisualViewportHeight = window.visualViewport
       ? window.visualViewport.height
       : 0;
@@ -339,6 +343,74 @@
       );
     }
 
+    function cancelComposerScrollLock() {
+      if (composerScrollLockFrame) {
+        cancelAnimationFrame(composerScrollLockFrame);
+        composerScrollLockFrame = 0;
+      }
+      composerScrollLockUntil = 0;
+      composerScrollLockEntries = [];
+      composerScrollLockSawKeyboard = false;
+    }
+
+    function beginComposerScrollLock() {
+      const editable = activeEditable();
+      if (!isComposerEditable(editable)) return;
+
+      const nodes = [];
+      const addNode = function (node) {
+        if (!node || typeof node.scrollTop !== "number") return;
+        if (nodes.indexOf(node) >= 0) return;
+        nodes.push(node);
+      };
+      addNode(document.scrollingElement);
+      addNode(document.querySelector(".thread"));
+      addNode(document.body);
+
+      let parent = editable.parentElement;
+      while (parent) {
+        if (parent.scrollHeight > parent.clientHeight + 2) addNode(parent);
+        parent = parent.parentElement;
+      }
+
+      composerScrollLockEntries = nodes.map(function (node) {
+        const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        const currentTop = Math.max(0, node.scrollTop);
+        return {
+          node: node,
+          top: currentTop,
+          atBottom: maxTop > 0 && maxTop - currentTop < 24
+        };
+      });
+      if (!composerScrollLockEntries.length) return;
+
+      composerScrollLockUntil = performance.now() + 1100;
+      composerScrollLockSawKeyboard = keyboardOpen;
+      if (composerScrollLockFrame) cancelAnimationFrame(composerScrollLockFrame);
+      const restore = function () {
+        composerScrollLockFrame = 0;
+        if (keyboardOpen) composerScrollLockSawKeyboard = true;
+        if (performance.now() >= composerScrollLockUntil
+            || (!keyboardOpen && composerScrollLockSawKeyboard)) {
+          cancelComposerScrollLock();
+          return;
+        }
+        composerScrollLockEntries.forEach(function (entry) {
+          const node = entry.node;
+          if (!node || !node.isConnected) return;
+          const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+          const targetTop = entry.atBottom
+            ? maxTop
+            : Math.min(entry.top, maxTop);
+          if (Math.abs(node.scrollTop - targetTop) > 1) {
+            node.scrollTop = targetTop;
+          }
+        });
+        composerScrollLockFrame = requestAnimationFrame(restore);
+      };
+      composerScrollLockFrame = requestAnimationFrame(restore);
+    }
+
     function updateKeyboardState() {
       const viewport = window.visualViewport;
       const layoutHeight = Math.max(
@@ -485,6 +557,12 @@
         lastEditable = editable;
         lastDirectEditableInteractionAt = now;
         suppressProgrammaticFocusUntil = 0;
+        // Chromium may auto-reveal a focused textarea while the IME is
+        // opening. The native host resize then performs a second correction,
+        // which makes the conversation appear to keep scrolling on the first
+        // tap (especially when the thread is already at its bottom). Preserve
+        // the user's current conversation position during this one transition.
+        beginComposerScrollLock();
         return;
       }
       // WebUI deliberately copies a user message when it is tapped. Some of
@@ -509,6 +587,7 @@
       if (!editable) return;
       lastDirectEditableInteractionAt = Date.now();
       suppressProgrammaticFocusUntil = 0;
+      beginComposerScrollLock();
       sendKeyboardRequest(editable);
     }
 
@@ -575,7 +654,9 @@
       if (wasOpen !== keyboardOpen) {
         window.dispatchEvent(new Event("resize"));
         if (keyboardOpen) {
+          composerScrollLockSawKeyboard = true;
           viewportClosing = false;
+          beginComposerScrollLock();
           [0, 64, 160].forEach(function (delay) {
             setTimeout(function () {
               if (nativeKeyboardInsetDevicePixels > 0 || keyboardOpen) {
@@ -606,6 +687,7 @@
       keyboardOpen = false;
       viewportClosing = false;
       cancelPendingReveals();
+      cancelComposerScrollLock();
       document.body && document.body.classList.remove("keyboard-open");
       applyNativeKeyboardInset(true);
       window.dispatchEvent(new Event("resize"));

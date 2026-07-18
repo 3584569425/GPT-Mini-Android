@@ -95,7 +95,7 @@
     <string name="update_version">最新版：%1$s</string>
     <string name="update_no_notes">本次更新没有附带优化说明。</string>
     <string name="update_download">下载最新版</string>
-    <string name="update_already_latest">当前已是最新版本（%1$s）</string>
+    <string name="update_already_latest">当前已是最新版（%1$s）</string>
     <string name="update_github_unreachable">当前网络无法访问 GitHub，请检查网络后重试。</string>
     <string name="update_failed">检查更新失败，请稍后重试。</string>
     <string name="update_download_unavailable">当前版本没有可下载的 APK。</string>
