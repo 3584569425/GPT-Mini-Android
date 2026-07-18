@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.35") return;
-    window.__AIMiniKeyboardHooksVersion = "1.35";
+    if (window.__AIMiniKeyboardHooksVersion === "1.36") return;
+    window.__AIMiniKeyboardHooksVersion = "1.36";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -565,19 +565,27 @@
         beginComposerScrollLock();
         return;
       }
-      // WebUI deliberately copies a user message when it is tapped. Some of
-      // its click handlers also focus the composer as a side effect. Remember
-      // that this gesture did not start on an editor so the later focus event
-      // cannot reopen the IME.
-      if (!keyboardOpen) {
+      // Any tap outside the composer is an explicit request to leave the
+      // editor. Android/WebView can keep the textarea focused after the user
+      // dismisses the IME, so a later toolbar click could reopen it through a
+      // delayed focus event.
+      const targetElement = event && event.target && event.target.nodeType === 1
+        ? event.target
+        : (event && event.target && event.target.parentElement);
+      const insideComposer = !!(
+        targetElement
+        && targetElement.closest
+        && targetElement.closest("footer.composer-shell")
+      );
+      if (!insideComposer) {
         suppressProgrammaticFocusUntil = now + 900;
-        const current = editableFor(document.activeElement);
+        const current = editableFor(document.activeElement) || lastEditable;
         if (current) {
-          setTimeout(function () {
-            try {
-              if (document.activeElement === current) current.blur();
-            } catch (_) {}
-          }, 0);
+          try { current.blur(); } catch (_) {}
+          lastEditable = null;
+        }
+        if (window.CodexMiniNative && window.CodexMiniNative.hideKeyboard) {
+          try { window.CodexMiniNative.hideKeyboard(); } catch (_) {}
         }
       }
     }
@@ -589,6 +597,16 @@
       suppressProgrammaticFocusUntil = 0;
       beginComposerScrollLock();
       sendKeyboardRequest(editable);
+    }
+
+    function clearEditorFocusAfterKeyboardClose() {
+      const current = editableFor(document.activeElement) || lastEditable;
+      if (current && typeof current.blur === "function") {
+        try { current.blur(); } catch (_) {}
+      }
+      lastEditable = null;
+      lastDirectEditableInteractionAt = 0;
+      suppressProgrammaticFocusUntil = Date.now() + 900;
     }
 
     // Android WebView may recreate its InputConnection on the first IME
@@ -668,6 +686,7 @@
           });
           [0, 64, 160].forEach(revealEditable);
         } else {
+          clearEditorFocusAfterKeyboardClose();
           cancelPendingReveals();
         }
       }
@@ -686,6 +705,7 @@
       nativeKeyboardInsetDevicePixels = 0;
       keyboardOpen = false;
       viewportClosing = false;
+      clearEditorFocusAfterKeyboardClose();
       cancelPendingReveals();
       cancelComposerScrollLock();
       document.body && document.body.classList.remove("keyboard-open");
