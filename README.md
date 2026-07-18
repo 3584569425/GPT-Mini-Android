@@ -4,8 +4,8 @@
 
 当前版本：
 
-- versionName：`2.0.0`
-- versionCode：`32`
+- versionName：`2.0.1`
+- versionCode：`33`
 - applicationId：`app.gptmini.webview`（与 Gecko 版 `app.gptmini` 并列安装）
 - 最低系统：Android 8.0（API 26）
 - 浏览器内核：系统 WebView
@@ -20,7 +20,7 @@ chmod +x scripts/build-debug.sh
 APK 输出：
 
 ```text
-app/build/outputs/apk/debug/GPT Mini-WebView-2.0.0-debug.apk
+app/build/outputs/apk/debug/GPT Mini-WebView-2.0.1-debug.apk
 ```
 
 ## 参考源码
