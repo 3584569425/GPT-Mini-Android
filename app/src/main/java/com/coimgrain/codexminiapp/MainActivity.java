@@ -2528,16 +2528,16 @@ public class MainActivity extends Activity {
      * padding：部分 WebUI 顶栏具有固定高度，padding 会压缩按钮内容区，
      * 让按钮看起来下移了、真实触摸区域却仍留在系统状态栏下面。在部分
      * ROM 上该区域会被状态栏窗口截获，于是同一按钮会出现点上半部无效、
-     * 点下半部有效的偶发现象。
+     * 点下半部有效的偶发现象。顶部位置仍严格使用用户设置值：0 就是屏幕
+     * 最上方，需要避让状态栏时由用户在「顶部区域」中继续向下调整。
      */
     private void applyPageTopInsetToWeb() {
         if (webView == null) return;
         int statusPx = Math.max(0, currentStatusBarTopPx());
         int totalPx = resolvedPageTopInsetPx();
-        // 非负档位必须至少离开系统状态栏的触摸窗口。不同 ROM/刘海屏的
-        // statusBars 高度并不固定，单纯使用 20dp 在高状态栏设备上仍可能
-        // 只露出一部分可点击区域。负值是用户明确选择的上移效果，继续保留。
-        int offsetPx = totalPx < 0 ? totalPx : Math.max(totalPx, statusPx);
+        // 不再强制叠加系统状态栏高度，否则不同设备上的 0 档会被自动推到
+        // 不同位置，用户也无法通过顶部区域滑块精确控制顶栏位置。
+        int offsetPx = totalPx;
         int paddingPx = 0;
         float density = getResources().getDisplayMetrics().density;
         if (density <= 0f) density = 1f;
