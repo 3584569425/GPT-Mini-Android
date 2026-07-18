@@ -306,6 +306,33 @@ final class AIMiniBrowserView extends FrameLayout {
         }
     }
 
+    void onHostConfigurationChanged() {
+        if (destroyed) return;
+        requestLayout();
+        webView.requestLayout();
+        webView.invalidate();
+        postOnAnimation(() -> {
+            if (destroyed) return;
+            requestLayout();
+            webView.requestLayout();
+            webView.invalidate();
+            try {
+                webView.evaluateJavascript(
+                        "(function(){try{"
+                                + "if(window.__AIMiniRecoverOrientation){"
+                                + "window.__AIMiniRecoverOrientation();"
+                                + "}else{"
+                                + "window.dispatchEvent(new Event('orientationchange'));"
+                                + "window.dispatchEvent(new Event('resize'));"
+                                + "}"
+                                + "}catch(e){}})();",
+                        null
+                );
+            } catch (Throwable ignored) {
+            }
+        });
+    }
+
     boolean copyVisibleTextureTo(Bitmap destination) {
         if (destroyed || destination == null || destination.isRecycled()) return false;
         if (getWidth() <= 0 || getHeight() <= 0) return false;

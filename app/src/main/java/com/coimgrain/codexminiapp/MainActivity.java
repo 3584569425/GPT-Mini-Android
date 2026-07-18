@@ -79,11 +79,15 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.ByteArrayOutputStream;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -100,6 +104,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import javax.net.ssl.SSLException;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -130,6 +136,8 @@ public class MainActivity extends Activity {
     static final String NOTIFICATION_MODE_PERSISTENT = "persistent";
     private static final String KEY_FLOAT_MENU_THEME = "float_menu_theme";
     private static final String KEY_NATIVE_LIQUID_GLASS = "native_liquid_glass";
+    private static final String GITHUB_LATEST_RELEASE_API =
+            "https://api.github.com/repos/3584569425/GPT-Mini-Android/releases?per_page=20";
     private static final String FLOAT_MENU_THEME_DARK = "dark";
     private static final String FLOAT_MENU_THEME_LIGHT = "light";
     private static final String FLOAT_MENU_THEME_SYSTEM = "system";
@@ -190,6 +198,7 @@ public class MainActivity extends Activity {
     private final ExecutorService downloadIoExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService uploadIoExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService notificationIoExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService updateIoExecutor = Executors.newSingleThreadExecutor();
 
     private SharedPreferences preferences;
     private FrameLayout appHost;
@@ -244,6 +253,7 @@ public class MainActivity extends Activity {
     private LinearLayout miniMenuRootPage;
     private LinearLayout floatSettingsPanel;
     private LinearLayout notificationSettingsPanel;
+    private LinearLayout updateSettingsPanel;
     private String miniMenuPage = "root";
     private View floatGlassSwitch;
     private boolean floatGlassSwitchOn;
@@ -259,6 +269,17 @@ public class MainActivity extends Activity {
     private TextView floatThemeLightOption;
     private TextView floatThemeSystemOption;
     private TextView floatGlassOption;
+    private TextView updateStateText;
+    private TextView updateVersionText;
+    private TextView updateNotesText;
+    private ScrollView updateNotesScroll;
+    private TextView updateDownloadButton;
+    private ProgressBar updateProgress;
+    private String updateDownloadUrl = "";
+    private String updateAssetName = "";
+    private String updateLatestVersion = "";
+    private long updateCheckGeneration;
+    private boolean updateCheckInFlight;
     private ValueCallback<Uri[]> pendingFilePathCallback;
     private AIMiniBrowserView pendingFileChooserView;
     private boolean keyboardWasOpen;
@@ -1096,9 +1117,17 @@ public class MainActivity extends Activity {
                 true,
                 view -> showMiniMenuPage("notification")
         ));
+        miniMenuRootPage.addView(createMiniNavRow(
+                getString(R.string.check_updates),
+                getString(R.string.mini_menu_update_subtitle),
+                "update",
+                true,
+                view -> openUpdatePage()
+        ));
 
         buildFloatSettingsPanel();
         buildNotificationSettingsPanel();
+        buildUpdateSettingsPanel();
         showMiniMenuPage("root");
 
         miniButton = new RoundedIconView(this);
@@ -1273,6 +1302,86 @@ public class MainActivity extends Activity {
         );
         miniMenu.addView(notificationSettingsPanel, params);
         updateNotificationSettingsLabels();
+    }
+
+    private void buildUpdateSettingsPanel() {
+        updateSettingsPanel = new LinearLayout(this);
+        updateSettingsPanel.setOrientation(LinearLayout.VERTICAL);
+        updateSettingsPanel.setVisibility(View.GONE);
+        updateSettingsPanel.setPadding(0, 0, 0, 0);
+        updateSettingsPanel.setBackground(null);
+
+        updateSettingsPanel.addView(miniSectionTitle(getString(R.string.check_updates)));
+
+        updateProgress = new ProgressBar(this);
+        updateProgress.setIndeterminate(true);
+        updateProgress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                dp(28),
+                dp(28)
+        );
+        progressParams.gravity = Gravity.CENTER_HORIZONTAL;
+        progressParams.setMargins(0, dp(8), 0, dp(8));
+        updateSettingsPanel.addView(updateProgress, progressParams);
+
+        updateStateText = settingsLabel(getString(R.string.update_ready_to_check));
+        updateStateText.setGravity(Gravity.CENTER);
+        updateStateText.setPadding(0, dp(10), 0, dp(10));
+        updateSettingsPanel.addView(updateStateText);
+
+        updateVersionText = new TextView(this);
+        updateVersionText.setTextSize(18);
+        updateVersionText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        updateVersionText.setGravity(Gravity.CENTER);
+        updateVersionText.setVisibility(View.GONE);
+        updateSettingsPanel.addView(updateVersionText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        updateNotesScroll = new ScrollView(this);
+        updateNotesScroll.setFillViewport(false);
+        updateNotesScroll.setVerticalScrollBarEnabled(false);
+        updateNotesScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        updateNotesScroll.setVisibility(View.GONE);
+
+        updateNotesText = new TextView(this);
+        updateNotesText.setTextSize(12);
+        updateNotesText.setLineSpacing(dp(3), 1f);
+        updateNotesText.setPadding(dp(10), dp(10), dp(10), dp(10));
+        updateNotesScroll.addView(updateNotesText, new ScrollView.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        LinearLayout.LayoutParams notesParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(156)
+        );
+        notesParams.setMargins(0, dp(8), 0, 0);
+        updateSettingsPanel.addView(updateNotesScroll, notesParams);
+        updateUpdateNotesHeight();
+
+        updateDownloadButton = new TextView(this);
+        updateDownloadButton.setText(R.string.update_download);
+        updateDownloadButton.setTextSize(14);
+        updateDownloadButton.setGravity(Gravity.CENTER);
+        updateDownloadButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        updateDownloadButton.setPadding(dp(12), 0, dp(12), 0);
+        updateDownloadButton.setVisibility(View.GONE);
+        updateDownloadButton.setOnClickListener(view -> downloadAvailableUpdate());
+        LinearLayout.LayoutParams downloadParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(44)
+        );
+        downloadParams.setMargins(0, dp(10), 0, 0);
+        updateSettingsPanel.addView(updateDownloadButton, downloadParams);
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        miniMenu.addView(updateSettingsPanel, params);
+        refreshUpdatePanelTheme();
     }
 
     private TextView miniSectionTitle(String text) {
@@ -1525,6 +1634,7 @@ public class MainActivity extends Activity {
         else if ("refresh".equals(kind)) glyph = "↻";
         else if ("appearance".equals(kind)) glyph = "✦";
         else if ("notification".equals(kind)) glyph = "◔";
+        else if ("update".equals(kind)) glyph = "⟳";
         icon.setText(glyph);
         icon.setTag(kind);
         return icon;
@@ -1570,6 +1680,7 @@ public class MainActivity extends Activity {
         boolean root = "root".equals(miniMenuPage);
         boolean iface = "interface".equals(miniMenuPage);
         boolean notif = "notification".equals(miniMenuPage);
+        boolean update = "update".equals(miniMenuPage);
         if (miniMenuRootPage != null) {
             miniMenuRootPage.setVisibility(root ? View.VISIBLE : View.GONE);
         }
@@ -1579,16 +1690,21 @@ public class MainActivity extends Activity {
         if (notificationSettingsPanel != null) {
             notificationSettingsPanel.setVisibility(notif ? View.VISIBLE : View.GONE);
         }
+        if (updateSettingsPanel != null) {
+            updateSettingsPanel.setVisibility(update ? View.VISIBLE : View.GONE);
+        }
         if (miniMenuBackButton != null) {
             miniMenuBackButton.setVisibility(root ? View.GONE : View.VISIBLE);
         }
         if (miniMenuTitleText != null) {
             if (iface) miniMenuTitleText.setText(R.string.interface_settings);
             else if (notif) miniMenuTitleText.setText(R.string.notification_settings);
+            else if (update) miniMenuTitleText.setText(R.string.check_updates);
             else miniMenuTitleText.setText(R.string.mini_menu_title);
         }
         if (iface) updateFloatSettingsLabels();
         if (notif) updateNotificationSettingsLabels();
+        if (update) refreshUpdatePanelTheme();
     }
 
     private LinearLayout.LayoutParams compactSegmentParams(int leftMargin) {
@@ -1693,6 +1809,333 @@ public class MainActivity extends Activity {
             toggleMiniMenu();
         }
         showMiniMenuPage("notification");
+    }
+
+    private void openUpdatePage() {
+        if (miniMenu == null) return;
+        if (miniMenu.getVisibility() != View.VISIBLE) {
+            toggleMiniMenu();
+        }
+        showMiniMenuPage("update");
+        checkForUpdates();
+    }
+
+    private void refreshUpdatePanelTheme() {
+        if (updateStateText == null) return;
+        boolean light = isFloatMenuLight();
+        int primary = light ? Color.rgb(36, 42, 52) : Color.rgb(236, 240, 246);
+        int secondary = light ? Color.rgb(76, 84, 100) : Color.rgb(184, 194, 210);
+        updateStateText.setTextColor(secondary);
+        if (updateVersionText != null) updateVersionText.setTextColor(primary);
+        if (updateNotesText != null) {
+            updateNotesText.setTextColor(secondary);
+        }
+        if (updateNotesScroll != null) {
+            updateNotesScroll.setBackground(settingsNavRowBackground(
+                    light,
+                    nativeLiquidGlassEnabled()
+            ));
+        }
+        if (updateDownloadButton != null) {
+            updateDownloadButton.setTextColor(
+                    light ? Color.rgb(20, 100, 75) : Color.rgb(222, 255, 238)
+            );
+            updateDownloadButton.setBackground(settingsActionButtonBackground(
+                    light,
+                    nativeLiquidGlassEnabled()
+            ));
+        }
+    }
+
+    private void updateUpdateNotesHeight() {
+        if (updateNotesScroll == null) return;
+        ViewGroup.LayoutParams rawParams = updateNotesScroll.getLayoutParams();
+        if (!(rawParams instanceof LinearLayout.LayoutParams)) return;
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) rawParams;
+        boolean landscape = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE;
+        int targetHeight = dp(landscape ? 88 : 156);
+        if (params.height != targetHeight) {
+            params.height = targetHeight;
+            updateNotesScroll.setLayoutParams(params);
+        }
+    }
+
+    private void resetUpdatePanelForCheck() {
+        if (updateStateText == null) return;
+        updateStateText.setText(R.string.update_checking);
+        updateStateText.setTextColor(isFloatMenuLight()
+                ? Color.rgb(76, 84, 100)
+                : Color.rgb(184, 194, 210));
+        if (updateProgress != null) updateProgress.setVisibility(View.VISIBLE);
+        if (updateVersionText != null) {
+            updateVersionText.setVisibility(View.GONE);
+            updateVersionText.setText("");
+        }
+        if (updateNotesScroll != null) {
+            updateNotesScroll.setVisibility(View.GONE);
+            updateNotesScroll.scrollTo(0, 0);
+        }
+        if (updateNotesText != null) {
+            updateNotesText.setText("");
+        }
+        if (updateDownloadButton != null) {
+            updateDownloadButton.setVisibility(View.GONE);
+            updateDownloadUrl = "";
+            updateAssetName = "";
+            updateLatestVersion = "";
+        }
+    }
+
+    private void checkForUpdates() {
+        if (updateCheckInFlight) return;
+        updateCheckInFlight = true;
+        long generation = ++updateCheckGeneration;
+        resetUpdatePanelForCheck();
+        updateIoExecutor.execute(() -> {
+            try {
+                String raw = githubApiGet(GITHUB_LATEST_RELEASE_API, 9000);
+                UpdateInfo info = parseUpdateInfo(new JSONArray(raw));
+                handler.post(() -> {
+                    if (generation != updateCheckGeneration) return;
+                    updateCheckInFlight = false;
+                    showUpdateResult(info);
+                });
+            } catch (Throwable error) {
+                handler.post(() -> {
+                    if (generation != updateCheckGeneration) return;
+                    updateCheckInFlight = false;
+                    showUpdateError(error);
+                });
+            }
+        });
+    }
+
+    private void showUpdateResult(UpdateInfo info) {
+        if (updateProgress != null) updateProgress.setVisibility(View.GONE);
+        if (info == null) {
+            showUpdateError(new IOException("GitHub release response was empty"));
+            return;
+        }
+        updateLatestVersion = info.version;
+        updateAssetName = info.assetName;
+        updateDownloadUrl = info.downloadUrl;
+        String currentVersion = currentAppVersionName();
+        boolean newer = compareVersions(info.version, currentVersion) > 0;
+        if (!newer) {
+            updateStateText.setText(getString(
+                    R.string.update_already_latest,
+                    currentVersion
+            ));
+            updateVersionText.setVisibility(View.GONE);
+            updateNotesScroll.setVisibility(View.GONE);
+            updateDownloadButton.setVisibility(View.GONE);
+            refreshUpdatePanelTheme();
+            return;
+        }
+
+        updateStateText.setText(info.downloadUrl.isEmpty()
+                ? R.string.update_found_no_compatible_apk
+                : R.string.update_found);
+        updateVersionText.setText(getString(R.string.update_version, info.version));
+        updateVersionText.setVisibility(View.VISIBLE);
+        String notes = cleanReleaseNotes(info.notes);
+        if (notes.isEmpty()) notes = getString(R.string.update_no_notes);
+        if (notes.length() > 4000) notes = notes.substring(0, 4000) + "\n…";
+        updateNotesText.setText(notes);
+        updateNotesScroll.setVisibility(View.VISIBLE);
+        updateNotesScroll.scrollTo(0, 0);
+        updateDownloadButton.setVisibility(
+                info.downloadUrl.isEmpty() ? View.GONE : View.VISIBLE
+        );
+        refreshUpdatePanelTheme();
+    }
+
+    private void showUpdateError(Throwable error) {
+        if (updateProgress != null) updateProgress.setVisibility(View.GONE);
+        boolean githubUnavailable = isGithubNetworkError(error);
+        updateStateText.setText(githubUnavailable
+                ? R.string.update_github_unreachable
+                : R.string.update_failed);
+        updateVersionText.setVisibility(View.GONE);
+        updateNotesScroll.setVisibility(View.GONE);
+        updateDownloadButton.setVisibility(View.GONE);
+        refreshUpdatePanelTheme();
+    }
+
+    private void downloadAvailableUpdate() {
+        if (updateDownloadUrl == null || updateDownloadUrl.trim().isEmpty()) {
+            Toast.makeText(this, R.string.update_download_unavailable, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String fileName = updateAssetName == null || updateAssetName.trim().isEmpty()
+                ? "GPT-Mini-WebView-" + updateLatestVersion + ".apk"
+                : safeFileName(updateAssetName);
+        hideMiniMenu();
+        startHttpDownload(
+                updateDownloadUrl,
+                "GPT-Mini-Android/" + currentAppVersionName(),
+                fileName,
+                "application/vnd.android.package-archive",
+                ""
+        );
+    }
+
+    private String githubApiGet(String url, int timeoutMs) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        connection.setConnectTimeout(timeoutMs);
+        connection.setReadTimeout(timeoutMs);
+        connection.setRequestMethod("GET");
+        connection.setUseCaches(false);
+        connection.setRequestProperty("Accept", "application/vnd.github+json");
+        connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
+        connection.setRequestProperty("User-Agent", "GPT-Mini-Android/" + currentAppVersionName());
+        try {
+            int responseCode = connection.getResponseCode();
+            InputStream stream = responseCode >= 200 && responseCode < 300
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+            String body = "";
+            if (stream != null) {
+                try (InputStream input = stream;
+                     ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
+                    byte[] chunk = new byte[4096];
+                    int read;
+                    while ((read = input.read(chunk)) >= 0) {
+                        buffer.write(chunk, 0, read);
+                    }
+                    body = buffer.toString("UTF-8");
+                }
+            }
+            if (responseCode < 200 || responseCode >= 300) {
+                throw new IOException("GitHub HTTP " + responseCode + ": " + body);
+            }
+            return body;
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private UpdateInfo parseUpdateInfo(JSONArray releases) throws IOException {
+        if (releases == null || releases.length() == 0) {
+            throw new IOException("GitHub releases response was empty");
+        }
+        UpdateInfo firstRelease = null;
+        for (int i = 0; i < releases.length(); i++) {
+            JSONObject release = releases.optJSONObject(i);
+            if (release == null || release.optBoolean("draft", false)) continue;
+            UpdateInfo info = parseReleaseInfo(release);
+            if (firstRelease == null) firstRelease = info;
+            if (!info.downloadUrl.isEmpty()) return info;
+        }
+        if (firstRelease != null) return firstRelease;
+        throw new IOException("GitHub releases response has no usable release");
+    }
+
+    private UpdateInfo parseReleaseInfo(JSONObject release) throws IOException {
+        String tag = release.optString("tag_name", "").trim();
+        String name = release.optString("name", "").trim();
+        String version = tag.isEmpty() ? name : tag;
+        if (version.isEmpty()) throw new IOException("GitHub release has no version");
+        JSONArray assets = release.optJSONArray("assets");
+        String downloadUrl = "";
+        String assetName = "";
+        if (assets != null) {
+            for (int i = 0; i < assets.length(); i++) {
+                JSONObject asset = assets.optJSONObject(i);
+                if (asset == null) continue;
+                String candidateName = asset.optString("name", "").trim();
+                String candidateUrl = asset.optString("browser_download_url", "").trim();
+                if (!candidateName.toLowerCase(Locale.ROOT).endsWith(".apk")
+                        || candidateUrl.isEmpty()) {
+                    continue;
+                }
+                String lower = candidateName.toLowerCase(Locale.ROOT);
+                // WebView 与 GeckoView 是两个不同内核版本，不能互相更新。
+                if (lower.contains("gecko")) continue;
+                if (lower.contains("webview")
+                        || lower.contains("web-view")
+                        || lower.contains("web_view")) {
+                    downloadUrl = candidateUrl;
+                    assetName = candidateName;
+                    break;
+                }
+            }
+        }
+        String notes = release.optString("body", "").trim();
+        return new UpdateInfo(
+                stripVersionPrefix(version),
+                notes,
+                downloadUrl,
+                assetName
+        );
+    }
+
+    private String stripVersionPrefix(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        while (value.startsWith("v") || value.startsWith("V")) {
+            value = value.substring(1).trim();
+        }
+        return value.isEmpty() ? (raw == null ? "" : raw.trim()) : value;
+    }
+
+    private String currentAppVersionName() {
+        try {
+            String version = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0)
+                    .versionName;
+            if (version != null && !version.trim().isEmpty()) {
+                return version.trim();
+            }
+        } catch (Throwable ignored) {
+        }
+        return "0";
+    }
+
+    private String cleanReleaseNotes(String raw) {
+        String notes = raw == null ? "" : raw.replace("\r\n", "\n").trim();
+        if (notes.isEmpty()) return "";
+        notes = notes.replaceAll("(?m)^\\s{0,3}#{1,6}\\s*", "");
+        notes = notes.replaceAll("(?m)^\\s*```[^\\n]*$", "");
+        notes = notes.replace("`", "");
+        notes = notes.replaceAll("\\[([^\\]]+)]\\((?:https?://)?[^)]+\\)", "$1");
+        notes = notes.replaceAll("(?m)^[*-]\\s+", "• ");
+        notes = notes.replaceAll("\\n{3,}", "\n\n");
+        return notes.trim();
+    }
+
+    private int compareVersions(String left, String right) {
+        String[] a = stripVersionPrefix(left).split("[^0-9]+");
+        String[] b = stripVersionPrefix(right).split("[^0-9]+");
+        int count = Math.max(a.length, b.length);
+        for (int i = 0; i < count; i++) {
+            int av = i < a.length && !a[i].isEmpty() ? parseVersionPart(a[i]) : 0;
+            int bv = i < b.length && !b[i].isEmpty() ? parseVersionPart(b[i]) : 0;
+            if (av != bv) return Integer.compare(av, bv);
+        }
+        return 0;
+    }
+
+    private int parseVersionPart(String value) {
+        try {
+            return Math.min(Integer.MAX_VALUE, Integer.parseInt(value));
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private boolean isGithubNetworkError(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof UnknownHostException
+                    || current instanceof ConnectException
+                    || current instanceof SocketTimeoutException
+                    || current instanceof SSLException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void applyFloatButtonSize() {
@@ -2148,6 +2591,7 @@ public class MainActivity extends Activity {
         if (downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE) {
             renderDownloads();
         }
+        refreshUpdatePanelTheme();
         refreshFloatingButtonGlassStyle();
     }
 
@@ -2224,6 +2668,10 @@ public class MainActivity extends Activity {
             fg = light ? Color.rgb(180, 110, 20) : Color.argb(242, 255, 190, 104);
             bg = light ? Color.argb(28, 205, 124, 21) : Color.argb(36, 255, 176, 73);
             border = light ? Color.argb(40, 205, 124, 21) : Color.argb(48, 255, 195, 111);
+        } else if ("update".equals(kind)) {
+            fg = light ? Color.rgb(25, 132, 91) : Color.argb(242, 139, 240, 190);
+            bg = light ? Color.argb(30, 25, 132, 91) : Color.argb(40, 48, 180, 120);
+            border = light ? Color.argb(44, 25, 132, 91) : Color.argb(56, 110, 220, 165);
         } else if ("notification".equals(kind)) {
             fg = light ? Color.rgb(31, 111, 208) : Color.argb(242, 178, 225, 255);
             bg = light ? Color.argb(28, 31, 111, 208) : Color.argb(36, 142, 203, 255);
@@ -6657,8 +7105,29 @@ public class MainActivity extends Activity {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        updateUpdateNotesHeight();
         refreshMiniMenuTheme();
         requestInterfaceInsets();
+        if (appHost != null) {
+            appHost.requestLayout();
+            appHost.post(() -> {
+                appHost.requestLayout();
+                if (browserFrame != null) browserFrame.requestLayout();
+                AIMiniBrowserView active = activeWebView();
+                if (active != null) {
+                    active.onHostConfigurationChanged();
+                    applyBrowserViewport(
+                            active,
+                            active == externalWebView ? externalDesktopMode : mainDesktopMode
+                    );
+                }
+                if (miniButton != null) {
+                    snapFloatButtonToSide(miniMenu != null
+                            && miniMenu.getVisibility() == View.VISIBLE);
+                }
+                requestInterfaceInsets();
+            });
+        }
     }
 
     @Override
@@ -6836,6 +7305,7 @@ public class MainActivity extends Activity {
         downloadIoExecutor.shutdownNow();
         uploadIoExecutor.shutdownNow();
         notificationIoExecutor.shutdownNow();
+        updateIoExecutor.shutdownNow();
         for (PendingBlobDownload pending : pendingBlobDownloads.values()) {
             try {
                 pending.output.close();
@@ -7832,6 +8302,20 @@ public class MainActivity extends Activity {
         SavedFileResult(Uri uri, long bytes) {
             this.uri = uri;
             this.bytes = bytes;
+        }
+    }
+
+    private static final class UpdateInfo {
+        final String version;
+        final String notes;
+        final String downloadUrl;
+        final String assetName;
+
+        UpdateInfo(String version, String notes, String downloadUrl, String assetName) {
+            this.version = version == null ? "" : version;
+            this.notes = notes == null ? "" : notes;
+            this.downloadUrl = downloadUrl == null ? "" : downloadUrl;
+            this.assetName = assetName == null ? "" : assetName;
         }
     }
 

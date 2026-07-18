@@ -1882,10 +1882,10 @@
   }
 
   function installUiGestureFixes() {
-    // 1.1.12: WebUI desktop pinch-zoom — neutralize lockViewportZoom multi-touch block.
-    if (window.__AIMiniUiGestureFixesVersion === "1.12") return;
+    // 1.1.14: keep WebView scrolling alive after an Android orientation change.
+    if (window.__AIMiniUiGestureFixesVersion === "1.14") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniUiGestureFixesVersion = "1.12";
+    window.__AIMiniUiGestureFixesVersion = "1.14";
 
     // WebUI lockViewportZoom() does:
     //   gesture* preventDefault + touchmove(touches>1) preventDefault
@@ -1910,6 +1910,15 @@
                   && this.touches.length > 1) {
                 return;
               }
+            }
+            if (document.documentElement
+                && document.documentElement.classList.contains("ai-mini-landscape-scroll")
+                && this.type === "touchmove"
+                && this.touches
+                && this.touches.length === 1) {
+              // Some WebUI builds keep their portrait page-lock listener after
+              // Android rotates. Let Chromium handle the one-finger pan.
+              return;
             }
           } catch (_) {}
           return originalPreventDefault.apply(this, arguments);
@@ -1974,9 +1983,73 @@
           touch-action: pan-x pan-y pinch-zoom !important;
           -ms-touch-action: pan-x pan-y pinch-zoom !important;
         }
+
+        /* Do not write/remove inline styles here. WebUI may own them and needs
+           the exact values back after returning to portrait. */
+        html.ai-mini-landscape-scroll,
+        html.ai-mini-landscape-scroll body,
+        html.ai-mini-landscape-scroll .app,
+        html.ai-mini-landscape-scroll .thread,
+        html.ai-mini-landscape-scroll main {
+          touch-action: pan-x pan-y !important;
+          -ms-touch-action: pan-x pan-y !important;
+          overscroll-behavior-y: auto !important;
+        }
+        html.ai-mini-landscape-scroll .thread {
+          position: fixed !important;
+          inset: 0 !important;
+          width: auto !important;
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow-x: hidden !important;
+          overflow-y: auto !important;
+          -webkit-overflow-scrolling: touch !important;
+        }
       `;
     }
     ensureStyle();
+
+    function isLandscapeViewport() {
+      const viewportWidth = window.innerWidth || 0;
+      const viewportHeight = window.innerHeight || 0;
+      return viewportWidth > viewportHeight && viewportWidth > 0 && viewportHeight > 0;
+    }
+
+    function ensureOrientationScrollMode() {
+      try {
+        const landscape = isLandscapeViewport();
+        const root = document.documentElement;
+        const body = document.body;
+        if (!root || !body) return;
+        root.classList.toggle("ai-mini-landscape-scroll", landscape);
+      } catch (_) {}
+    }
+
+    let orientationRecoveryTimer = 0;
+    window.__AIMiniRecoverOrientation = function () {
+      if (orientationRecoveryTimer) clearTimeout(orientationRecoveryTimer);
+      ensureOrientationScrollMode();
+      try {
+        window.dispatchEvent(new Event("orientationchange"));
+        window.dispatchEvent(new Event("resize"));
+      } catch (_) {}
+      orientationRecoveryTimer = setTimeout(function () {
+        orientationRecoveryTimer = 0;
+        ensureOrientationScrollMode();
+        try { window.dispatchEvent(new Event("resize")); } catch (_) {}
+      }, 96);
+    };
+
+    ensureOrientationScrollMode();
+    window.addEventListener("orientationchange", ensureOrientationScrollMode, false);
+    window.addEventListener("resize", function () {
+      if (orientationRecoveryTimer) clearTimeout(orientationRecoveryTimer);
+      orientationRecoveryTimer = setTimeout(function () {
+        orientationRecoveryTimer = 0;
+        ensureOrientationScrollMode();
+      }, 80);
+    }, false);
 
     const SCROLLABLE_POPUP =
       ".settings-card.is-open, .model-menu-card.is-open, .permission-menu-card.is-open, "
