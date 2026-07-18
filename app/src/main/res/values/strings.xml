@@ -86,6 +86,7 @@
     <string name="mini_menu_notification_subtitle">任务完成通知与实时状态</string>
     <string name="check_updates">检查更新</string>
     <string name="mini_menu_update_subtitle">从 GitHub 获取最新版本与更新内容</string>
+    <string name="mini_menu_version">版本 %1$s</string>
     <string name="update_ready_to_check">点击后检查 GitHub 是否有新版本</string>
     <string name="update_checking">正在检查更新…</string>
     <string name="update_found">发现新版本</string>
@@ -117,6 +118,16 @@
     <string name="notification_mode_value">当前：%1$s</string>
     <string name="notification_mode_end">任务完成时通知</string>
     <string name="notification_mode_persistent">实时通知</string>
+    <string name="notification_help_title">无法收到通知？</string>
+    <string name="notification_help_subtitle">查看通知横幅、锁屏和后台耗电设置方法</string>
+    <string name="notification_help_intro">请按下面步骤检查 GPT Mini 的系统权限。不同手机的设置名称可能略有区别。</string>
+    <string name="notification_help_step_format">第 %1$d 步：%2$s</string>
+    <string name="notification_help_step_one">打开 GPT Mini 应用详情</string>
+    <string name="notification_help_step_one_body">进入手机设置 → 应用管理 → GPT Mini，先打开应用详情页面。</string>
+    <string name="notification_help_step_two">开启通知横幅和锁屏</string>
+    <string name="notification_help_step_two_body">进入通知管理，开启允许通知；同时打开通知横幅和锁屏显示，避免任务完成时看不到提醒。</string>
+    <string name="notification_help_step_three">允许后台行为</string>
+    <string name="notification_help_step_three_body">进入耗电管理，将 GPT Mini 设置为“完全允许后台行为”，这样应用在后台也能继续检查任务状态并发送通知。</string>
     <string name="notification_channel_tasks">GPT Mini 后台服务与任务状态</string>
     <string name="notification_channel_alerts">GPT Mini 任务结束提醒</string>
     <string name="notification_channel_alerts_description">任务完成、失败或异常时在屏幕顶部显示提醒</string>

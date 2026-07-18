@@ -188,6 +188,9 @@ public class MainActivity extends Activity {
     private final List<View> miniMenuActionIcons = new ArrayList<>();
     private final List<View> miniMenuSettingsRows = new ArrayList<>();
     private final List<TextView> miniMenuSectionTitles = new ArrayList<>();
+    private final List<View> notificationHelpCards = new ArrayList<>();
+    private final List<TextView> notificationHelpStepTitles = new ArrayList<>();
+    private final List<TextView> notificationHelpStepBodies = new ArrayList<>();
     private final Set<String> runningNotificationTasks = new HashSet<>();
     private final Map<String, String> monitoredTaskStatusUrls = new HashMap<>();
     private final Map<String, String> monitoredTaskNames = new HashMap<>();
@@ -253,6 +256,7 @@ public class MainActivity extends Activity {
     private LinearLayout miniMenuRootPage;
     private LinearLayout floatSettingsPanel;
     private LinearLayout notificationSettingsPanel;
+    private LinearLayout notificationHelpPanel;
     private LinearLayout updateSettingsPanel;
     private String miniMenuPage = "root";
     private View floatGlassSwitch;
@@ -264,6 +268,7 @@ public class MainActivity extends Activity {
     private TextView notificationModeValue;
     private TextView notificationEndOption;
     private TextView notificationPersistentOption;
+    private TextView miniMenuVersionText;
     private TextView floatThemeValue;
     private TextView floatThemeDarkOption;
     private TextView floatThemeLightOption;
@@ -1010,7 +1015,13 @@ public class MainActivity extends Activity {
         miniMenuBackButton.setGravity(Gravity.CENTER);
         miniMenuBackButton.setPadding(0, 0, dp(1), dp(2));
         miniMenuBackButton.setVisibility(View.GONE);
-        miniMenuBackButton.setOnClickListener(view -> showMiniMenuPage("root"));
+        miniMenuBackButton.setOnClickListener(view -> {
+            if ("notification-help".equals(miniMenuPage)) {
+                showMiniMenuPage("notification");
+            } else {
+                showMiniMenuPage("root");
+            }
+        });
         LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(dp(28), dp(28));
         backParams.setMargins(0, 0, dp(8), 0);
         miniMenuTitleBar.addView(miniMenuBackButton, backParams);
@@ -1125,8 +1136,19 @@ public class MainActivity extends Activity {
                 view -> openUpdatePage()
         ));
 
+        miniMenuVersionText = new TextView(this);
+        miniMenuVersionText.setText(getString(R.string.mini_menu_version, currentAppVersionName()));
+        miniMenuVersionText.setTextSize(10);
+        miniMenuVersionText.setGravity(Gravity.RIGHT);
+        miniMenuVersionText.setPadding(dp(6), dp(2), dp(4), 0);
+        miniMenuRootPage.addView(miniMenuVersionText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(24)
+        ));
+
         buildFloatSettingsPanel();
         buildNotificationSettingsPanel();
+        buildNotificationHelpPanel();
         buildUpdateSettingsPanel();
         showMiniMenuPage("root");
 
@@ -1296,12 +1318,129 @@ public class MainActivity extends Activity {
         );
         notificationSettingsPanel.addView(notificationPersistentOption);
 
+        notificationSettingsPanel.addView(createMiniNavRow(
+                getString(R.string.notification_help_title),
+                getString(R.string.notification_help_subtitle),
+                "notification-help",
+                true,
+                view -> showMiniMenuPage("notification-help")
+        ));
+
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
         miniMenu.addView(notificationSettingsPanel, params);
         updateNotificationSettingsLabels();
+    }
+
+    private void buildNotificationHelpPanel() {
+        notificationHelpPanel = new LinearLayout(this);
+        notificationHelpPanel.setOrientation(LinearLayout.VERTICAL);
+        notificationHelpPanel.setVisibility(View.GONE);
+        notificationHelpPanel.setPadding(0, 0, 0, 0);
+        notificationHelpPanel.setBackground(null);
+
+        TextView intro = miniSectionTitle(getString(R.string.notification_help_title));
+        notificationHelpPanel.addView(intro);
+
+        TextView description = settingsLabel(getString(R.string.notification_help_intro));
+        description.setTextSize(12);
+        description.setPadding(dp(10), dp(2), dp(10), dp(8));
+        notificationHelpPanel.addView(description);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setClipToPadding(false);
+        scroll.setPadding(0, 0, 0, dp(2));
+
+        LinearLayout steps = new LinearLayout(this);
+        steps.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(steps, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
+        ));
+
+        addNotificationHelpStep(
+                steps,
+                1,
+                getString(R.string.notification_help_step_one),
+                getString(R.string.notification_help_step_one_body),
+                R.drawable.notification_help_app_detail
+        );
+        addNotificationHelpStep(
+                steps,
+                2,
+                getString(R.string.notification_help_step_two),
+                getString(R.string.notification_help_step_two_body),
+                R.drawable.notification_help_notifications
+        );
+        addNotificationHelpStep(
+                steps,
+                3,
+                getString(R.string.notification_help_step_three),
+                getString(R.string.notification_help_step_three_body),
+                R.drawable.notification_help_battery
+        );
+
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(430)
+        );
+        scrollParams.setMargins(0, dp(4), 0, 0);
+        notificationHelpPanel.addView(scroll, scrollParams);
+        miniMenu.addView(notificationHelpPanel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+    }
+
+    private void addNotificationHelpStep(
+            LinearLayout parent,
+            int number,
+            String title,
+            String body,
+            int imageRes
+    ) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        card.setBackground(settingsNavRowBackground(isFloatMenuLight(), nativeLiquidGlassEnabled()));
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        cardParams.setMargins(0, 0, 0, dp(8));
+        parent.addView(card, cardParams);
+        notificationHelpCards.add(card);
+
+        TextView titleView = new TextView(this);
+        titleView.setText(getString(R.string.notification_help_step_format, number, title));
+        titleView.setTextSize(14);
+        titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        titleView.setPadding(0, 0, 0, dp(3));
+        card.addView(titleView);
+        notificationHelpStepTitles.add(titleView);
+
+        TextView bodyView = new TextView(this);
+        bodyView.setText(body);
+        bodyView.setTextSize(11);
+        bodyView.setLineSpacing(dp(2), 1f);
+        bodyView.setPadding(0, 0, 0, dp(8));
+        card.addView(bodyView);
+        notificationHelpStepBodies.add(bodyView);
+
+        ImageView image = new ImageView(this);
+        image.setImageResource(imageRes);
+        image.setAdjustViewBounds(true);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        image.setBackground(settingsCardBackground(true));
+        image.setPadding(dp(2), dp(2), dp(2), dp(2));
+        card.addView(image, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
     }
 
     private void buildUpdateSettingsPanel() {
@@ -1634,6 +1773,7 @@ public class MainActivity extends Activity {
         else if ("refresh".equals(kind)) glyph = "↻";
         else if ("appearance".equals(kind)) glyph = "✦";
         else if ("notification".equals(kind)) glyph = "◔";
+        else if ("notification-help".equals(kind)) glyph = "?";
         else if ("update".equals(kind)) glyph = "⟳";
         icon.setText(glyph);
         icon.setTag(kind);
@@ -1680,6 +1820,7 @@ public class MainActivity extends Activity {
         boolean root = "root".equals(miniMenuPage);
         boolean iface = "interface".equals(miniMenuPage);
         boolean notif = "notification".equals(miniMenuPage);
+        boolean notifHelp = "notification-help".equals(miniMenuPage);
         boolean update = "update".equals(miniMenuPage);
         if (miniMenuRootPage != null) {
             miniMenuRootPage.setVisibility(root ? View.VISIBLE : View.GONE);
@@ -1690,6 +1831,9 @@ public class MainActivity extends Activity {
         if (notificationSettingsPanel != null) {
             notificationSettingsPanel.setVisibility(notif ? View.VISIBLE : View.GONE);
         }
+        if (notificationHelpPanel != null) {
+            notificationHelpPanel.setVisibility(notifHelp ? View.VISIBLE : View.GONE);
+        }
         if (updateSettingsPanel != null) {
             updateSettingsPanel.setVisibility(update ? View.VISIBLE : View.GONE);
         }
@@ -1699,11 +1843,13 @@ public class MainActivity extends Activity {
         if (miniMenuTitleText != null) {
             if (iface) miniMenuTitleText.setText(R.string.interface_settings);
             else if (notif) miniMenuTitleText.setText(R.string.notification_settings);
+            else if (notifHelp) miniMenuTitleText.setText(R.string.notification_help_title);
             else if (update) miniMenuTitleText.setText(R.string.check_updates);
             else miniMenuTitleText.setText(R.string.mini_menu_title);
         }
         if (iface) updateFloatSettingsLabels();
         if (notif) updateNotificationSettingsLabels();
+        if (notifHelp) refreshNotificationHelpTheme();
         if (update) refreshUpdatePanelTheme();
     }
 
@@ -2540,6 +2686,11 @@ public class MainActivity extends Activity {
         if (miniMenuTitleText != null) {
             miniMenuTitleText.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
         }
+        if (miniMenuVersionText != null) {
+            miniMenuVersionText.setTextColor(light
+                    ? Color.argb(145, 70, 76, 88)
+                    : Color.argb(145, 220, 226, 234));
+        }
         if (miniMenuBackButton != null) {
             miniMenuBackButton.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
             miniMenuBackButton.setBackground(settingsBackBackground(light, glass));
@@ -2598,8 +2749,26 @@ public class MainActivity extends Activity {
         if (downloadsPanel != null && downloadsPanel.getVisibility() == View.VISIBLE) {
             renderDownloads();
         }
+        refreshNotificationHelpTheme();
         refreshUpdatePanelTheme();
         refreshFloatingButtonGlassStyle();
+    }
+
+    private void refreshNotificationHelpTheme() {
+        boolean light = isFloatMenuLight();
+        boolean glass = nativeLiquidGlassEnabled();
+        if (notificationHelpPanel != null) notificationHelpPanel.setBackground(null);
+        for (View card : notificationHelpCards) {
+            card.setBackground(settingsNavRowBackground(light, glass));
+        }
+        for (TextView title : notificationHelpStepTitles) {
+            title.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
+        }
+        for (TextView body : notificationHelpStepBodies) {
+            body.setTextColor(light
+                    ? Color.argb(178, 60, 66, 78)
+                    : Color.argb(184, 230, 234, 242));
+        }
     }
 
     private GradientDrawable settingsCardBackground(boolean light) {
@@ -2679,7 +2848,7 @@ public class MainActivity extends Activity {
             fg = light ? Color.rgb(25, 132, 91) : Color.argb(242, 139, 240, 190);
             bg = light ? Color.argb(30, 25, 132, 91) : Color.argb(40, 48, 180, 120);
             border = light ? Color.argb(44, 25, 132, 91) : Color.argb(56, 110, 220, 165);
-        } else if ("notification".equals(kind)) {
+        } else if ("notification".equals(kind) || "notification-help".equals(kind)) {
             fg = light ? Color.rgb(31, 111, 208) : Color.argb(242, 178, 225, 255);
             bg = light ? Color.argb(28, 31, 111, 208) : Color.argb(36, 142, 203, 255);
             border = light ? Color.argb(40, 31, 111, 208) : Color.argb(48, 142, 203, 255);
