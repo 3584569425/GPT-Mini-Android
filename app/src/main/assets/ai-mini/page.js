@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.33") return;
-    window.__AIMiniKeyboardHooksVersion = "1.33";
+    if (window.__AIMiniKeyboardHooksVersion === "1.34") return;
+    window.__AIMiniKeyboardHooksVersion = "1.34";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -512,6 +512,26 @@
       sendKeyboardRequest(editable);
     }
 
+    // Android WebView may recreate its InputConnection on the first IME
+    // request and leave document.activeElement on a toolbar button. Restore
+    // only the editor from the user's most recent direct gesture; never force
+    // focus for a background/programmatic keyboard request.
+    window.__AIMiniRestoreKeyboardEditorFocus = function () {
+      const editable = lastEditable;
+      if (!editable || !document.contains(editable)) return false;
+      if (Date.now() - lastDirectEditableInteractionAt > 1800) return false;
+
+      const current = editableFor(document.activeElement);
+      if (current && current !== editable) return false;
+
+      try {
+        editable.focus({ preventScroll: true });
+      } catch (_) {
+        try { editable.focus(); } catch (_) {}
+      }
+      return document.activeElement === editable;
+    };
+
     document.addEventListener("pointerdown", recordPointerIntent, true);
     document.addEventListener("touchstart", recordPointerIntent, true);
     document.addEventListener("touchend", requestKeyboard, true);
@@ -556,6 +576,15 @@
         window.dispatchEvent(new Event("resize"));
         if (keyboardOpen) {
           viewportClosing = false;
+          [0, 64, 160].forEach(function (delay) {
+            setTimeout(function () {
+              if (nativeKeyboardInsetDevicePixels > 0 || keyboardOpen) {
+                try {
+                  window.__AIMiniRestoreKeyboardEditorFocus();
+                } catch (_) {}
+              }
+            }, delay);
+          });
           [0, 64, 160].forEach(revealEditable);
         } else {
           cancelPendingReveals();

@@ -5422,14 +5422,11 @@ public class MainActivity extends Activity {
         target.setFocusableInTouchMode(false);
         inputView.setFocusable(true);
         inputView.setFocusableInTouchMode(true);
-        // On the first tap after launch the WebView itself may already have
-        // view focus, while its HTML editor still has no active InputConnection.
-        // requestFocusFromTouch() is what binds the first editor gesture to
-        // Chromium's input connection; without it the IME can appear but the
-        // first keystrokes are ignored until the user taps the textarea again.
         final boolean initializeImeConnection = !keyboardWasOpen;
-        if (initializeImeConnection || !inputView.hasFocus()) {
-            inputView.requestFocusFromTouch();
+        // Do not use requestFocusFromTouch() here. On ColorOS it moves the
+        // document focus to the first focusable button (#thread-button), which
+        // makes the IME visible while the HTML textarea loses its caret.
+        if (!inputView.hasFocus()) {
             inputView.requestFocus();
         }
         InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
@@ -5446,6 +5443,17 @@ public class MainActivity extends Activity {
                         inputView,
                         InputMethodManager.SHOW_IMPLICIT
                 );
+                // Re-assert the editor that the user actually tapped after
+                // the WebView input connection has been created. This is
+                // intentionally gated in page.js by the recent direct editor
+                // gesture, so it cannot steal focus from normal page controls.
+                if (initializeImeConnection) {
+                    restoreWebEditorFocus(target);
+                    inputView.postDelayed(
+                            () -> restoreWebEditorFocus(target),
+                            72L
+                    );
+                }
                 // A few OEM WebViews create the editor connection one frame
                 // after focus. Restart only as a fallback; doing it on every
                 // tap would break CJK composing text.
@@ -5461,10 +5469,23 @@ public class MainActivity extends Activity {
                                 inputView,
                                 InputMethodManager.SHOW_IMPLICIT
                         );
+                        restoreWebEditorFocus(target);
                     }, 80L);
                 }
             }, 16L);
         }
+    }
+
+    private void restoreWebEditorFocus(AIMiniBrowserView target) {
+        if (target == null) return;
+        target.evaluateJavascript(
+                "(function(){try{"
+                        + "if(window.__AIMiniRestoreKeyboardEditorFocus){"
+                        + "window.__AIMiniRestoreKeyboardEditorFocus();"
+                        + "}"
+                        + "}catch(e){}})();",
+                null
+        );
     }
 
     private void hideSoftKeyboard(View view) {
