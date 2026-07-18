@@ -943,7 +943,7 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // 1.22: keep frosted glass + survive multi-device switch.
+    // 1.23: keep frosted glass + reduce WebView style/repaint churn.
     // WebUI device switch uses location.replace() and reloads per-device appearance.
     // Android keyboard defaults force liquidGlassEnabled=false for every new device
     // profile, which turns the whole liquid-glass UI off. Chromium WebUI also runs
@@ -951,9 +951,9 @@
     // Fix: seed preferred glass into device-scoped localStorage at document-start
     // (before WebUI early boot), skip android false-defaults, and lightly re-assert
     // host classes/CSS only (no storage fight with Pro entitlement).
-    if (window.__AIMiniGeckoGlassVersion === "1.22") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.23") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.22";
+    window.__AIMiniGeckoGlassVersion = "1.23";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
@@ -980,7 +980,12 @@
     }
 
     function writePreferGlass(on) {
-      try { localStorage.setItem(PREFER_KEY, on ? "1" : "0"); } catch (_) {}
+      try {
+        const value = on ? "1" : "0";
+        if (localStorage.getItem(PREFER_KEY) !== value) {
+          localStorage.setItem(PREFER_KEY, value);
+        }
+      } catch (_) {}
     }
 
     function readPreferGlass() {
@@ -1185,8 +1190,24 @@
        * Pause only decorative animations while the conversation is actively
        * scrolling. The resting glass appearance and its blur are unchanged.
        */
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) *,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) * {
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-layer,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-layer,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-warp,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-warp,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-react-surface,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-screen,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-screen,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-overlay,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-overlay,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-hover-glow,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-hover-glow,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-active-glow,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-active-glow,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-top-glow,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-top-glow,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .task-plan-dock-card::before {
         animation-play-state: paused !important;
       }
       html.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original,
@@ -1229,17 +1250,38 @@
       return style;
     }
 
-    function reassertHostMarks() {
+    let lastGlassOffState = null;
+    let lastHostMarksComplete = false;
+
+    function reassertHostMarks(force) {
       try {
         const root = document.documentElement;
         if (!root) return;
-        root.classList.add("ai-mini-webview");
-        root.classList.add("ai-mini-geckoview");
-        root.classList.add("android-keyboard-mode");
-        if (document.body) document.body.classList.add("android-keyboard-mode");
-        ensureStyle();
+        const glassOff = root.classList.contains("liquid-glass-off");
+        const hostMarksComplete =
+          root.classList.contains("ai-mini-webview") &&
+          root.classList.contains("ai-mini-geckoview") &&
+          root.classList.contains("android-keyboard-mode") &&
+          (!document.body || document.body.classList.contains("android-keyboard-mode"));
+        const styleMissing = !document.getElementById(STYLE_ID);
+        if (!force &&
+            hostMarksComplete &&
+            !styleMissing &&
+            lastHostMarksComplete &&
+            lastGlassOffState === glassOff) {
+          return;
+        }
+        if (!root.classList.contains("ai-mini-webview")) root.classList.add("ai-mini-webview");
+        if (!root.classList.contains("ai-mini-geckoview")) root.classList.add("ai-mini-geckoview");
+        if (!root.classList.contains("android-keyboard-mode")) root.classList.add("android-keyboard-mode");
+        if (document.body && !document.body.classList.contains("android-keyboard-mode")) {
+          document.body.classList.add("android-keyboard-mode");
+        }
+        if (styleMissing) ensureStyle();
         // Learn preference only when glass is visibly on.
-        if (!root.classList.contains("liquid-glass-off")) writePreferGlass(true);
+        if (!glassOff && lastGlassOffState !== false) writePreferGlass(true);
+        lastGlassOffState = glassOff;
+        lastHostMarksComplete = true;
       } catch (_) {}
     }
 
@@ -1249,7 +1291,7 @@
       seedActiveDeviceGlassPreference();
     } catch (_) {}
 
-    reassertHostMarks();
+    reassertHostMarks(true);
     window.__AIMiniReassertLiquidGlass = function (reason) {
       // Native inject / delayed hooks may call this after device navigation.
       try {
@@ -1260,20 +1302,39 @@
       reassertHostMarks();
     };
 
-    // Let Chromium pause decorative animation invalidations during a swipe.
+    // Let Chromium pause only decorative glass animations during a swipe.
     // This is temporary and does not alter the resting liquid-glass visual.
     if (!window.__AIMiniGlassScrollPerf) {
       try {
         let scrollTimer = 0;
+        let lastScrollActivity = 0;
+        const clearScrollingWhenIdle = function () {
+          const elapsed = Date.now() - lastScrollActivity;
+          if (elapsed < 180) {
+            scrollTimer = setTimeout(clearScrollingWhenIdle, 180 - elapsed);
+            return;
+          }
+          scrollTimer = 0;
+          try {
+            const root = document.documentElement;
+            if (root) root.classList.remove("ai-mini-glass-scrolling");
+          } catch (_) {}
+        };
         const markScrolling = function () {
           const root = document.documentElement;
           if (!root) return;
-          root.classList.add("ai-mini-glass-scrolling");
-          if (scrollTimer) clearTimeout(scrollTimer);
-          scrollTimer = setTimeout(function () {
-            scrollTimer = 0;
-            try { root.classList.remove("ai-mini-glass-scrolling"); } catch (_) {}
-          }, 180);
+          if (root.classList.contains("liquid-glass-off")) {
+            if (root.classList.contains("ai-mini-glass-scrolling")) {
+              root.classList.remove("ai-mini-glass-scrolling");
+            }
+            return;
+          }
+          lastScrollActivity = Date.now();
+          if (!root.classList.contains("ai-mini-glass-scrolling")) {
+            root.classList.add("ai-mini-glass-scrolling");
+          }
+          if (scrollTimer) return;
+          scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
         };
         window.addEventListener("scroll", markScrolling, { passive: true, capture: true });
         window.addEventListener("wheel", markScrolling, { passive: true });
@@ -1286,6 +1347,16 @@
       try {
         let scheduled = 0;
         const obs = new MutationObserver(function () {
+          const root = document.documentElement;
+          if (!root) return;
+          const glassOff = root.classList.contains("liquid-glass-off");
+          const hostMarksMissing =
+            !root.classList.contains("ai-mini-webview") ||
+            !root.classList.contains("ai-mini-geckoview") ||
+            !root.classList.contains("android-keyboard-mode") ||
+            (document.body && !document.body.classList.contains("android-keyboard-mode"));
+          const styleMissing = !document.getElementById(STYLE_ID);
+          if (lastGlassOffState === glassOff && !hostMarksMissing && !styleMissing) return;
           if (scheduled) return;
           scheduled = 1;
           setTimeout(function () {
@@ -1308,7 +1379,7 @@
     });
     window.addEventListener("pageshow", function () {
       try { seedActiveDeviceGlassPreference(); } catch (_) {}
-      reassertHostMarks();
+      reassertHostMarks(true);
     });
   }
 
