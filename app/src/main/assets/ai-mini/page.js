@@ -951,9 +951,9 @@
     // Fix: seed preferred glass into device-scoped localStorage at document-start
     // (before WebUI early boot), skip android false-defaults, and lightly re-assert
     // host classes/CSS only (no storage fight with Pro entitlement).
-    if (window.__AIMiniGeckoGlassVersion === "1.23") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.22") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.23";
+    window.__AIMiniGeckoGlassVersion = "1.22";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
@@ -1182,31 +1182,6 @@
         -webkit-backface-visibility: hidden !important;
       }
       /*
-       * Partial Gecko compositor port for Chromium WebView:
-       * keep each glass surface in its own paint boundary, instead of letting
-       * a repaint behind one blur surface invalidate the whole WebView.
-       * Do not add translate3d/will-change here; those can break the backdrop
-       * sampling chain on both Chromium and Gecko.
-       */
-      html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off)
-      .liquid-glass-react-surface,
-      html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off)
-      .composer-stack-glass-card,
-      html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off)
-      .task-plan-dock-card {
-        isolation: isolate !important;
-        contain: paint !important;
-        backface-visibility: hidden !important;
-        -webkit-backface-visibility: hidden !important;
-      }
-      html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off)
-      .liquid-glass-warp {
-        contain: paint !important;
-        isolation: isolate !important;
-        backface-visibility: hidden !important;
-        -webkit-backface-visibility: hidden !important;
-      }
-      /*
        * Pause only decorative animations while the conversation is actively
        * scrolling. The resting glass appearance and its blur are unchanged.
        */
@@ -1262,14 +1237,6 @@
         root.classList.add("ai-mini-geckoview");
         root.classList.add("android-keyboard-mode");
         if (document.body) document.body.classList.add("android-keyboard-mode");
-        // The WebView-only compositor class is deliberately separate from
-        // the Gecko host mark so the partial port can be disabled cleanly
-        // whenever the user turns liquid glass off.
-        root.classList.toggle(
-          "ai-mini-webview-glass-compositor",
-          root.classList.contains("ai-mini-webview")
-            && !root.classList.contains("liquid-glass-off")
-        );
         ensureStyle();
         // Learn preference only when glass is visibly on.
         if (!root.classList.contains("liquid-glass-off")) writePreferGlass(true);

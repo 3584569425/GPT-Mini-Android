@@ -5786,23 +5786,6 @@ public class MainActivity extends Activity {
                 + "contain:paint!important;"
                 + "backface-visibility:hidden!important;"
                 + "-webkit-backface-visibility:hidden!important;}"
-                // Partial Gecko compositor port for WebView: isolate the
-                // actual glass surfaces and warp layers without adding
-                // translate3d/will-change, which can break backdrop sampling.
-                + "html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off) "
-                + ".liquid-glass-react-surface,"
-                + "html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off) "
-                + ".composer-stack-glass-card,"
-                + "html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off) "
-                + ".task-plan-dock-card{"
-                + "isolation:isolate!important;contain:paint!important;"
-                + "backface-visibility:hidden!important;"
-                + "-webkit-backface-visibility:hidden!important;}"
-                + "html.ai-mini-webview.ai-mini-webview-glass-compositor:not(.liquid-glass-off) "
-                + ".liquid-glass-warp{"
-                + "contain:paint!important;isolation:isolate!important;"
-                + "backface-visibility:hidden!important;"
-                + "-webkit-backface-visibility:hidden!important;}"
                 // Decorative animations are paused only while the conversation
                 // is actively scrolling; resting appearance remains unchanged.
                 + "html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) *,"
