@@ -298,6 +298,10 @@ public class MainActivity extends Activity {
     private boolean imeAnimationRunning;
     private boolean modernImeInsetsReliable;
     private boolean legacyComposerImeBridgeEnabled;
+    private long imeOpenRequestedAt;
+    private AIMiniBrowserView lastImeShowTarget;
+    private long lastImeShowRequestAt;
+    private static final long IME_OPEN_GRACE_MS = 900L;
     private int stableImeRootHeight;
     private int stableImeHostHeight;
     private int stableImeLayoutWidth;
@@ -5619,8 +5623,8 @@ public class MainActivity extends Activity {
                 + "document.documentElement.classList.add('android-keyboard-mode','ai-mini-geckoview','ai-mini-webview');"
                 + "if(document.body){document.body.classList.add('standalone','android-keyboard-mode');}"
                 + "try{if(window.__AIMiniReassertLiquidGlass){window.__AIMiniReassertLiquidGlass('native-inject');}}catch(ignore){}"
-                + "if(window.__AIMiniFixVersion==='2.0.1'){return legacyComposer;}"
-                + "window.__AIMiniFixVersion='2.0.1';"
+                + "if(window.__AIMiniFixVersion==='2.0.2'){return legacyComposer;}"
+                + "window.__AIMiniFixVersion='2.0.2';"
                 + "try{var m=document.querySelector('meta[name=viewport]');if(m){var c=m.getAttribute('content')||'';if(c.indexOf('viewport-fit')<0){m.setAttribute('content',c+', viewport-fit=cover');}}}catch(ignore){}"
                 + "window.__AIMiniApplyLegacyKeyboardInset=function(devicePixels){"
                 + "try{if(!detectLegacyComposer()){return false;}"
@@ -5656,14 +5660,15 @@ public class MainActivity extends Activity {
                 + "if(!window.__AIMiniKeyboardHooksVersion&&!window.__AIMiniKeyboardFallbackInstalled){"
                 + "window.__AIMiniKeyboardFallbackInstalled=true;"
                 + "var editable=function(el){return !!(el&&el.closest&&el.closest('textarea,input:not([type=button]):not([type=submit]):not([type=file]),[contenteditable=true]'));};"
-                + "var lastEditableTouchAt=0,suppressFocusUntil=0;"
+                + "var lastEditableTouchAt=0,suppressFocusUntil=0,lastShowAt=0;"
                 + "var intent=function(e){var now=Date.now();if(editable(e.target)){lastEditableTouchAt=now;suppressFocusUntil=0;}else{suppressFocusUntil=now+900;}};"
-                + "var show=function(e){if(editable(e.target)&&window.CodexMiniNative){lastEditableTouchAt=Date.now();suppressFocusUntil=0;setTimeout(function(){CodexMiniNative.showKeyboard();},40);}};"
+                + "var requestShow=function(){var now=Date.now();if(now-lastShowAt<300){return;}lastShowAt=now;try{CodexMiniNative.showKeyboard();}catch(ignore){}};"
+                + "var show=function(e){if(editable(e.target)&&window.CodexMiniNative){lastEditableTouchAt=Date.now();suppressFocusUntil=0;setTimeout(requestShow,40);}};"
                 + "document.addEventListener('pointerdown',intent,true);"
                 + "document.addEventListener('touchstart',intent,true);"
                 + "document.addEventListener('touchend',show,true);"
                 + "document.addEventListener('click',show,true);"
-                + "document.addEventListener('focusin',function(e){if(!editable(e.target)){return;}var now=Date.now();if(now-lastEditableTouchAt>=900&&now<suppressFocusUntil){setTimeout(function(){try{e.target.blur();if(CodexMiniNative.hideKeyboard){CodexMiniNative.hideKeyboard();}}catch(ignore){}},0);return;}if(now-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(function(){CodexMiniNative.showKeyboard();},40);}},true);"
+                + "document.addEventListener('focusin',function(e){if(!editable(e.target)){return;}var now=Date.now();if(now-lastEditableTouchAt>=900&&now<suppressFocusUntil){setTimeout(function(){try{e.target.blur();if(CodexMiniNative.hideKeyboard){CodexMiniNative.hideKeyboard();}}catch(ignore){}},0);return;}if(now-lastEditableTouchAt<900&&window.CodexMiniNative){setTimeout(requestShow,40);}},true);"
                 + "}"
                 + "var trackTaskState=function(data,statusUrl){try{if(!data||!window.CodexMiniNative){return;}var endpoint='',endpointThread='';try{endpoint=new URL(String(statusUrl||''),location.href).href;endpointThread=String(new URL(endpoint).searchParams.get('thread')||'').trim();}catch(ignore){}var id=String(endpointThread||data.threadId||data.id||'current');var runningKey='__aiMiniRunning_'+id;var rawStatus=String(data.status||'').toLowerCase();var status=(rawStatus==='completed'||rawStatus==='done'||rawStatus==='success')?'complete':((rawStatus==='failed'||rawStatus==='failure'||rawStatus==='aborted'||rawStatus==='interrupted'||rawStatus==='cancelled'||rawStatus==='canceled')?'error':rawStatus);var el=document.getElementById('thread-name');var title=el?String(el.textContent||'').replace(/\\s+/g,' ').trim():'当前会话';while(title.length>0&&title.length%2===0&&title.slice(0,title.length/2)===title.slice(title.length/2)){title=title.slice(0,title.length/2).trim();}var notifyNative=function(){if(endpoint&&CodexMiniNative.notifyTaskStateWithEndpoint){CodexMiniNative.notifyTaskStateWithEndpoint(id,title,status,endpoint);}else{CodexMiniNative.notifyTaskState(id,title,status);}};if(status==='running'||status==='waiting'){sessionStorage.setItem(runningKey,'1');sessionStorage.setItem('__aiMiniState_'+id,status);notifyNative();return;}if(status!=='complete'&&status!=='error'){return;}if(sessionStorage.getItem(runningKey)!=='1'){return;}var at=String(data.completedAt||data.updatedAt||Date.now());var doneKey='__aiMiniDone_'+id+'|'+status+'|'+at;if(sessionStorage.getItem(doneKey)){return;}sessionStorage.setItem(doneKey,'1');sessionStorage.removeItem(runningKey);sessionStorage.removeItem('__aiMiniState_'+id);notifyNative();}catch(e){}};"
                 + "var oldFetch=window.fetch;if(oldFetch&&!window.__AIMiniFetchHooked){window.__AIMiniFetchHooked=true;window.__AIMiniStatusPollers=window.__AIMiniStatusPollers||{};window.__AIMiniPollStatuses=function(){try{Object.keys(window.__AIMiniStatusPollers||{}).forEach(function(key){try{window.__AIMiniStatusPollers[key]();}catch(e){}});}catch(e){}};window.fetch=function(){var ctx=this,args=arguments;var u=String((args[0]&&args[0].url)||args[0]||'');if(u.indexOf('/codex/status')>=0){try{var savedInput=args[0] instanceof Request?args[0].clone():args[0];var savedInit=args.length>1?args[1]:undefined;window.__AIMiniStatusPollers[u]=function(){try{var input=savedInput instanceof Request?savedInput.clone():savedInput;return oldFetch.call(window,input,savedInit).then(function(pollRes){try{pollRes.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}catch(e){}return pollRes;}).catch(function(){});}catch(e){return Promise.resolve();}};}catch(e){}}return oldFetch.apply(ctx,args).then(function(res){try{if(u.indexOf('/codex/status')>=0){res.clone().json().then(function(data){trackTaskState(data,u);}).catch(function(){});}}catch(e){}return res;});};}"
@@ -6037,6 +6042,16 @@ public class MainActivity extends Activity {
     private void applyImeInset(View root, int insetBottom) {
         int safeInset = Math.max(0, insetBottom);
         boolean isOpen = safeInset > dp(80);
+        if (!isOpen && isImeOpeningGracePeriod()) {
+            // Some Android/ColorOS builds expose one or more zero-height IME
+            // frames before the keyboard geometry becomes available. Do not
+            // publish that transient close to the page: page.js would blur
+            // the textarea and the first tap would produce an open/close flash.
+            return;
+        }
+        if (isOpen) {
+            imeOpenRequestedAt = 0L;
+        }
         // Some devices keep reporting the navigation-bar inset at the end of
         // the IME closing animation. Never expose that residual value to the
         // page, otherwise it can leave the WebUI in its keyboard-open state.
@@ -6058,6 +6073,12 @@ public class MainActivity extends Activity {
         keyboardWasOpen = isOpen;
         lastModernImeInsetBottom = effectiveInset;
         notifyKeyboardInsetToWeb(effectiveInset, isOpen);
+    }
+
+    private boolean isImeOpeningGracePeriod() {
+        return imeOpenRequestedAt > 0L
+                && SystemClock.uptimeMillis() - imeOpenRequestedAt < IME_OPEN_GRACE_MS
+                && !keyboardWasOpen;
     }
 
     private void watchKeyboardLegacy(View root) {
@@ -6169,6 +6190,16 @@ public class MainActivity extends Activity {
         if (target == null) return;
         WebView inputView = target.rawWebView();
         if (inputView == null || !inputView.isAttachedToWindow()) return;
+        long now = SystemClock.uptimeMillis();
+        if (target == lastImeShowTarget
+                && now - lastImeShowRequestAt < 300L) {
+            return;
+        }
+        lastImeShowTarget = target;
+        lastImeShowRequestAt = now;
+        if (!keyboardWasOpen) {
+            imeOpenRequestedAt = now;
+        }
         // Focus the view that owns WebView's InputConnection. Focusing the
         // FrameLayout wrapper can show an IME with a null input connection.
         target.setFocusable(false);
@@ -6186,12 +6217,6 @@ public class MainActivity extends Activity {
         if (imm != null) {
             inputView.postDelayed(() -> {
                 if (!inputView.isAttachedToWindow() || !inputView.hasFocus()) return;
-                // Recreate the connection once per keyboard-open session,
-                // before showing the IME. Do not do this on every tap because
-                // restartInput() can interrupt CJK composition.
-                if (initializeImeConnection) {
-                    imm.restartInput(inputView);
-                }
                 boolean shown = imm.showSoftInput(
                         inputView,
                         InputMethodManager.SHOW_IMPLICIT
@@ -6201,19 +6226,25 @@ public class MainActivity extends Activity {
                 // intentionally gated in page.js by the recent direct editor
                 // gesture, so it cannot steal focus from normal page controls.
                 if (initializeImeConnection) {
-                    restoreWebEditorFocus(target);
                     inputView.postDelayed(
                             () -> restoreWebEditorFocus(target),
-                            72L
+                            32L
+                    );
+                    inputView.postDelayed(
+                            () -> restoreWebEditorFocus(target),
+                            112L
                     );
                 }
-                // A few OEM WebViews create the editor connection one frame
-                // after focus. Restart only as a fallback; doing it on every
-                // tap would break CJK composing text.
-                if (!shown || !imm.isActive(inputView)) {
+                // A few OEM WebViews create the editor connection after the
+                // first show request. Retry only when showSoftInput itself
+                // failed; checking isActive() immediately after a successful
+                // request is racy and used to restart the first connection,
+                // producing an open/close flash on some devices.
+                if (!shown) {
                     inputView.postDelayed(() -> {
                         if (!inputView.isAttachedToWindow()
                                 || !inputView.hasFocus()
+                                || keyboardWasOpen
                                 || imm.isActive(inputView)) {
                             return;
                         }
@@ -6223,7 +6254,7 @@ public class MainActivity extends Activity {
                                 InputMethodManager.SHOW_IMPLICIT
                         );
                         restoreWebEditorFocus(target);
-                    }, 80L);
+                    }, 240L);
                 }
             }, 16L);
         }
@@ -6242,6 +6273,7 @@ public class MainActivity extends Activity {
     }
 
     private void hideSoftKeyboard(View view) {
+        imeOpenRequestedAt = 0L;
         InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
         if (imm != null) imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
     }

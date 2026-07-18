@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.36") return;
-    window.__AIMiniKeyboardHooksVersion = "1.36";
+    if (window.__AIMiniKeyboardHooksVersion === "1.37") return;
+    window.__AIMiniKeyboardHooksVersion = "1.37";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -109,6 +109,7 @@
     let lastKeyboardRequestAt = 0;
     let lastDirectEditableInteractionAt = 0;
     let suppressProgrammaticFocusUntil = 0;
+    let keyboardRequestActiveUntil = 0;
     let keyboardCssPrepared = false;
     let keyboardStyleCleanupDone = false;
     let cachedComposer = null;
@@ -524,6 +525,8 @@
     function sendKeyboardRequest(editable) {
       if (!editable) return;
       lastEditable = editable;
+      const now = Date.now();
+      keyboardRequestActiveUntil = Math.max(keyboardRequestActiveUntil, now + 900);
       if (document.activeElement !== editable) {
         try {
           editable.focus({ preventScroll: true });
@@ -531,7 +534,6 @@
           try { editable.focus(); } catch (_) {}
         }
       }
-      const now = Date.now();
       if (now - lastKeyboardRequestAt < 120) return;
       lastKeyboardRequestAt = now;
       setTimeout(function () {
@@ -548,6 +550,14 @@
         }
         try { window.CodexMiniNative.showKeyboard(); } catch (_) {}
       }, 24);
+    }
+
+    function isKeyboardOpeningGraceActive() {
+      const now = Date.now();
+      return now < keyboardRequestActiveUntil
+        && now - lastDirectEditableInteractionAt < 1200
+        && !!lastEditable
+        && document.contains(lastEditable);
     }
 
     function recordPointerIntent(event) {
@@ -599,7 +609,12 @@
       sendKeyboardRequest(editable);
     }
 
-    function clearEditorFocusAfterKeyboardClose() {
+    function clearEditorFocusAfterKeyboardClose(force) {
+      // Some Android WebView/ColorOS versions report a transient zero IME
+      // inset while the keyboard is still opening. Clearing the textarea
+      // during that short window makes the IME flash once and immediately
+      // dismiss itself on the first tap after app launch.
+      if (!force && isKeyboardOpeningGraceActive()) return;
       const current = editableFor(document.activeElement) || lastEditable;
       if (current && typeof current.blur === "function") {
         try { current.blur(); } catch (_) {}
@@ -661,6 +676,13 @@
     window.__AIMiniKeyboardInsetFromNative = function (devicePixels) {
       const wasOpen = keyboardOpen;
       nativeKeyboardInsetDevicePixels = Math.max(0, Number(devicePixels) || 0);
+      if (nativeKeyboardInsetDevicePixels <= 0
+          && wasOpen
+          && isKeyboardOpeningGraceActive()) {
+        // Keep the logical open state until a real IME geometry frame arrives.
+        // This prevents a transient zero-inset frame from blurring the editor.
+        return;
+      }
       keyboardOpen = nativeKeyboardInsetDevicePixels > 0;
       document.body && document.body.classList.toggle("keyboard-open", keyboardOpen);
       const legacyComposer = applyNativeKeyboardInset(true);
@@ -686,7 +708,7 @@
           });
           [0, 64, 160].forEach(revealEditable);
         } else {
-          clearEditorFocusAfterKeyboardClose();
+          clearEditorFocusAfterKeyboardClose(false);
           cancelPendingReveals();
         }
       }
@@ -705,7 +727,7 @@
       nativeKeyboardInsetDevicePixels = 0;
       keyboardOpen = false;
       viewportClosing = false;
-      clearEditorFocusAfterKeyboardClose();
+      clearEditorFocusAfterKeyboardClose(true);
       cancelPendingReveals();
       cancelComposerScrollLock();
       document.body && document.body.classList.remove("keyboard-open");
