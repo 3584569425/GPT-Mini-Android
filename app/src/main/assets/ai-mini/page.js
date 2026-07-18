@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.32") return;
-    window.__AIMiniKeyboardHooksVersion = "1.32";
+    if (window.__AIMiniKeyboardHooksVersion === "1.33") return;
+    window.__AIMiniKeyboardHooksVersion = "1.33";
 
     let lastEditable = null;
     let keyboardOpen = false;

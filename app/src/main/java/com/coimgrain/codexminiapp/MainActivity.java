@@ -5422,7 +5422,13 @@ public class MainActivity extends Activity {
         target.setFocusableInTouchMode(false);
         inputView.setFocusable(true);
         inputView.setFocusableInTouchMode(true);
-        if (!inputView.hasFocus()) {
+        // On the first tap after launch the WebView itself may already have
+        // view focus, while its HTML editor still has no active InputConnection.
+        // requestFocusFromTouch() is what binds the first editor gesture to
+        // Chromium's input connection; without it the IME can appear but the
+        // first keystrokes are ignored until the user taps the textarea again.
+        final boolean initializeImeConnection = !keyboardWasOpen;
+        if (initializeImeConnection || !inputView.hasFocus()) {
             inputView.requestFocusFromTouch();
             inputView.requestFocus();
         }
@@ -5430,6 +5436,12 @@ public class MainActivity extends Activity {
         if (imm != null) {
             inputView.postDelayed(() -> {
                 if (!inputView.isAttachedToWindow() || !inputView.hasFocus()) return;
+                // Recreate the connection once per keyboard-open session,
+                // before showing the IME. Do not do this on every tap because
+                // restartInput() can interrupt CJK composition.
+                if (initializeImeConnection) {
+                    imm.restartInput(inputView);
+                }
                 boolean shown = imm.showSoftInput(
                         inputView,
                         InputMethodManager.SHOW_IMPLICIT
