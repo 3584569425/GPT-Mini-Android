@@ -14,9 +14,9 @@
 
 当前版本：
 
-- applicationId：`app.gptmini`
-- versionCode：`1`
-- versionName：`1.0`
+- applicationId：`app.gptmini.webview`
+- versionCode：`32`
+- versionName：`2.0.0`
 - App 显示名称：`GPT Mini`
 
 当前定位：
