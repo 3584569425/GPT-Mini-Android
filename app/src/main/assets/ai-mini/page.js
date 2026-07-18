@@ -1064,6 +1064,29 @@
         backdrop-filter: blur(6px) saturate(140%) !important;
         -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
       }
+      /*
+       * Keep the blur/saturation values unchanged, but isolate each small
+       * glass surface into a paint boundary. This prevents a repaint behind
+       * the composer from invalidating the whole high-DPI WebView.
+       */
+      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface {
+        isolation: isolate !important;
+      }
+      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-layer,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-layer {
+        contain: paint !important;
+        backface-visibility: hidden !important;
+        -webkit-backface-visibility: hidden !important;
+      }
+      /*
+       * Pause only decorative animations while the conversation is actively
+       * scrolling. The resting glass appearance and its blur are unchanged.
+       */
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) *,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) * {
+        animation-play-state: paused !important;
+      }
       html.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original,
       html.ai-mini-geckoview:not(.liquid-glass-off) .composer.codex-liquid-glass-original {
         background: rgba(255,255,255,.06) !important;
@@ -1134,6 +1157,28 @@
       } catch (_) {}
       reassertHostMarks();
     };
+
+    // Let Chromium pause decorative animation invalidations during a swipe.
+    // This is temporary and does not alter the resting liquid-glass visual.
+    if (!window.__AIMiniGlassScrollPerf) {
+      try {
+        let scrollTimer = 0;
+        const markScrolling = function () {
+          const root = document.documentElement;
+          if (!root) return;
+          root.classList.add("ai-mini-glass-scrolling");
+          if (scrollTimer) clearTimeout(scrollTimer);
+          scrollTimer = setTimeout(function () {
+            scrollTimer = 0;
+            try { root.classList.remove("ai-mini-glass-scrolling"); } catch (_) {}
+          }, 180);
+        };
+        window.addEventListener("scroll", markScrolling, { passive: true, capture: true });
+        window.addEventListener("wheel", markScrolling, { passive: true });
+        window.addEventListener("touchmove", markScrolling, { passive: true });
+        window.__AIMiniGlassScrollPerf = true;
+      } catch (_) {}
+    }
 
     if (!window.__AIMiniGlassHostObserver) {
       try {

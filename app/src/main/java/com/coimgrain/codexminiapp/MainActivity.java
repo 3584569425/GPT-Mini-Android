@@ -156,8 +156,8 @@ public class MainActivity extends Activity {
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
     private static final int DEFAULT_TOP_INSET_DP = 20;
-    private static final int MIN_TOP_INSET_DP = 0;
-    private static final int MAX_TOP_INSET_DP = 64;
+    private static final int MIN_TOP_INSET_DP = -20;
+    private static final int MAX_TOP_INSET_DP = 100;
     private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
     private static final int MIN_CONVERSATION_FONT_SCALE = 50;
     private static final int MAX_CONVERSATION_FONT_SCALE = 200;
@@ -2192,10 +2192,10 @@ public class MainActivity extends Activity {
 
     /**
      * 页面顶部 inset 直接等于用户「顶部区域高度」。
-     * 0 = 贴屏幕最顶（可与状态栏重叠）；默认 20dp。
+     * 0 = 贴屏幕最顶（可与状态栏重叠）；负值继续向屏幕外上移；默认 20dp。
      */
     private int resolvedPageTopInsetPx() {
-        return Math.max(0, dp(topInsetDp()));
+        return dp(topInsetDp());
     }
 
     private int currentStatusBarTopPx() {
@@ -2340,23 +2340,30 @@ public class MainActivity extends Activity {
 
     /**
      * 将用户设定的顶部区域高度注入页面 CSS 变量，并只给靠近顶部的
-     * fixed/sticky 功能栏加 padding-top。0 = 贴屏幕最顶；body 不整体下移，
-     * 页面背景可延伸进状态栏。
+     * fixed/sticky 功能栏加顶部偏移。正值继续使用 padding 下移，负值则
+     * 直接把功能栏向屏幕外上移；body 不整体移动，页面背景仍延伸进状态栏。
      */
     private void applyPageTopInsetToWeb() {
         if (webView == null) return;
         int statusPx = Math.max(0, currentStatusBarTopPx());
-        int totalPx = Math.max(0, resolvedPageTopInsetPx());
+        int totalPx = resolvedPageTopInsetPx();
+        int offsetPx = Math.min(0, totalPx);
+        int paddingPx = Math.max(0, totalPx);
         float density = getResources().getDisplayMetrics().density;
         if (density <= 0f) density = 1f;
         String totalCss = String.format(Locale.US, "%.2fpx", totalPx / density);
+        String offsetCss = String.format(Locale.US, "%.2fpx", offsetPx / density);
+        String paddingCss = String.format(Locale.US, "%.2fpx", paddingPx / density);
         String statusCss = String.format(Locale.US, "%.2fpx", statusPx / density);
         String script = "(function(){try{"
                 + "var total=" + JSONObject.quote(totalCss) + ";"
+                + "var offset=" + JSONObject.quote(offsetCss) + ";"
+                + "var padding=" + JSONObject.quote(paddingCss) + ";"
                 + "var status=" + JSONObject.quote(statusCss) + ";"
                 + "var root=document.documentElement;if(!root){return false;}"
                 + "root.classList.add('ai-mini-geckoview','ai-mini-webview','android-keyboard-mode');"
-                + "root.style.setProperty('--ai-mini-top-inset',total,'important');"
+                + "root.style.setProperty('--ai-mini-top-offset',offset,'important');"
+                + "root.style.setProperty('--ai-mini-top-inset',padding,'important');"
                 + "root.style.setProperty('--ai-mini-status-inset',status,'important');"
                 + "root.style.setProperty('--ai-mini-top-extra',total,'important');"
                 + "root.style.setProperty('--ai-mini-safe-top',total,'important');"
@@ -2390,13 +2397,13 @@ public class MainActivity extends Activity {
                                 + "html.ai-mini-webview [class*='model-bar'],"
                                 + "html.ai-mini-geckoview [class*='ModelBar'],"
                                 + "html.ai-mini-webview [class*='ModelBar']{"
-                                + "top:0!important;"
+                                + "top:var(--ai-mini-top-offset,0px)!important;"
                                 + "padding-top:var(--ai-mini-top-inset,0px)!important;"
                                 + "box-sizing:border-box!important;}"
                 )
                 + ";"
                 // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部 composer。
-                // 强制 top:0 + padding-top，避免 env(safe-area) 的 top 与 padding 双重下移。
+                // 负值写入 top，正值写入 padding-top，避免无效的负 padding。
                 + "var nodes=document.body?document.body.querySelectorAll('*'):[];"
                 + "for(var i=0;i<nodes.length;i++){"
                 + "var el=nodes[i];"
@@ -2412,8 +2419,8 @@ public class MainActivity extends Activity {
                 + "if(rect.top>120){continue;}"
                 + "var bottom=parseFloat(cs.bottom);"
                 + "if(!isNaN(bottom)&&bottom<=2&&rect.bottom>window.innerHeight*0.55){continue;}"
-                + "el.style.setProperty('top','0px','important');"
-                + "el.style.setProperty('padding-top',total,'important');"
+                + "el.style.setProperty('top',offset,'important');"
+                + "el.style.setProperty('padding-top',padding,'important');"
                 + "el.style.setProperty('box-sizing','border-box','important');"
                 + "}catch(ignore){}"
                 + "}"
@@ -5433,7 +5440,7 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-geckoview [class*='TopBar'],html.ai-mini-webview [class*='TopBar'],"
                 + "html.ai-mini-geckoview [class*='model-bar'],html.ai-mini-webview [class*='model-bar'],"
                 + "html.ai-mini-geckoview [class*='ModelBar'],html.ai-mini-webview [class*='ModelBar']{"
-                + "top:0!important;"
+                + "top:var(--ai-mini-top-offset,0px)!important;"
                 + "padding-top:var(--ai-mini-top-inset,0px)!important;"
                 + "box-sizing:border-box!important;}"
                 + ".composer-signature{font-family:'Snell Roundhand','Bradley Hand',"
@@ -5502,6 +5509,22 @@ public class MainActivity extends Activity {
                 + "filter:none!important;-webkit-filter:none!important;"
                 + "backdrop-filter:blur(6px) saturate(140%)!important;"
                 + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;}"
+                // Keep the glass values unchanged, but isolate each small
+                // surface so a repaint behind the composer does not invalidate
+                // the entire high-DPI WebView.
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface{"
+                + "isolation:isolate!important;}"
+                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-layer,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-layer{"
+                + "contain:paint!important;"
+                + "backface-visibility:hidden!important;"
+                + "-webkit-backface-visibility:hidden!important;}"
+                // Decorative animations are paused only while the conversation
+                // is actively scrolling; resting appearance remains unchanged.
+                + "html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) *,"
+                + "html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) *{"
+                + "animation-play-state:paused!important;}"
                 + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-border-screen,"
                 + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-border-overlay,"
                 + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-hover-glow,"
