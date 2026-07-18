@@ -2524,15 +2524,21 @@ public class MainActivity extends Activity {
 
     /**
      * 将用户设定的顶部区域高度注入页面 CSS 变量，并只给靠近顶部的
-     * fixed/sticky 功能栏加顶部偏移。正值继续使用 padding 下移，负值则
-     * 直接把功能栏向屏幕外上移；body 不整体移动，页面背景仍延伸进状态栏。
+     * fixed/sticky 功能栏加顶部偏移。必须移动整个功能栏，而不是只增加
+     * padding：部分 WebUI 顶栏具有固定高度，padding 会压缩按钮内容区，
+     * 让按钮看起来下移了、真实触摸区域却仍留在系统状态栏下面。在部分
+     * ROM 上该区域会被状态栏窗口截获，于是同一按钮会出现点上半部无效、
+     * 点下半部有效的偶发现象。
      */
     private void applyPageTopInsetToWeb() {
         if (webView == null) return;
         int statusPx = Math.max(0, currentStatusBarTopPx());
         int totalPx = resolvedPageTopInsetPx();
-        int offsetPx = Math.min(0, totalPx);
-        int paddingPx = Math.max(0, totalPx);
+        // 非负档位必须至少离开系统状态栏的触摸窗口。不同 ROM/刘海屏的
+        // statusBars 高度并不固定，单纯使用 20dp 在高状态栏设备上仍可能
+        // 只露出一部分可点击区域。负值是用户明确选择的上移效果，继续保留。
+        int offsetPx = totalPx < 0 ? totalPx : Math.max(totalPx, statusPx);
+        int paddingPx = 0;
         float density = getResources().getDisplayMetrics().density;
         if (density <= 0f) density = 1f;
         String totalCss = String.format(Locale.US, "%.2fpx", totalPx / density);
@@ -2586,8 +2592,10 @@ public class MainActivity extends Activity {
                                 + "box-sizing:border-box!important;}"
                 )
                 + ";"
-                // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部 composer。
-                // 负值写入 top，正值写入 padding-top，避免无效的负 padding。
+                // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部
+                // composer 及占满屏幕的 app/thread 容器。旧逻辑会把这些
+                // 全屏 fixed 容器也当成顶栏，进一步造成视觉位置与命中区域
+                // 不一致。
                 + "var nodes=document.body?document.body.querySelectorAll('*'):[];"
                 + "for(var i=0;i<nodes.length;i++){"
                 + "var el=nodes[i];"
@@ -2601,6 +2609,8 @@ public class MainActivity extends Activity {
                 + "var rect=el.getBoundingClientRect();"
                 + "if(rect.height<=0||rect.width<=0){continue;}"
                 + "if(rect.top>120){continue;}"
+                + "if(rect.height>Math.min(240,window.innerHeight*0.42)){continue;}"
+                + "if(rect.width>=window.innerWidth*0.96&&rect.height>160){continue;}"
                 + "var bottom=parseFloat(cs.bottom);"
                 + "if(!isNaN(bottom)&&bottom<=2&&rect.bottom>window.innerHeight*0.55){continue;}"
                 + "el.style.setProperty('top',offset,'important');"
