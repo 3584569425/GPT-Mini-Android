@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.30") return;
-    window.__AIMiniKeyboardHooksVersion = "1.30";
+    if (window.__AIMiniKeyboardHooksVersion === "1.31") return;
+    window.__AIMiniKeyboardHooksVersion = "1.31";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -331,6 +331,14 @@
       return editableFor(document.activeElement) || lastEditable;
     }
 
+    function isComposerEditable(editable) {
+      return !!(
+        editable
+        && editable.closest
+        && editable.closest("footer.composer-shell")
+      );
+    }
+
     function updateKeyboardState() {
       const viewport = window.visualViewport;
       const layoutHeight = Math.max(
@@ -363,6 +371,13 @@
       const editable = activeEditable();
       if (!editable || !document.contains(editable)) return;
       lastEditable = editable;
+      // Both WebUI composers are already pinned to the resized WebView
+      // viewport. Chromium's automatic editor reveal plus our additional
+      // scrollIntoView/scrollBy correction moved the entire document once
+      // more, so the composer first overshot the keyboard and then settled
+      // back when scroll anchoring ran. Keep reveal correction only for
+      // ordinary page inputs that can genuinely be outside the viewport.
+      if (isComposerEditable(editable)) return;
       try {
         editable.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
       } catch (_) {}
@@ -397,8 +412,10 @@
     }
 
     function scheduleViewportReveal() {
+      const editable = activeEditable();
       if (viewportClosing
-          || !(keyboardOpen || editableFor(document.activeElement))) {
+          || !(keyboardOpen || editableFor(document.activeElement))
+          || isComposerEditable(editable)) {
         return;
       }
       if (viewportRevealTimer) clearTimeout(viewportRevealTimer);
@@ -968,6 +985,7 @@
         width: 100% !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
+        overflow-anchor: none !important;
       }
       html.ai-mini-geckoview.ai-mini-plain-composer form#composer,
       html.ai-mini-webview.ai-mini-plain-composer form#composer {
@@ -985,8 +1003,8 @@
         padding-bottom: max(8px, env(safe-area-inset-bottom, 0px)) !important;
         overflow: visible !important;
         transform: none !important;
-        transition: none !important;
-        will-change: auto !important;
+        transition: padding-bottom 220ms cubic-bezier(.2, .8, .2, 1) !important;
+        will-change: padding-bottom !important;
       }
       html.ai-mini-geckoview.ai-mini-plain-composer .thread,
       html.ai-mini-webview.ai-mini-plain-composer .thread {
