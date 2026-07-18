@@ -5889,6 +5889,20 @@ public class MainActivity extends Activity {
                     if ((animation.getTypeMask() & WindowInsets.Type.ime()) != 0) {
                         imeAnimationRunning = true;
                         lastModernImeUpdateAt = SystemClock.uptimeMillis();
+                        WindowInsets current = root.getRootWindowInsets();
+                        boolean imeWasVisible = current != null
+                                && current.isVisible(WindowInsets.Type.ime());
+                        // Arm the WebUI composer at the beginning of the
+                        // native IME animation. Without this pre-arm,
+                        // Android starts moving the keyboard first and the
+                        // page only adds body.keyboard-open after the first
+                        // non-zero inset frame, making the composer visibly
+                        // lag one or two frames behind the IME.
+                        if (!imeWasVisible && !keyboardWasOpen) {
+                            keyboardWasOpen = true;
+                            imeOpenRequestedAt = 0L;
+                            notifyKeyboardOpenedToWeb();
+                        }
                     }
                 }
 
@@ -6042,6 +6056,13 @@ public class MainActivity extends Activity {
     private void applyImeInset(View root, int insetBottom) {
         int safeInset = Math.max(0, insetBottom);
         boolean isOpen = safeInset > dp(80);
+        if (!isOpen && imeAnimationRunning && keyboardWasOpen) {
+            // Keep the WebUI in its prepared keyboard-open layout for the
+            // entire native animation. Opening starts with a few sub-threshold
+            // inset frames, while closing ends with them; toggling the page
+            // state in the middle makes the composer trail the keyboard.
+            return;
+        }
         if (!isOpen && isImeOpeningGracePeriod()) {
             // Some Android/ColorOS builds expose one or more zero-height IME
             // frames before the keyboard geometry becomes available. Do not
@@ -6180,6 +6201,21 @@ public class MainActivity extends Activity {
                         + "el.style.removeProperty('bottom');}});"
                         + "}"
                         + "window.dispatchEvent(new Event('resize'));"
+                        + "}catch(e){}})();",
+                null
+        );
+    }
+
+    private void notifyKeyboardOpenedToWeb() {
+        AIMiniBrowserView target = activeWebView();
+        if (target == null) return;
+        target.evaluateJavascript(
+                "(function(){try{"
+                        + "if(window.__AIMiniKeyboardOpenedFromNative){"
+                        + "window.__AIMiniKeyboardOpenedFromNative();"
+                        + "}else if(document.body){"
+                        + "document.body.classList.add('keyboard-open');"
+                        + "}"
                         + "}catch(e){}})();",
                 null
         );
