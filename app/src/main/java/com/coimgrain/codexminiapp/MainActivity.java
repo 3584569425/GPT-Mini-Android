@@ -5002,6 +5002,14 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .thread{"
                 + "transform:none!important;transition:none!important;"
                 + "will-change:auto!important;}"
+                // The WebUI repeatedly pins an auto-following conversation to
+                // scrollHeight while the IME changes the viewport. Chromium's
+                // scroll anchoring otherwise performs a second correction at
+                // the newest message, producing an up-then-down composer jump.
+                + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) "
+                + "body.keyboard-open .thread,"
+                + "html.ai-mini-webview:not(.ai-mini-legacy-composer) "
+                + "body.keyboard-open .thread{overflow-anchor:none!important;}"
                 + "html.ai-mini-geckoview:not(.ai-mini-legacy-composer) .composer-shell,"
                 + "html.ai-mini-webview:not(.ai-mini-legacy-composer) .composer-shell{"
                 + "bottom:0!important;margin-bottom:0!important;}"

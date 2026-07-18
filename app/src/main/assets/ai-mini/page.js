@@ -97,8 +97,8 @@
   };
 
   function installKeyboardHooks() {
-    if (window.__AIMiniKeyboardHooksVersion === "1.31") return;
-    window.__AIMiniKeyboardHooksVersion = "1.31";
+    if (window.__AIMiniKeyboardHooksVersion === "1.32") return;
+    window.__AIMiniKeyboardHooksVersion = "1.32";
 
     let lastEditable = null;
     let keyboardOpen = false;
@@ -964,6 +964,13 @@
         transform: none !important;
         transition: none !important;
         will-change: auto !important;
+      }
+      /* At the latest reply the WebUI already keeps #thread pinned to
+         scrollHeight during IME resize. Disable Chromium's second automatic
+         scroll-anchor correction only for that animation window. */
+      html.ai-mini-geckoview:not(.ai-mini-legacy-composer) body.keyboard-open .thread,
+      html.ai-mini-webview:not(.ai-mini-legacy-composer) body.keyboard-open .thread {
+        overflow-anchor: none !important;
       }
       /* Match WebUI gecko path: absolute composer keeps glass sampling after device switch */
       html.ai-mini-geckoview .composer-shell,
