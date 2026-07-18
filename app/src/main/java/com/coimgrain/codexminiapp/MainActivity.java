@@ -271,6 +271,7 @@ public class MainActivity extends Activity {
     private TextView notificationEndOption;
     private TextView notificationPersistentOption;
     private TextView miniMenuVersionText;
+    private TextView miniMenuUpdateBadgeText;
     private TextView floatThemeValue;
     private TextView floatThemeDarkOption;
     private TextView floatThemeLightOption;
@@ -288,6 +289,8 @@ public class MainActivity extends Activity {
     private String updateLatestVersion = "";
     private long updateCheckGeneration;
     private boolean updateCheckInFlight;
+    private boolean updateCheckSilent;
+    private long lastAutomaticUpdateCheckAtElapsed;
     private ValueCallback<Uri[]> pendingFilePathCallback;
     private AIMiniBrowserView pendingFileChooserView;
     private boolean keyboardWasOpen;
@@ -403,6 +406,9 @@ public class MainActivity extends Activity {
         buildWelcomeView(appHost);
         installImeInsetHandling(window.getDecorView());
         configureWebView();
+        boolean browserStateRestored = savedInstanceState != null
+                && webView != null
+                && webView.restoreState(savedInstanceState);
         loadPersistedDownloads();
         if (updateDownloadItems()) persistDownloads();
         registerNetworkRouteWatcher();
@@ -428,9 +434,11 @@ public class MainActivity extends Activity {
             if (restoreWelcome || restoredUrl.isEmpty()) {
                 showWelcome();
             } else {
-                loadUrl(notificationThreadId.isEmpty()
-                        ? restoredUrl
-                        : urlWithThread(restoredUrl, notificationThreadId));
+                if (!notificationThreadId.isEmpty()) {
+                    loadUrl(urlWithThread(restoredUrl, notificationThreadId));
+                } else if (!browserStateRestored) {
+                    loadUrl(restoredUrl);
+                }
             }
         } else {
             String lastUrl = preferences.getString(KEY_LAST_URL, "");
@@ -444,6 +452,7 @@ public class MainActivity extends Activity {
                         : urlWithThread(lastUrl, notificationThreadId));
             }
         }
+        scheduleAutomaticUpdateCheck();
     }
 
     @Override
@@ -452,6 +461,11 @@ public class MainActivity extends Activity {
         setIntent(intent);
         String threadId = notificationThreadId(intent);
         if (!threadId.isEmpty()) openNotificationThread(threadId);
+        if (intent != null
+                && Intent.ACTION_MAIN.equals(intent.getAction())
+                && intent.hasCategory(Intent.CATEGORY_LAUNCHER)) {
+            scheduleAutomaticUpdateCheck();
+        }
     }
 
     private String notificationThreadId(Intent intent) {
@@ -1143,12 +1157,30 @@ public class MainActivity extends Activity {
                 view -> openUpdatePage()
         ));
 
+        FrameLayout versionRow = new FrameLayout(this);
+
+        miniMenuUpdateBadgeText = new TextView(this);
+        miniMenuUpdateBadgeText.setText(R.string.mini_menu_update_available);
+        miniMenuUpdateBadgeText.setTextSize(10);
+        miniMenuUpdateBadgeText.setGravity(Gravity.CENTER);
+        miniMenuUpdateBadgeText.setVisibility(View.GONE);
+        versionRow.addView(miniMenuUpdateBadgeText, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER
+        ));
+
         miniMenuVersionText = new TextView(this);
         miniMenuVersionText.setText(getString(R.string.mini_menu_version, currentAppVersionName()));
         miniMenuVersionText.setTextSize(10);
-        miniMenuVersionText.setGravity(Gravity.RIGHT);
+        miniMenuVersionText.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         miniMenuVersionText.setPadding(dp(6), dp(2), dp(4), 0);
-        miniMenuRootPage.addView(miniMenuVersionText, new LinearLayout.LayoutParams(
+        versionRow.addView(miniMenuVersionText, new FrameLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.RIGHT
+        ));
+        miniMenuRootPage.addView(versionRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(24)
         ));
@@ -2071,34 +2103,68 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void scheduleAutomaticUpdateCheck() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastAutomaticUpdateCheckAtElapsed < 5000L) return;
+        lastAutomaticUpdateCheckAtElapsed = now;
+        handler.postDelayed(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            checkForUpdatesSilently();
+        }, 900L);
+    }
+
+    private void checkForUpdatesSilently() {
+        beginUpdateCheck(true);
+    }
+
     private void checkForUpdates() {
-        if (updateCheckInFlight) return;
+        beginUpdateCheck(false);
+    }
+
+    private void beginUpdateCheck(boolean silent) {
+        if (updateCheckInFlight) {
+            // 用户在自动检查期间主动打开更新页时沿用同一网络请求，
+            // 但将完成结果切换为可见状态。
+            if (!silent && updateCheckSilent) {
+                updateCheckSilent = false;
+                resetUpdatePanelForCheck();
+            }
+            return;
+        }
         updateCheckInFlight = true;
+        updateCheckSilent = silent;
         long generation = ++updateCheckGeneration;
-        resetUpdatePanelForCheck();
+        if (!silent) resetUpdatePanelForCheck();
         updateIoExecutor.execute(() -> {
             try {
                 String raw = githubApiGet(GITHUB_LATEST_RELEASE_API, 9000);
                 UpdateInfo info = parseUpdateInfo(new JSONArray(raw));
                 handler.post(() -> {
                     if (generation != updateCheckGeneration) return;
+                    boolean showPanel = !updateCheckSilent;
                     updateCheckInFlight = false;
-                    showUpdateResult(info);
+                    updateCheckSilent = false;
+                    showUpdateResult(info, showPanel);
                 });
             } catch (Throwable error) {
                 handler.post(() -> {
                     if (generation != updateCheckGeneration) return;
+                    boolean showPanel = !updateCheckSilent;
                     updateCheckInFlight = false;
-                    showUpdateError(error);
+                    updateCheckSilent = false;
+                    // 自动检查失败时保持完全静默。
+                    if (showPanel) showUpdateError(error);
                 });
             }
         });
     }
 
-    private void showUpdateResult(UpdateInfo info) {
-        if (updateProgress != null) updateProgress.setVisibility(View.GONE);
+    private void showUpdateResult(UpdateInfo info, boolean showPanel) {
+        if (showPanel && updateProgress != null) updateProgress.setVisibility(View.GONE);
         if (info == null) {
-            showUpdateError(new IOException("GitHub release response was empty"));
+            if (showPanel) {
+                showUpdateError(new IOException("GitHub release response was empty"));
+            }
             return;
         }
         updateLatestVersion = info.version;
@@ -2106,6 +2172,8 @@ public class MainActivity extends Activity {
         updateDownloadUrl = info.downloadUrl;
         String currentVersion = currentAppVersionName();
         boolean newer = compareVersions(info.version, currentVersion) > 0;
+        showAvailableUpdateBadge(newer);
+        if (!showPanel) return;
         if (!newer) {
             updateStateText.setText(getString(
                     R.string.update_already_latest,
@@ -2133,6 +2201,14 @@ public class MainActivity extends Activity {
                 info.downloadUrl.isEmpty() ? View.GONE : View.VISIBLE
         );
         refreshUpdatePanelTheme();
+    }
+
+    private void showAvailableUpdateBadge(boolean available) {
+        if (miniMenuUpdateBadgeText == null) return;
+        miniMenuUpdateBadgeText.setVisibility(available ? View.VISIBLE : View.GONE);
+        if (available) {
+            miniMenuUpdateBadgeText.setText(R.string.mini_menu_update_available);
+        }
     }
 
     private void showUpdateError(Throwable error) {
@@ -2738,6 +2814,11 @@ public class MainActivity extends Activity {
             miniMenuVersionText.setTextColor(light
                     ? Color.argb(145, 70, 76, 88)
                     : Color.argb(145, 220, 226, 234));
+        }
+        if (miniMenuUpdateBadgeText != null) {
+            miniMenuUpdateBadgeText.setTextColor(light
+                    ? Color.rgb(18, 145, 91)
+                    : Color.rgb(84, 224, 151));
         }
         if (miniMenuBackButton != null) {
             miniMenuBackButton.setTextColor(light ? Color.rgb(24, 28, 36) : Color.rgb(244, 244, 245));
@@ -5317,11 +5398,17 @@ public class MainActivity extends Activity {
             return;
         }
         target.evaluateJavascript(
-                "(function(){return 'gpt-mini-alive';})();",
+                "(function(){return true;})();",
                 RESUME_BRIDGE_PROBE_TIMEOUT_MS,
                 result -> {
                     if (!browserRecoveryStillValid(target, generation)) return;
-                    if ("gpt-mini-alive".equals(result)) {
+                    // WebView evaluateJavascript returns JSON-encoded values.
+                    // Comparing a returned string with an unquoted Java string
+                    // made every healthy page look dead after one minute in the
+                    // background, which then forced an unnecessary reload.
+                    if ("true".equalsIgnoreCase(
+                            result == null ? "" : result.trim()
+                    )) {
                         Log.d(NAVIGATION_LOG_TAG, "resume-recovery bridge healthy");
                         return;
                     }

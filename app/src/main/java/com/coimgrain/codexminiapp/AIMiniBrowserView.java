@@ -144,6 +144,13 @@ final class AIMiniBrowserView extends FrameLayout {
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
         webView.setBackgroundColor(contentBackgroundColor);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Keep the renderer at foreground importance even while the
+            // Activity is briefly backgrounded. This does not add permissions;
+            // it only asks System WebView not to eagerly discard this renderer
+            // merely because another app covered the window.
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
         addView(webView, new LayoutParams(
                 LayoutParams.MATCH_PARENT,
                 LayoutParams.MATCH_PARENT
@@ -422,8 +429,20 @@ final class AIMiniBrowserView extends FrameLayout {
         if (!destroyed && outState != null) webView.saveState(outState);
     }
 
-    void restoreState(Bundle inState) {
-        if (!destroyed && inState != null) webView.restoreState(inState);
+    boolean restoreState(Bundle inState) {
+        if (destroyed || inState == null) return false;
+        try {
+            android.webkit.WebBackForwardList restored = webView.restoreState(inState);
+            if (restored == null) return false;
+            android.webkit.WebHistoryItem current = restored.getCurrentItem();
+            if (current != null && current.getUrl() != null) {
+                currentUrl = current.getUrl();
+                pendingUrl = null;
+            }
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     void destroy() {
