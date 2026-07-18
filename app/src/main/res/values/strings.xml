@@ -85,6 +85,7 @@
     <string name="mini_menu_interface_subtitle">图标、顶部区域、主题与液态玻璃</string>
     <string name="mini_menu_notification_subtitle">任务完成通知与实时状态</string>
     <string name="check_updates">检查更新</string>
+    <string name="github_repository">源码仓库\n%1$s</string>
     <string name="mini_menu_update_subtitle">从 GitHub 获取最新版本与更新内容</string>
     <string name="mini_menu_version">版本 %1$s</string>
     <string name="update_ready_to_check">点击后检查 GitHub 是否有新版本</string>

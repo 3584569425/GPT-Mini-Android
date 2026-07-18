@@ -138,6 +138,8 @@ public class MainActivity extends Activity {
     private static final String KEY_NATIVE_LIQUID_GLASS = "native_liquid_glass";
     private static final String GITHUB_LATEST_RELEASE_API =
             "https://api.github.com/repos/3584569425/GPT-Mini-Android/releases?per_page=20";
+    private static final String GITHUB_REPOSITORY_URL =
+            "https://github.com/3584569425/GPT-Mini-Android";
     private static final String FLOAT_MENU_THEME_DARK = "dark";
     private static final String FLOAT_MENU_THEME_LIGHT = "light";
     private static final String FLOAT_MENU_THEME_SYSTEM = "system";
@@ -275,6 +277,7 @@ public class MainActivity extends Activity {
     private TextView floatThemeSystemOption;
     private TextView floatGlassOption;
     private TextView updateStateText;
+    private TextView updateRepositoryText;
     private TextView updateVersionText;
     private TextView updateNotesText;
     private ScrollView updateNotesScroll;
@@ -1318,13 +1321,19 @@ public class MainActivity extends Activity {
         );
         notificationSettingsPanel.addView(notificationPersistentOption);
 
-        notificationSettingsPanel.addView(createMiniNavRow(
+        View notificationHelpRow = createMiniNavRow(
                 getString(R.string.notification_help_title),
                 getString(R.string.notification_help_subtitle),
                 "notification-help",
                 true,
                 view -> showMiniMenuPage("notification-help")
-        ));
+        );
+        LinearLayout.LayoutParams helpParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        helpParams.setMargins(0, dp(8), 0, 0);
+        notificationSettingsPanel.addView(notificationHelpRow, helpParams);
 
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1451,6 +1460,22 @@ public class MainActivity extends Activity {
         updateSettingsPanel.setBackground(null);
 
         updateSettingsPanel.addView(miniSectionTitle(getString(R.string.check_updates)));
+
+        updateRepositoryText = new TextView(this);
+        updateRepositoryText.setText(getString(
+                R.string.github_repository,
+                GITHUB_REPOSITORY_URL
+        ));
+        updateRepositoryText.setTextSize(11);
+        updateRepositoryText.setLineSpacing(dp(2), 1f);
+        updateRepositoryText.setPadding(dp(10), dp(8), dp(10), dp(8));
+        updateRepositoryText.setOnClickListener(view -> openExternalPage(GITHUB_REPOSITORY_URL));
+        LinearLayout.LayoutParams repositoryParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        repositoryParams.setMargins(0, 0, 0, dp(4));
+        updateSettingsPanel.addView(updateRepositoryText, repositoryParams);
 
         updateProgress = new ProgressBar(this);
         updateProgress.setIndeterminate(true);
@@ -1972,6 +1997,15 @@ public class MainActivity extends Activity {
         int primary = light ? Color.rgb(36, 42, 52) : Color.rgb(236, 240, 246);
         int secondary = light ? Color.rgb(76, 84, 100) : Color.rgb(184, 194, 210);
         updateStateText.setTextColor(secondary);
+        if (updateRepositoryText != null) {
+            updateRepositoryText.setTextColor(light
+                    ? Color.rgb(42, 103, 145)
+                    : Color.rgb(151, 211, 255));
+            updateRepositoryText.setBackground(settingsNavRowBackground(
+                    light,
+                    nativeLiquidGlassEnabled()
+            ));
+        }
         if (updateVersionText != null) updateVersionText.setTextColor(primary);
         if (updateNotesText != null) {
             updateNotesText.setTextColor(secondary);
@@ -2906,7 +2940,9 @@ public class MainActivity extends Activity {
     }
 
     private void openExternalPage(String rawUrl) {
-        String url = rawUrl == null ? "" : rawUrl.trim();
+        String originalUrl = rawUrl == null ? "" : rawUrl.trim();
+        String url = normalizeWebUrl(originalUrl);
+        if (url == null || url.isEmpty()) url = originalUrl;
         if (url.isEmpty()) return;
         Uri uri = Uri.parse(url);
         String scheme = uri.getScheme();
@@ -3515,6 +3551,42 @@ public class MainActivity extends Activity {
         return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
     }
 
+    /**
+     * 将网页中常见的省略协议的地址统一成 HTTPS。
+     *
+     * WebView 对 "baidu.com/..." 这类地址可能会把 "baidu.com" 误识别成
+     * 自定义 scheme，随后走 ACTION_VIEW，Android 就会弹出“想要打开百度”的
+     * 系统确认框。网页地址先在这里归一化，后续全部交给 App 内的外链 WebView。
+     */
+    private String normalizeWebUrl(String rawUrl) {
+        if (rawUrl == null) return null;
+        String raw = rawUrl.trim();
+        if (raw.isEmpty()) return null;
+        if (raw.startsWith("//")) return "https:" + raw;
+        if (raw.startsWith("www.")) return "https://" + raw;
+        if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+        if (raw.matches("^(?:localhost|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+|\\d{1,3}(?:\\.\\d{1,3}){3}):\\d+(?:[/?#].*)?$")) {
+            return "https://" + raw;
+        }
+        if (raw.matches("^[A-Za-z][A-Za-z0-9+.-]*:.*$")) return null;
+        if (raw.contains("://")) return null;
+
+        // 仅识别明显的主机名/裸 IP，避免把 tel:、mailto: 等协议误判成网页。
+        String hostPart = raw;
+        int separator = hostPart.indexOf('/');
+        if (separator >= 0) hostPart = hostPart.substring(0, separator);
+        int query = hostPart.indexOf('?');
+        if (query >= 0) hostPart = hostPart.substring(0, query);
+        int fragment = hostPart.indexOf('#');
+        if (fragment >= 0) hostPart = hostPart.substring(0, fragment);
+        if (hostPart.isEmpty()) return null;
+        boolean looksLikeHost = hostPart.equalsIgnoreCase("localhost")
+                || hostPart.contains(".")
+                || hostPart.matches("\\d{1,3}(?:\\.\\d{1,3}){3}(?::\\d+)?");
+        if (!looksLikeHost || raw.matches(".*\\s+.*")) return null;
+        return "https://" + raw;
+    }
+
     private boolean isInternalBrowserScheme(String scheme) {
         return "about".equalsIgnoreCase(scheme)
                 || "blob".equalsIgnoreCase(scheme)
@@ -3629,27 +3701,13 @@ public class MainActivity extends Activity {
 
     private void openSystemLink(Uri uri) {
         if (uri == null) return;
-        String scheme = uri.getScheme();
-        if (isInternalBrowserScheme(scheme)) return;
-
-        // 无 scheme 的 //host 链接，优先应用内打开。
-        if (scheme == null || scheme.isEmpty()) {
-            String raw = uri.toString();
-            if (raw.startsWith("//")) {
-                openExternalPage("https:" + raw);
-                return;
-            }
-            if (raw.startsWith("www.")) {
-                openExternalPage("https://" + raw);
-                return;
-            }
-        }
-
-        // http(s) 永远不跳系统浏览器。
-        if (isHttpScheme(scheme)) {
-            openExternalPage(uri.toString());
+        String normalizedWebUrl = normalizeWebUrl(uri.toString());
+        if (normalizedWebUrl != null && !normalizedWebUrl.isEmpty()) {
+            openExternalPage(normalizedWebUrl);
             return;
         }
+        String scheme = uri.getScheme();
+        if (isInternalBrowserScheme(scheme)) return;
 
         // intent:// 优先取 browser_fallback_url，避免“一点链接就跳出到系统浏览器”。
         if ("intent".equalsIgnoreCase(scheme)) {
@@ -3670,11 +3728,8 @@ public class MainActivity extends Activity {
                         openExternalPage(fallbackUrl);
                         return;
                     }
-                    // 仅尝试拉起明确的第三方 App；不要把 generic VIEW 交给浏览器包。
-                    if (intent.getPackage() != null || intent.getComponent() != null) {
-                        startActivity(intent);
-                        return;
-                    }
+                    // WebUI 中的链接不应因为 intent:// 退回系统浏览器。
+                    // 没有可还原的 HTTP(S) fallback 时留在 App 内并提示用户。
                 }
             } catch (Exception ignored) {
             }
@@ -3682,6 +3737,17 @@ public class MainActivity extends Activity {
             return;
         }
 
+        String embeddedWebUrl = embeddedHttpUrl(uri);
+        if (embeddedWebUrl != null && !embeddedWebUrl.isEmpty()) {
+            openExternalPage(embeddedWebUrl);
+            return;
+        }
+
+        // 百度等网页会自动尝试 baiduboxapp:// 一类 App Scheme。
+        // 这类跳转会触发系统“GPT Mini 想要打开百度”的确认框，统一拦截。
+        if (!isAllowedExternalScheme(scheme)) return;
+
+        // 只有明确的用户功能协议（例如 tel:、mailto:）才允许交给系统处理。
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW, uri);
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
@@ -3692,6 +3758,37 @@ public class MainActivity extends Activity {
         } catch (ActivityNotFoundException ignored) {
             Toast.makeText(this, R.string.no_app_for_link, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private boolean isAllowedExternalScheme(String scheme) {
+        return "tel".equalsIgnoreCase(scheme)
+                || "mailto".equalsIgnoreCase(scheme)
+                || "sms".equalsIgnoreCase(scheme)
+                || "smsto".equalsIgnoreCase(scheme)
+                || "geo".equalsIgnoreCase(scheme);
+    }
+
+    private String embeddedHttpUrl(Uri uri) {
+        if (uri == null) return null;
+        String[] keys = {
+                "url",
+                "target",
+                "target_url",
+                "openurl",
+                "browser_fallback_url"
+        };
+        for (String key : keys) {
+            try {
+                String value = uri.getQueryParameter(key);
+                if (value == null || value.trim().isEmpty()) continue;
+                String normalized = normalizeWebUrl(Uri.decode(value));
+                if (normalized != null && isHttpScheme(Uri.parse(normalized).getScheme())) {
+                    return normalized;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     private String intentFallbackHttpUrl(Uri uri) {
@@ -7912,19 +8009,23 @@ public class MainActivity extends Activity {
 
             @Override
             public void onNewWindow(AIMiniBrowserView view, String uri) {
-                Uri target = Uri.parse(uri == null ? "" : uri);
-                if (!isHttpScheme(target.getScheme())) return;
-                if (isSameMainDocument(uri)) {
-                    String repaired = inheritMainNavigationToken(uri);
+                String normalized = normalizeWebUrl(uri);
+                Uri target = Uri.parse(normalized == null ? (uri == null ? "" : uri) : normalized);
+                if (!isHttpScheme(target.getScheme())) {
+                    openSystemLink(target);
+                    return;
+                }
+                if (isSameMainDocument(target.toString())) {
+                    String repaired = inheritMainNavigationToken(target.toString());
                     Log.d(
                             NAVIGATION_LOG_TAG,
-                            "new-window kept-main repaired=" + !repaired.equals(uri)
-                                    + " url=" + navigationUrlForLog(uri)
+                            "new-window kept-main repaired=" + !repaired.equals(target.toString())
+                                    + " url=" + navigationUrlForLog(target.toString())
                     );
                     view.loadUrl(repaired);
                     return;
                 }
-                openExternalPage(uri);
+                openExternalPage(target.toString());
             }
 
             @Override
@@ -8029,9 +8130,12 @@ public class MainActivity extends Activity {
 
             @Override
             public void onNewWindow(AIMiniBrowserView view, String uri) {
-                Uri target = Uri.parse(uri == null ? "" : uri);
+                String normalized = normalizeWebUrl(uri);
+                Uri target = Uri.parse(normalized == null ? (uri == null ? "" : uri) : normalized);
                 if (externalWebView != null && isHttpScheme(target.getScheme())) {
-                    externalWebView.loadUrl(uri);
+                    externalWebView.loadUrl(target.toString());
+                } else {
+                    openSystemLink(target);
                 }
             }
 
