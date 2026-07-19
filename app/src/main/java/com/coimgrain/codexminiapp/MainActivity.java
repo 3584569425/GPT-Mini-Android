@@ -134,6 +134,8 @@ public class MainActivity extends Activity {
     private static final String KEY_TOP_INSET_V120_MIGRATED = "top_inset_v120_migrated";
     private static final String KEY_TOP_INSET_PAGE_MODE_MIGRATED = "top_inset_page_mode_migrated";
     private static final String KEY_TOP_INSET_DEFAULT_V113_MIGRATED = "top_inset_default_v113_migrated";
+    private static final String KEY_TOP_INSET_DEFAULT_V202_MIGRATED =
+            "top_inset_default_v202_migrated";
     static final String KEY_NOTIFICATION_MODE = "notification_mode";
     static final String KEY_MONITORED_TASKS = "monitored_notification_tasks";
     static final String NOTIFICATION_MODE_END = "end";
@@ -161,7 +163,7 @@ public class MainActivity extends Activity {
     private static final int MIN_FLOAT_SIZE_DP = 32;
     private static final int MAX_FLOAT_SIZE_DP = 64;
     private static final int DEFAULT_FLOAT_ALPHA = 50;
-    private static final int DEFAULT_TOP_INSET_DP = 20;
+    private static final int DEFAULT_TOP_INSET_DP = 10;
     private static final int MIN_TOP_INSET_DP = -20;
     private static final int MAX_TOP_INSET_DP = 100;
     private static final int DEFAULT_CONVERSATION_FONT_SCALE = 100;
@@ -2456,7 +2458,7 @@ public class MainActivity extends Activity {
 
     /**
      * 页面顶部 inset 直接等于用户「顶部区域高度」。
-     * 0 = 贴屏幕最顶（可与状态栏重叠）；负值继续向屏幕外上移；默认 20dp。
+     * 0 = 贴屏幕最顶（可与状态栏重叠）；负值继续向屏幕外上移；默认 10dp。
      */
     private int resolvedPageTopInsetPx() {
         return dp(topInsetDp());
@@ -2534,6 +2536,16 @@ public class MainActivity extends Activity {
             // 将此前页面模式默认 0，以及未设置值，统一到 20。
             int current = preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
             if (!preferences.contains(KEY_TOP_INSET_DP) || current == 0) {
+                editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            }
+        }
+        if (!preferences.getBoolean(KEY_TOP_INSET_DEFAULT_V202_MIGRATED, false)) {
+            editor.putBoolean(KEY_TOP_INSET_DEFAULT_V202_MIGRATED, true);
+            changed = true;
+            // 2.0.2 将默认值由 20dp 调整为 10dp。仅迁移仍处于旧默认值
+            // 的安装，保留用户设置的其他高度。
+            int current = preferences.getInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
+            if (!preferences.contains(KEY_TOP_INSET_DP) || current == 20) {
                 editor.putInt(KEY_TOP_INSET_DP, DEFAULT_TOP_INSET_DP);
             }
         }
