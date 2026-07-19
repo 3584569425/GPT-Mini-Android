@@ -1026,7 +1026,7 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // 1.26: keep frosted glass + reduce WebView style/repaint churn.
+    // 1.27: keep frosted glass + reduce WebView style/repaint churn.
     // WebUI device switch uses location.replace() and reloads per-device appearance.
     // Android keyboard defaults force liquidGlassEnabled=false for every new device
     // profile, which turns the whole liquid-glass UI off. Chromium WebUI also runs
@@ -1034,9 +1034,9 @@
     // Fix: seed preferred glass into device-scoped localStorage at document-start
     // (before WebUI early boot), skip android false-defaults, and lightly re-assert
     // host classes/CSS only (no storage fight with Pro entitlement).
-    if (window.__AIMiniGeckoGlassVersion === "1.26") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.27") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.26";
+    window.__AIMiniGeckoGlassVersion = "1.27";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
@@ -1255,16 +1255,24 @@
         -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
       }
       /*
-       * The WebUI already applies backdrop-filter to every React glass
-       * surface. Its child warp used to sample the same background a second
-       * time in this compatibility patch. A single sampler preserves the same
-       * blur, tint, border and highlights while avoiding duplicate compositor
-       * work on every frame of a long conversation.
+       * Keep exactly one backdrop sampler per React glass surface, but put it
+       * on the dedicated child warp rather than the React host. Chromium
+       * WebView can drop a host backdrop layer when React replaces, scrolls or
+       * transitions a drawer/modal. The child warp is stable across those
+       * updates, so the glass no longer intermittently turns opaque while the
+       * visual strength and compositor cost remain unchanged.
        */
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface > .liquid-glass-warp,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface > .liquid-glass-warp {
+      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
+      }
+      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface > .liquid-glass-warp,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface > .liquid-glass-warp {
+        filter: none !important;
+        -webkit-filter: none !important;
+        backdrop-filter: blur(6px) saturate(140%) !important;
+        -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
       }
       html.ai-mini-webview:not(.liquid-glass-off) .guardian-info-card > .liquid-glass-warp,
       html.ai-mini-geckoview:not(.liquid-glass-off) .guardian-info-card > .liquid-glass-warp {
@@ -1278,18 +1286,24 @@
        * responsive. Keep the same translucent colors/borders, but suspend only
        * live backdrop sampling until the thread has been quiet.
        */
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-warp,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-warp,
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .task-plan-dock-card::before,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .task-plan-dock-card::before,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-warp,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-warp,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-warp,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-warp,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
       html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer,
       html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         animation-play-state: paused !important;
       }
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-react-surface,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-react-surface {
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-react-surface,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-react-surface {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
       }
@@ -1409,14 +1423,138 @@
       reassertHostMarks();
     };
 
-    // Let Chromium pause only decorative glass animations during a real user
-    // gesture. Do not listen to generic scroll events: the WebUI repeatedly
-    // changes scrollTop while hydrating a thread, and that used to leave the
-    // scrolling class active long after the user's gesture had ended.
+    /*
+     * Opening the React history drawer may replace the drawer glass subtree
+     * after its entrance transition has already started. On Android WebView,
+     * the newly inserted backdrop-filter surface can then keep a stale
+     * compositor snapshot (especially if the first frame is also scrolled),
+     * so it looks as if liquid glass was turned off. Detect only newly added
+     * glass surfaces and refresh their compositor layer once; never scan the
+     * long conversation subtree.
+     */
+    if (!window.__AIMiniGlassSurfaceRefresh) {
+      try {
+        let refreshFrame = 0;
+        const pendingSurfaces = new Set();
+        const GLASS_SURFACE_SELECTOR =
+          ".liquid-glass-react-surface,.liquid-glass-warp,.liquid-glass-layer";
+        const queueSurface = function (node) {
+          if (!node || node.nodeType !== 1) return;
+          try {
+            if (node.matches && node.matches(GLASS_SURFACE_SELECTOR)) {
+              pendingSurfaces.add(node);
+            }
+            // Drawer insertion is shallow; limit descendant lookup to the
+            // added subtree and skip any conversation/thread batch.
+            if (node.closest && node.closest("#thread,.thread")) return;
+            if (node.querySelectorAll) {
+              node.querySelectorAll(GLASS_SURFACE_SELECTOR).forEach(function (surface) {
+                if (!surface.closest("#thread,.thread")) pendingSurfaces.add(surface);
+              });
+            }
+          } catch (_) {}
+        };
+        const flushSurfaces = function () {
+          refreshFrame = 0;
+          const surfaces = Array.from(pendingSurfaces);
+          pendingSurfaces.clear();
+          const refreshed = [];
+          surfaces.forEach(function (surface) {
+            if (!surface || !surface.isConnected) return;
+            try {
+              // Toggling a compositor-only property forces Chromium to rebuild
+              // backdrop sampling without changing blur, color or geometry.
+              surface.style.setProperty("backface-visibility", "hidden");
+              surface.style.setProperty("-webkit-backface-visibility", "hidden");
+              refreshed.push(surface);
+            } catch (_) {}
+          });
+          // One geometry read commits all style writes without causing one
+          // layout pass per surface.
+          if (refreshed.length && document.documentElement) {
+            void document.documentElement.offsetWidth;
+          }
+          requestAnimationFrame(function () {
+            refreshed.forEach(function (surface) {
+              try {
+                surface.style.removeProperty("backface-visibility");
+                surface.style.removeProperty("-webkit-backface-visibility");
+              } catch (_) {}
+            });
+          });
+          reassertHostMarks();
+        };
+        const scheduleSurfaceRefresh = function () {
+          if (refreshFrame) return;
+          refreshFrame = requestAnimationFrame(flushSurfaces);
+        };
+        const surfaceObserver = new MutationObserver(function (mutations) {
+          let found = false;
+          mutations.forEach(function (mutation) {
+            if (!mutation.addedNodes || !mutation.addedNodes.length) return;
+            mutation.addedNodes.forEach(function (node) {
+              if (node && node.nodeType === 1 &&
+                  node.closest && node.closest("#thread,.thread")) {
+                return;
+              }
+              queueSurface(node);
+              found = true;
+            });
+          });
+          if (found && pendingSurfaces.size) scheduleSurfaceRefresh();
+        });
+        const observeSurfaces = function () {
+          if (!document.body) return false;
+          surfaceObserver.observe(document.body, { childList: true, subtree: true });
+          window.__AIMiniGlassSurfaceRefresh = surfaceObserver;
+          return true;
+        };
+        if (!observeSurfaces()) {
+          document.addEventListener("DOMContentLoaded", observeSurfaces, { once: true });
+        }
+        const queueInteractionSurface = function (event) {
+          const target = event && event.target;
+          if (!target || !target.closest) return;
+          const surface = target.closest(".liquid-glass-react-surface");
+          if (surface && !surface.closest("#thread,.thread")) queueSurface(surface);
+        };
+        document.addEventListener("touchstart", queueInteractionSurface, {
+          passive: true,
+          capture: true
+        });
+        document.addEventListener("pointerdown", queueInteractionSurface, {
+          passive: true,
+          capture: true
+        });
+        const finishSurfaceGesture = function () {
+          if (pendingSurfaces.size) scheduleSurfaceRefresh();
+        };
+        document.addEventListener("touchend", finishSurfaceGesture, { passive: true });
+        document.addEventListener("touchcancel", finishSurfaceGesture, { passive: true });
+        document.addEventListener("pointerup", finishSurfaceGesture, { passive: true });
+        document.addEventListener("pointercancel", finishSurfaceGesture, { passive: true });
+      } catch (_) {}
+    }
+
+    // Let Chromium pause only decorative glass animations while the actual
+    // conversation is being dragged. The history drawer is itself a large
+    // liquid-glass surface: pausing all of its highlight/warp animations when
+    // the user merely opens or scrolls the drawer makes Chromium flatten that
+    // surface and it can stay visually opaque after the gesture. Restrict the
+    // performance class to gestures that start inside the conversation thread.
+    // Do not listen to generic scroll events: the WebUI repeatedly changes
+    // scrollTop while hydrating a thread, and that used to leave the scrolling
+    // class active long after the user's gesture had ended.
     if (!window.__AIMiniGlassScrollPerf) {
       try {
         let scrollTimer = 0;
         let lastScrollActivity = 0;
+        let conversationGestureActive = false;
+        const isConversationGesture = function (event) {
+          const target = event && event.target;
+          if (!target || !target.closest) return false;
+          return !!target.closest("#thread,.thread,.composer-shell");
+        };
         const clearScrollingWhenIdle = function () {
           const elapsed = Date.now() - lastScrollActivity;
           if (elapsed < 180) {
@@ -1429,9 +1567,16 @@
             if (root) root.classList.remove("ai-mini-glass-scrolling");
           } catch (_) {}
         };
-        const markScrolling = function () {
+        const markScrolling = function (event, startGesture) {
           const root = document.documentElement;
           if (!root) return;
+          if (startGesture) conversationGestureActive = isConversationGesture(event);
+          if (!conversationGestureActive) {
+            if (root.classList.contains("ai-mini-glass-scrolling")) {
+              root.classList.remove("ai-mini-glass-scrolling");
+            }
+            return;
+          }
           if (root.classList.contains("liquid-glass-off")) {
             if (root.classList.contains("ai-mini-glass-scrolling")) {
               root.classList.remove("ai-mini-glass-scrolling");
@@ -1446,22 +1591,31 @@
           scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
         };
         const finishGesture = function () {
+          conversationGestureActive = false;
           lastScrollActivity = Date.now();
           if (!scrollTimer) {
             scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
           }
         };
-        window.addEventListener("touchstart", markScrolling, { passive: true, capture: true });
+        window.addEventListener("touchstart", function (event) {
+          markScrolling(event, true);
+        }, { passive: true, capture: true });
         window.addEventListener("pointerdown", function (event) {
           if (!event || event.pointerType === "touch" || event.pointerType === "pen") {
-            markScrolling();
+            markScrolling(event, true);
           }
         }, { passive: true, capture: true });
-        window.addEventListener("wheel", markScrolling, { passive: true });
-        window.addEventListener("touchmove", markScrolling, { passive: true });
+        window.addEventListener("wheel", function (event) {
+          conversationGestureActive = isConversationGesture(event);
+          markScrolling(event, false);
+          conversationGestureActive = false;
+        }, { passive: true });
+        window.addEventListener("touchmove", function (event) {
+          markScrolling(event, false);
+        }, { passive: true });
         window.addEventListener("pointermove", function (event) {
           if (event && (event.pointerType === "touch" || event.pointerType === "pen")) {
-            markScrolling();
+            markScrolling(event, false);
           }
         }, { passive: true });
         window.addEventListener("touchend", finishGesture, { passive: true });
@@ -1487,6 +1641,8 @@
         let lastHeight = 0;
         let lastHydrationActivity = 0;
         let minimumHydrationUntil = 0;
+        let transitionPending = false;
+        let transitionGeneration = 0;
 
         const root = document.documentElement;
         const clearHydrating = function (force) {
@@ -1535,7 +1691,9 @@
             observedThread = thread;
             lastHeight = 0;
             threadObserver = new MutationObserver(function () {
-              markHydrating();
+              if (root && root.classList.contains("ai-mini-long-thread")) {
+                markHydrating();
+              }
               scheduleProbe();
             });
             // Direct children are the batches used by the WebUI thread
@@ -1543,29 +1701,41 @@
             threadObserver.observe(thread, { childList: true });
             if (window.ResizeObserver) {
               resizeObserver = new ResizeObserver(function () {
-                markHydrating();
+                // Opening a drawer/modal also changes the thread's box. That
+                // is ordinary layout, not message hydration, and must not turn
+                // off glass across the newly opened UI.
                 scheduleProbe();
               });
               resizeObserver.observe(thread);
             }
-            markHydrating(900);
           }
           const height = Math.max(0, Number(thread.scrollHeight) || 0);
           const children = thread.children ? thread.children.length : 0;
           const longThread = height >= 12000 || children >= 80;
+          const wasLongThread = root &&
+            root.classList.contains("ai-mini-long-thread");
           if (root) root.classList.toggle("ai-mini-long-thread", longThread);
-          if (longThread && height > lastHeight + 32) markHydrating();
+          if (longThread &&
+              (transitionPending || !wasLongThread || height > lastHeight + 32)) {
+            markHydrating(transitionPending ? 900 : 0);
+          }
+          if (longThread) transitionPending = false;
           lastHeight = Math.max(lastHeight, height);
         };
         const beginThreadTransition = function () {
-          // Capture runs before the WebUI click handler, so the expensive
-          // backdrop samplers are disabled before the first long-thread batch.
-          markHydrating(1500);
+          // Do not disable glass pre-emptively: most conversations are short,
+          // and the same selector is also used by drawer rows. Wait until the
+          // new thread is measured as genuinely long.
+          transitionPending = true;
+          const generation = ++transitionGeneration;
           lastHeight = 0;
           scheduleProbe();
           [80, 220, 500, 1000, 1800, 3200].forEach(function (delay) {
             setTimeout(scheduleProbe, delay);
           });
+          setTimeout(function () {
+            if (transitionGeneration === generation) transitionPending = false;
+          }, 3600);
         };
         document.addEventListener("pointerdown", function (event) {
           const target = event && event.target;
