@@ -1026,7 +1026,7 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // 1.26: keep frosted glass + reduce WebView style/repaint churn.
+    // 1.27: keep frosted glass + avoid global glass suppression during overlays.
     // WebUI device switch uses location.replace() and reloads per-device appearance.
     // Android keyboard defaults force liquidGlassEnabled=false for every new device
     // profile, which turns the whole liquid-glass UI off. Chromium WebUI also runs
@@ -1034,9 +1034,9 @@
     // Fix: seed preferred glass into device-scoped localStorage at document-start
     // (before WebUI early boot), skip android false-defaults, and lightly re-assert
     // host classes/CSS only (no storage fight with Pro entitlement).
-    if (window.__AIMiniGeckoGlassVersion === "1.26") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.27") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.26";
+    window.__AIMiniGeckoGlassVersion = "1.27";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
@@ -1278,18 +1278,24 @@
        * responsive. Keep the same translucent colors/borders, but suspend only
        * live backdrop sampling until the thread has been quiet.
        */
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-warp,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-warp,
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .task-plan-dock-card::before,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .task-plan-dock-card::before,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-warp,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-warp,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-warp,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-warp,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
       html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer,
       html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         animation-play-state: paused !important;
       }
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-react-surface,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-react-surface {
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-react-surface,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .liquid-glass-react-surface {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
       }
@@ -1417,6 +1423,12 @@
       try {
         let scrollTimer = 0;
         let lastScrollActivity = 0;
+        let conversationGestureActive = false;
+        const isConversationGesture = function (event) {
+          const target = event && event.target;
+          if (!target || !target.closest) return false;
+          return !!target.closest("#thread,.thread,.composer-shell");
+        };
         const clearScrollingWhenIdle = function () {
           const elapsed = Date.now() - lastScrollActivity;
           if (elapsed < 180) {
@@ -1429,9 +1441,16 @@
             if (root) root.classList.remove("ai-mini-glass-scrolling");
           } catch (_) {}
         };
-        const markScrolling = function () {
+        const markScrolling = function (event, startsGesture) {
           const root = document.documentElement;
           if (!root) return;
+          if (startsGesture) {
+            conversationGestureActive = isConversationGesture(event);
+          }
+          if (!conversationGestureActive) {
+            root.classList.remove("ai-mini-glass-scrolling");
+            return;
+          }
           if (root.classList.contains("liquid-glass-off")) {
             if (root.classList.contains("ai-mini-glass-scrolling")) {
               root.classList.remove("ai-mini-glass-scrolling");
@@ -1446,22 +1465,31 @@
           scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
         };
         const finishGesture = function () {
+          conversationGestureActive = false;
           lastScrollActivity = Date.now();
           if (!scrollTimer) {
             scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
           }
         };
-        window.addEventListener("touchstart", markScrolling, { passive: true, capture: true });
+        window.addEventListener("touchstart", function (event) {
+          markScrolling(event, true);
+        }, { passive: true, capture: true });
         window.addEventListener("pointerdown", function (event) {
           if (!event || event.pointerType === "touch" || event.pointerType === "pen") {
-            markScrolling();
+            markScrolling(event, true);
           }
         }, { passive: true, capture: true });
-        window.addEventListener("wheel", markScrolling, { passive: true });
-        window.addEventListener("touchmove", markScrolling, { passive: true });
+        window.addEventListener("wheel", function (event) {
+          conversationGestureActive = isConversationGesture(event);
+          markScrolling(event, false);
+          conversationGestureActive = false;
+        }, { passive: true });
+        window.addEventListener("touchmove", function (event) {
+          markScrolling(event, false);
+        }, { passive: true });
         window.addEventListener("pointermove", function (event) {
           if (event && (event.pointerType === "touch" || event.pointerType === "pen")) {
-            markScrolling();
+            markScrolling(event, false);
           }
         }, { passive: true });
         window.addEventListener("touchend", finishGesture, { passive: true });
@@ -1487,6 +1515,8 @@
         let lastHeight = 0;
         let lastHydrationActivity = 0;
         let minimumHydrationUntil = 0;
+        let transitionPending = false;
+        let transitionGeneration = 0;
 
         const root = document.documentElement;
         const clearHydrating = function (force) {
@@ -1535,7 +1565,9 @@
             observedThread = thread;
             lastHeight = 0;
             threadObserver = new MutationObserver(function () {
-              markHydrating();
+              if (root && root.classList.contains("ai-mini-long-thread")) {
+                markHydrating();
+              }
               scheduleProbe();
             });
             // Direct children are the batches used by the WebUI thread
@@ -1543,29 +1575,41 @@
             threadObserver.observe(thread, { childList: true });
             if (window.ResizeObserver) {
               resizeObserver = new ResizeObserver(function () {
-                markHydrating();
+                // Opening a drawer/settings panel can resize the thread even
+                // though no messages are loading. Only re-measure here; do not
+                // globally enter hydration mode for ordinary overlay layout.
                 scheduleProbe();
               });
               resizeObserver.observe(thread);
             }
-            markHydrating(900);
           }
           const height = Math.max(0, Number(thread.scrollHeight) || 0);
           const children = thread.children ? thread.children.length : 0;
           const longThread = height >= 12000 || children >= 80;
+          const wasLongThread = root &&
+            root.classList.contains("ai-mini-long-thread");
           if (root) root.classList.toggle("ai-mini-long-thread", longThread);
-          if (longThread && height > lastHeight + 32) markHydrating();
+          if (longThread &&
+              (transitionPending || !wasLongThread || height > lastHeight + 32)) {
+            markHydrating(transitionPending ? 900 : 0);
+          }
+          if (longThread) transitionPending = false;
           lastHeight = Math.max(lastHeight, height);
         };
         const beginThreadTransition = function () {
-          // Capture runs before the WebUI click handler, so the expensive
-          // backdrop samplers are disabled before the first long-thread batch.
-          markHydrating(1500);
+          // Do not disable glass before the selected conversation is known to
+          // be long. The same click occurs inside the history drawer and used
+          // to make that drawer/settings glass disappear for 1.5 seconds.
+          transitionPending = true;
+          const generation = ++transitionGeneration;
           lastHeight = 0;
           scheduleProbe();
           [80, 220, 500, 1000, 1800, 3200].forEach(function (delay) {
             setTimeout(scheduleProbe, delay);
           });
+          setTimeout(function () {
+            if (transitionGeneration === generation) transitionPending = false;
+          }, 3600);
         };
         document.addEventListener("pointerdown", function (event) {
           const target = event && event.target;
