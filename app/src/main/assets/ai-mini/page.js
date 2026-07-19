@@ -1026,7 +1026,7 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // 1.27: keep frosted glass + avoid global glass suppression during overlays.
+    // 1.28: keep frosted glass active outside the conversation at all times.
     // WebUI device switch uses location.replace() and reloads per-device appearance.
     // Android keyboard defaults force liquidGlassEnabled=false for every new device
     // profile, which turns the whole liquid-glass UI off. Chromium WebUI also runs
@@ -1034,9 +1034,9 @@
     // Fix: seed preferred glass into device-scoped localStorage at document-start
     // (before WebUI early boot), skip android false-defaults, and lightly re-assert
     // host classes/CSS only (no storage fight with Pro entitlement).
-    if (window.__AIMiniGeckoGlassVersion === "1.27") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.28") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.27";
+    window.__AIMiniGeckoGlassVersion = "1.28";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
@@ -1276,7 +1276,9 @@
        * Chromium WebView otherwise re-samples every translucent surface after
        * each batch, delaying touch dispatch even though Chrome/Gecko remain
        * responsive. Keep the same translucent colors/borders, but suspend only
-       * live backdrop sampling until the thread has been quiet.
+       * live backdrop sampling inside the conversation until the thread has
+       * been quiet. Never touch the top bar, composer, drawers or modals:
+       * those surfaces must already have glass on their first visible frame.
        */
       html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-warp,
       html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .liquid-glass-warp,
@@ -1285,9 +1287,7 @@
       html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
       html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
       html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
-      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer,
-      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer {
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .thread .task-plan-dock-card::before {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         animation-play-state: paused !important;
@@ -1300,27 +1300,23 @@
         -webkit-backdrop-filter: none !important;
       }
       /*
-       * Pause only decorative animations while the conversation is actively
-       * scrolling. The resting glass appearance and its blur are unchanged.
+       * Pause only decorative animations inside the conversation while it is
+       * actively scrolling. Do not pause top-bar, composer, drawer or modal
+       * layers: Chromium can otherwise present their first frame without the
+       * backdrop snapshot and make glass appear to turn on late.
        */
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-layer,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-layer,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-warp,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-warp,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-react-surface,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-react-surface,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-screen,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-screen,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-overlay,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-border-overlay,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-hover-glow,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-hover-glow,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-active-glow,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-active-glow,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-top-glow,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-top-glow,
-      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .task-plan-dock-card::before,
-      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .task-plan-dock-card::before {
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) #thread .liquid-glass-layer,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) #thread .liquid-glass-layer,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .thread .liquid-glass-layer,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .thread .liquid-glass-layer,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) #thread .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) #thread .liquid-glass-react-surface,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .thread .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .thread .liquid-glass-react-surface,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) #thread .task-plan-dock-card::before,
+      html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .thread .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-glass-scrolling:not(.liquid-glass-off) .thread .task-plan-dock-card::before {
         animation-play-state: paused !important;
       }
       html.ai-mini-webview:not(.liquid-glass-off) .composer.codex-liquid-glass-original,
@@ -1358,9 +1354,65 @@
           inset 0 1px 0 rgba(255,255,255,.55),
           inset 0 -1px 0 rgba(20,30,45,.06) !important;
       }
+      /*
+       * Android WebView creates a backdrop compositor layer lazily when a
+       * fixed glass card changes from display:none to visible. The first
+       * visible frame can therefore be transparent/opaque even though the
+       * computed backdrop-filter is already correct. Keep the small, fixed
+       * overlay cards warm between pointer-down and click; the marker is
+       * removed immediately after the WebUI applies the open state. This
+       * avoids keeping hidden blur layers alive at rest. Never prewarm thread
+       * content.
+       */
+      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface.ai-mini-glass-prewarm-hidden,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface.ai-mini-glass-prewarm-hidden {
+        display: block !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+      }
     `;
       try { (document.head || document.documentElement).appendChild(style); } catch (_) {}
       return style;
+    }
+
+    if (!window.__AIMiniGlassPrewarm) {
+      try {
+        let clearTimer = 0;
+        const PREWARM_CLASS = "ai-mini-glass-prewarm-hidden";
+        const isThreadSurface = function (surface) {
+          return !!(surface && surface.closest && surface.closest("#thread,.thread"));
+        };
+        const clear = function () {
+          if (clearTimer) clearTimeout(clearTimer);
+          clearTimer = 0;
+          document.querySelectorAll("." + PREWARM_CLASS).forEach(function (surface) {
+            surface.classList.remove(PREWARM_CLASS);
+          });
+        };
+        const warm = function () {
+          clear();
+          document.querySelectorAll(".liquid-glass-react-surface").forEach(function (surface) {
+            if (!surface || isThreadSurface(surface)) return;
+            let hidden = false;
+            try {
+              hidden = getComputedStyle(surface).display === "none";
+            } catch (_) {}
+            if (hidden) surface.classList.add(PREWARM_CLASS);
+          });
+          // Safety cleanup for a cancelled gesture that never produces click.
+          clearTimer = setTimeout(clear, 500);
+        };
+        document.addEventListener("pointerdown", warm, { passive: true, capture: true });
+        document.addEventListener("touchstart", warm, { passive: true, capture: true });
+        document.addEventListener("click", function () {
+          // The WebUI toggles its open class in this click turn. Clear in the
+          // next task so the selected card becomes visible with a warm layer.
+          setTimeout(clear, 0);
+        }, { passive: true, capture: true });
+        document.addEventListener("pointercancel", clear, { passive: true });
+        document.addEventListener("touchcancel", clear, { passive: true });
+        window.__AIMiniGlassPrewarm = true;
+      } catch (_) {}
     }
 
     let lastGlassOffState = null;
