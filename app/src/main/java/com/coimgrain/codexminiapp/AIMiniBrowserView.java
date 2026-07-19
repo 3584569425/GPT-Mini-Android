@@ -832,6 +832,92 @@ final class AIMiniBrowserView extends FrameLayout {
         }
 
         @JavascriptInterface
+        public void beginBlobDownload(
+                String downloadId,
+                String fileName,
+                String mimeType,
+                long totalBytes
+        ) {
+            postBlobMessage(
+                    "beginBlobDownload",
+                    downloadId,
+                    fileName,
+                    mimeType,
+                    totalBytes,
+                    -1,
+                    ""
+            );
+        }
+
+        @JavascriptInterface
+        public void appendBlobDownload(String downloadId, int index, String data) {
+            postBlobMessage(
+                    "appendBlobDownload",
+                    downloadId,
+                    "",
+                    "",
+                    0L,
+                    index,
+                    data
+            );
+        }
+
+        @JavascriptInterface
+        public void finishBlobDownload(String downloadId) {
+            postBlobMessage(
+                    "finishBlobDownload",
+                    downloadId,
+                    "",
+                    "",
+                    0L,
+                    -1,
+                    ""
+            );
+        }
+
+        @JavascriptInterface
+        public void cancelBlobDownload(String downloadId) {
+            postBlobMessage(
+                    "cancelBlobDownload",
+                    downloadId,
+                    "",
+                    "",
+                    0L,
+                    -1,
+                    ""
+            );
+        }
+
+        private void postBlobMessage(
+                String type,
+                String downloadId,
+                String fileName,
+                String mimeType,
+                long totalBytes,
+                int index,
+                String data
+        ) {
+            try {
+                String safeFileName = fileName == null ? "" : fileName;
+                String safeMimeType = mimeType == null ? "" : mimeType;
+                String safeData = data == null ? "" : data;
+                org.json.JSONObject object = new org.json.JSONObject();
+                object.put("type", type);
+                object.put("downloadId", downloadId == null ? "" : downloadId);
+                if (!safeFileName.isEmpty()) object.put("fileName", safeFileName);
+                if (!safeMimeType.isEmpty()) object.put("mimeType", safeMimeType);
+                if (totalBytes > 0L) object.put("totalBytes", totalBytes);
+                if (index >= 0) object.put("index", index);
+                if (!safeData.isEmpty()) object.put("data", safeData);
+                handler.post(() -> engine.handlePageMessage(
+                        AIMiniBrowserView.this,
+                        object.toString()
+                ));
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
         public void toast(String message) {
             try {
                 org.json.JSONObject object = new org.json.JSONObject();

@@ -11,6 +11,8 @@
     <string name="share_file">分享文件</string>
     <string name="enter_url_first">请先输入网址</string>
     <string name="download_started">已开始下载</string>
+    <string name="opening_file">正在打开文件</string>
+    <string name="download_file_missing">本地文件不存在或尚未下载完成</string>
     <string name="downloading">正在下载</string>
     <string name="download_progress">正在下载 %1$d%% · %2$s / %3$s</string>
     <string name="download_complete">下载完成</string>

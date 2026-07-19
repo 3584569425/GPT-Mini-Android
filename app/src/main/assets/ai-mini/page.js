@@ -159,6 +159,11 @@
     }
 
     let composerModeFrame = 0;
+    let composerModeObserver = null;
+    let observedComposer = null;
+    let composerProbeTimer = 0;
+    let composerProbeAttempt = 0;
+
     function refreshComposerMode() {
       if (composerModeFrame) return;
       composerModeFrame = requestAnimationFrame(function () {
@@ -167,19 +172,75 @@
       });
     }
 
-    function observeComposerMode() {
-      if (!document.documentElement || window.__AIMiniComposerModeObserver) return;
+    function attachComposerModeObserver() {
+      composerProbeTimer = 0;
+      const composer = document.querySelector(
+        "footer.composer-shell form#composer.composer"
+      );
+      const shell = composer && composer.closest
+        ? composer.closest("footer.composer-shell")
+        : null;
+
+      if (composer && composer !== observedComposer) {
+        try {
+          if (composerModeObserver) composerModeObserver.disconnect();
+          composerModeObserver = new MutationObserver(function () {
+            refreshComposerMode();
+            if (!observedComposer || !observedComposer.isConnected) {
+              scheduleComposerProbe(0);
+            }
+          });
+          composerModeObserver.observe(composer, {
+            attributes: true,
+            attributeFilter: ["class", "id"]
+          });
+          if (shell) {
+            composerModeObserver.observe(shell, {
+              childList: true,
+              attributes: true,
+              attributeFilter: ["class", "id"]
+            });
+          }
+          observedComposer = composer;
+          window.__AIMiniComposerModeObserver = composerModeObserver;
+        } catch (_) {}
+      }
+
       refreshComposerMode();
-      try {
-        const observer = new MutationObserver(refreshComposerMode);
-        observer.observe(document.documentElement, {
-          subtree: true,
-          childList: true,
-          attributes: true,
-          attributeFilter: ["class", "id"]
-        });
-        window.__AIMiniComposerModeObserver = observer;
-      } catch (_) {}
+      if (composer) {
+        composerProbeAttempt = 0;
+        return;
+      }
+      if (composerProbeAttempt < 10) {
+        const delay = Math.min(1200, 60 * Math.pow(1.65, composerProbeAttempt++));
+        scheduleComposerProbe(delay);
+      }
+    }
+
+    function scheduleComposerProbe(delay) {
+      if (composerProbeTimer) return;
+      composerProbeTimer = setTimeout(
+        attachComposerModeObserver,
+        Math.max(0, Number(delay) || 0)
+      );
+    }
+
+    function observeComposerMode() {
+      if (!document.documentElement || window.__AIMiniComposerModeObserverInstalled) return;
+      window.__AIMiniComposerModeObserverInstalled = true;
+      scheduleComposerProbe(0);
+      document.addEventListener("focusin", refreshComposerMode, true);
+      document.addEventListener("pointerup", function (event) {
+        const target = event && event.target;
+        if (!target || !target.closest) return;
+        if (target.closest(".composer-shell,#composer,[data-device-id],.device-option")) {
+          scheduleComposerProbe(0);
+        }
+      }, true);
+      window.addEventListener("pageshow", function () {
+        composerProbeAttempt = 0;
+        scheduleComposerProbe(0);
+      });
     }
 
     if (document.documentElement) {
@@ -965,7 +1026,7 @@
   }
 
   function installGeckoLiquidGlassFallback() {
-    // 1.23: keep frosted glass + reduce WebView style/repaint churn.
+    // 1.26: keep frosted glass + reduce WebView style/repaint churn.
     // WebUI device switch uses location.replace() and reloads per-device appearance.
     // Android keyboard defaults force liquidGlassEnabled=false for every new device
     // profile, which turns the whole liquid-glass UI off. Chromium WebUI also runs
@@ -973,9 +1034,9 @@
     // Fix: seed preferred glass into device-scoped localStorage at document-start
     // (before WebUI early boot), skip android false-defaults, and lightly re-assert
     // host classes/CSS only (no storage fight with Pro entitlement).
-    if (window.__AIMiniGeckoGlassVersion === "1.23") return;
+    if (window.__AIMiniGeckoGlassVersion === "1.26") return;
     if (!/GPTMiniAndroidApp\//i.test(navigator.userAgent || "")) return;
-    window.__AIMiniGeckoGlassVersion = "1.23";
+    window.__AIMiniGeckoGlassVersion = "1.26";
 
     const STYLE_ID = "ai-mini-gecko-liquid-glass";
     const PREFER_KEY = "aiMini.preferLiquidGlass.v1";
@@ -1194,19 +1255,43 @@
         -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
       }
       /*
-       * Keep the blur/saturation values unchanged, but isolate each small
-       * glass surface into a paint boundary. This prevents a repaint behind
-       * the composer from invalidating the whole high-DPI WebView.
+       * The WebUI already applies backdrop-filter to every React glass
+       * surface. Its child warp used to sample the same background a second
+       * time in this compatibility patch. A single sampler preserves the same
+       * blur, tint, border and highlights while avoiding duplicate compositor
+       * work on every frame of a long conversation.
        */
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface {
-        isolation: isolate !important;
+      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface > .liquid-glass-warp,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface > .liquid-glass-warp {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
       }
-      html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-layer,
-      html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-layer {
-        contain: paint !important;
-        backface-visibility: hidden !important;
-        -webkit-backface-visibility: hidden !important;
+      html.ai-mini-webview:not(.liquid-glass-off) .guardian-info-card > .liquid-glass-warp,
+      html.ai-mini-geckoview:not(.liquid-glass-off) .guardian-info-card > .liquid-glass-warp {
+        backdrop-filter: blur(6px) saturate(140%) !important;
+        -webkit-backdrop-filter: blur(6px) saturate(140%) !important;
+      }
+      /*
+       * A long thread is hydrated in batches. During that short window a
+       * Chromium WebView otherwise re-samples every translucent surface after
+       * each batch, delaying touch dispatch even though Chrome/Gecko remain
+       * responsive. Keep the same translucent colors/borders, but suspend only
+       * live backdrop sampling until the thread has been quiet.
+       */
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-warp,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-warp,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .task-plan-dock-card::before,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .task-plan-dock-card::before,
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .composer-stack-glass-card > .liquid-glass-layer {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        animation-play-state: paused !important;
+      }
+      html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-react-surface,
+      html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) .liquid-glass-react-surface {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
       }
       /*
        * Pause only decorative animations while the conversation is actively
@@ -1324,8 +1409,10 @@
       reassertHostMarks();
     };
 
-    // Let Chromium pause only decorative glass animations during a swipe.
-    // This is temporary and does not alter the resting liquid-glass visual.
+    // Let Chromium pause only decorative glass animations during a real user
+    // gesture. Do not listen to generic scroll events: the WebUI repeatedly
+    // changes scrollTop while hydrating a thread, and that used to leave the
+    // scrolling class active long after the user's gesture had ended.
     if (!window.__AIMiniGlassScrollPerf) {
       try {
         let scrollTimer = 0;
@@ -1358,10 +1445,159 @@
           if (scrollTimer) return;
           scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
         };
-        window.addEventListener("scroll", markScrolling, { passive: true, capture: true });
+        const finishGesture = function () {
+          lastScrollActivity = Date.now();
+          if (!scrollTimer) {
+            scrollTimer = setTimeout(clearScrollingWhenIdle, 180);
+          }
+        };
+        window.addEventListener("touchstart", markScrolling, { passive: true, capture: true });
+        window.addEventListener("pointerdown", function (event) {
+          if (!event || event.pointerType === "touch" || event.pointerType === "pen") {
+            markScrolling();
+          }
+        }, { passive: true, capture: true });
         window.addEventListener("wheel", markScrolling, { passive: true });
         window.addEventListener("touchmove", markScrolling, { passive: true });
+        window.addEventListener("pointermove", function (event) {
+          if (event && (event.pointerType === "touch" || event.pointerType === "pen")) {
+            markScrolling();
+          }
+        }, { passive: true });
+        window.addEventListener("touchend", finishGesture, { passive: true });
+        window.addEventListener("touchcancel", finishGesture, { passive: true });
+        window.addEventListener("pointerup", finishGesture, { passive: true });
+        window.addEventListener("pointercancel", finishGesture, { passive: true });
         window.__AIMiniGlassScrollPerf = true;
+      } catch (_) {}
+    }
+
+    /*
+     * Track only the thread root, not the entire document. The guard is
+     * scheduled at most once per task and reads scrollHeight once, so it does
+     * not add a second full-DOM traversal while a long session is loading.
+     */
+    if (!window.__AIMiniThreadHydrationPerf) {
+      try {
+        let observedThread = null;
+        let threadObserver = null;
+        let resizeObserver = null;
+        let probeTimer = 0;
+        let quietTimer = 0;
+        let lastHeight = 0;
+        let lastHydrationActivity = 0;
+        let minimumHydrationUntil = 0;
+
+        const root = document.documentElement;
+        const clearHydrating = function (force) {
+          quietTimer = 0;
+          if (!root) return;
+          const now = Date.now();
+          const waitForMinimum = Math.max(0, minimumHydrationUntil - now);
+          const waitForQuiet = Math.max(0, 650 - (now - lastHydrationActivity));
+          const wait = Math.max(waitForMinimum, waitForQuiet);
+          if (!force && wait > 0) {
+            quietTimer = setTimeout(clearHydrating, wait);
+            return;
+          }
+          root.classList.remove("ai-mini-thread-hydrating");
+        };
+        const markHydrating = function (minimumDuration) {
+          if (!root || root.classList.contains("liquid-glass-off")) {
+            clearHydrating(true);
+            return;
+          }
+          const now = Date.now();
+          lastHydrationActivity = now;
+          minimumHydrationUntil = Math.max(
+            minimumHydrationUntil,
+            now + Math.max(0, Number(minimumDuration) || 0)
+          );
+          root.classList.add("ai-mini-thread-hydrating");
+          if (quietTimer) clearTimeout(quietTimer);
+          quietTimer = setTimeout(clearHydrating, 650);
+        };
+        const scheduleProbe = function () {
+          if (probeTimer) return;
+          probeTimer = setTimeout(probe, 0);
+        };
+        const probe = function () {
+          probeTimer = 0;
+          const thread = document.getElementById("thread")
+            || document.querySelector(".thread");
+          if (!thread) {
+            if (root) root.classList.remove("ai-mini-long-thread");
+            return;
+          }
+          if (thread !== observedThread) {
+            if (threadObserver) threadObserver.disconnect();
+            if (resizeObserver) resizeObserver.disconnect();
+            observedThread = thread;
+            lastHeight = 0;
+            threadObserver = new MutationObserver(function () {
+              markHydrating();
+              scheduleProbe();
+            });
+            // Direct children are the batches used by the WebUI thread
+            // renderer; avoid subtree observation on every message node.
+            threadObserver.observe(thread, { childList: true });
+            if (window.ResizeObserver) {
+              resizeObserver = new ResizeObserver(function () {
+                markHydrating();
+                scheduleProbe();
+              });
+              resizeObserver.observe(thread);
+            }
+            markHydrating(900);
+          }
+          const height = Math.max(0, Number(thread.scrollHeight) || 0);
+          const children = thread.children ? thread.children.length : 0;
+          const longThread = height >= 12000 || children >= 80;
+          if (root) root.classList.toggle("ai-mini-long-thread", longThread);
+          if (longThread && height > lastHeight + 32) markHydrating();
+          lastHeight = Math.max(lastHeight, height);
+        };
+        const beginThreadTransition = function () {
+          // Capture runs before the WebUI click handler, so the expensive
+          // backdrop samplers are disabled before the first long-thread batch.
+          markHydrating(1500);
+          lastHeight = 0;
+          scheduleProbe();
+          [80, 220, 500, 1000, 1800, 3200].forEach(function (delay) {
+            setTimeout(scheduleProbe, delay);
+          });
+        };
+        document.addEventListener("pointerdown", function (event) {
+          const target = event && event.target;
+          if (!target || !target.closest) return;
+          if (target.closest(".thread-option,[data-thread-id]")) {
+            beginThreadTransition();
+          }
+        }, true);
+        document.addEventListener("click", function (event) {
+          const target = event && event.target;
+          if (!target || !target.closest) return;
+          if (target.closest(".thread-option,[data-thread-id]")) {
+            beginThreadTransition();
+          }
+        }, true);
+        const start = function () {
+          scheduleProbe();
+          [120, 500, 1200, 2500, 5000].forEach(function (delay) {
+            setTimeout(scheduleProbe, delay);
+          });
+        };
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", start, { once: true });
+        } else {
+          start();
+        }
+        window.addEventListener("pageshow", start);
+        window.__AIMiniThreadHydrationPerf = {
+          probe: probe,
+          schedule: scheduleProbe,
+          mark: beginThreadTransition
+        };
       } catch (_) {}
     }
 

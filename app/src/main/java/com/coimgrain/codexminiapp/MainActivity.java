@@ -64,6 +64,8 @@ import android.webkit.URLUtil;
 import android.webkit.WebSettings;
 import android.webkit.WebChromeClient;
 import android.webkit.ValueCallback;
+import android.webkit.CookieManager;
+import android.webkit.MimeTypeMap;
 import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.EditText;
@@ -109,6 +111,8 @@ import javax.net.ssl.SSLException;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import androidx.core.content.FileProvider;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
@@ -2235,7 +2239,7 @@ public class MainActivity extends Activity {
         startHttpDownload(
                 updateDownloadUrl,
                 "GPT-Mini-Android/" + currentAppVersionName(),
-                fileName,
+                contentDispositionForName(fileName),
                 "application/vnd.android.package-archive",
                 ""
         );
@@ -2668,32 +2672,11 @@ public class MainActivity extends Activity {
                                 + "box-sizing:border-box!important;}"
                 )
                 + ";"
-                // 动态识别靠近顶部的 fixed/sticky 功能栏，避免误伤底部
-                // composer 及占满屏幕的 app/thread 容器。旧逻辑会把这些
-                // 全屏 fixed 容器也当成顶栏，进一步造成视觉位置与命中区域
-                // 不一致。
-                + "var nodes=document.body?document.body.querySelectorAll('*'):[];"
-                + "for(var i=0;i<nodes.length;i++){"
-                + "var el=nodes[i];"
-                + "try{"
-                + "var cs=window.getComputedStyle(el);"
-                + "var pos=cs.position;"
-                + "if(pos!=='fixed'&&pos!=='sticky'){continue;}"
-                + "var top=parseFloat(cs.top);"
-                + "if(isNaN(top)){top=0;}"
-                + "if(top>48){continue;}"
-                + "var rect=el.getBoundingClientRect();"
-                + "if(rect.height<=0||rect.width<=0){continue;}"
-                + "if(rect.top>120){continue;}"
-                + "if(rect.height>Math.min(240,window.innerHeight*0.42)){continue;}"
-                + "if(rect.width>=window.innerWidth*0.96&&rect.height>160){continue;}"
-                + "var bottom=parseFloat(cs.bottom);"
-                + "if(!isNaN(bottom)&&bottom<=2&&rect.bottom>window.innerHeight*0.55){continue;}"
-                + "el.style.setProperty('top',offset,'important');"
-                + "el.style.setProperty('padding-top',padding,'important');"
-                + "el.style.setProperty('box-sizing','border-box','important');"
-                + "}catch(ignore){}"
-                + "}"
+                // 不要遍历整个 WebUI DOM 来猜测顶栏。长会话可能包含上千个
+                // 节点，querySelectorAll('*') + getComputedStyle +
+                // getBoundingClientRect 会在 WebView 主线程同步触发大范围布局，
+                // 从而把会话 hydration 和触摸事件一起阻塞。顶部样式已经由
+                // 上面的稳定选择器覆盖，这里只保留 CSS 变量，不再做全量扫描。
                 + "return true;"
                 + "}catch(e){return false;}})();";
         webView.evaluateJavascript(script, null);
@@ -5873,21 +5856,54 @@ public class MainActivity extends Activity {
                 + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-warp,"
                 + "html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-warp,"
                 + "html.ai-mini-webview:not(.liquid-glass-off) .task-plan-dock-card::before,"
-                + "html.ai-mini-geckoview:not(.liquid-glass-off) .task-plan-dock-card::before{"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) .task-plan-dock-card::before,"
+                + "html.ai-mini-webview:not(.liquid-glass-off) "
+                + ".composer-stack-glass-card>.liquid-glass-layer,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".composer-stack-glass-card>.liquid-glass-layer{"
                 + "filter:none!important;-webkit-filter:none!important;"
                 + "backdrop-filter:blur(6px) saturate(140%)!important;"
                 + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;}"
-                // Keep the glass values unchanged, but isolate each small
-                // surface so a repaint behind the composer does not invalidate
-                // the entire high-DPI WebView.
-                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-react-surface,"
-                + "html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-react-surface{"
-                + "isolation:isolate!important;}"
-                + "html.ai-mini-webview:not(.liquid-glass-off) .liquid-glass-layer,"
-                + "html.ai-mini-geckoview:not(.liquid-glass-off) .liquid-glass-layer{"
-                + "contain:paint!important;"
-                + "backface-visibility:hidden!important;"
-                + "-webkit-backface-visibility:hidden!important;}"
+                // WebUI 的 React glass surface 本身已经带 backdrop-filter。
+                // 子 warp 再采样一次不会增加视觉层次，只会让长会话每帧做两次
+                // 背景模糊。保留父层、颜色、边框、阴影和高光，仅去掉重复采样。
+                + "html.ai-mini-webview:not(.liquid-glass-off) "
+                + ".liquid-glass-react-surface>.liquid-glass-warp,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".liquid-glass-react-surface>.liquid-glass-warp{"
+                + "backdrop-filter:none!important;"
+                + "-webkit-backdrop-filter:none!important;}"
+                // guardian 卡片和 composer 一样，父层本身没有 backdrop，
+                // 因此仍由其 warp 提供唯一一次模糊。
+                + "html.ai-mini-webview:not(.liquid-glass-off) "
+                + ".guardian-info-card>.liquid-glass-warp,"
+                + "html.ai-mini-geckoview:not(.liquid-glass-off) "
+                + ".guardian-info-card>.liquid-glass-warp{"
+                + "backdrop-filter:blur(6px) saturate(140%)!important;"
+                + "-webkit-backdrop-filter:blur(6px) saturate(140%)!important;}"
+                // 长会话切换/分批 hydration 期间只暂停实时背景采样。
+                // 静态透明度、边框、阴影与高光仍保留，页面稳定后自动恢复。
+                + "html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".liquid-glass-warp,"
+                + "html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".liquid-glass-warp,"
+                + "html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".task-plan-dock-card::before,"
+                + "html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".task-plan-dock-card::before,"
+                + "html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".composer-stack-glass-card>.liquid-glass-layer,"
+                + "html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".composer-stack-glass-card>.liquid-glass-layer{"
+                + "backdrop-filter:none!important;"
+                + "-webkit-backdrop-filter:none!important;"
+                + "animation-play-state:paused!important;}"
+                + "html.ai-mini-webview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".liquid-glass-react-surface,"
+                + "html.ai-mini-geckoview.ai-mini-thread-hydrating:not(.liquid-glass-off) "
+                + ".liquid-glass-react-surface{"
+                + "backdrop-filter:none!important;"
+                + "-webkit-backdrop-filter:none!important;}"
                 // Decorative animations are paused only while the conversation
                 // is actively scrolling; resting appearance remains unchanged.
                 + "html.ai-mini-webview.ai-mini-glass-scrolling:not(.liquid-glass-off) .liquid-glass-layer,"
@@ -6570,6 +6586,16 @@ public class MainActivity extends Activity {
         startHttpDownload(url, userAgent, contentDisposition, mimeType, "");
     }
 
+    private String cookiesForUrl(String url) {
+        if (url == null || url.trim().isEmpty()) return "";
+        try {
+            String cookie = CookieManager.getInstance().getCookie(url);
+            return cookie == null ? "" : cookie;
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
     private void startHttpDownload(
             String url,
             String userAgent,
@@ -6577,12 +6603,24 @@ public class MainActivity extends Activity {
             String mimeType,
             String cookie
     ) {
+        startHttpDownload(url, userAgent, contentDisposition, mimeType, cookie, "");
+    }
+
+    private void startHttpDownload(
+            String url,
+            String userAgent,
+            String contentDisposition,
+            String mimeType,
+            String cookie,
+            String referer
+    ) {
         try {
             String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+            String resolvedMimeType = resolvedMimeType(fileName, mimeType, null);
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
             request.setTitle(fileName);
             request.setDescription(getString(R.string.downloading));
-            request.setMimeType(mimeType);
+            request.setMimeType(resolvedMimeType);
             request.setAllowedOverMetered(true);
             request.setAllowedOverRoaming(true);
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
@@ -6591,10 +6629,13 @@ public class MainActivity extends Activity {
             if (cookie != null && !cookie.trim().isEmpty()) {
                 request.addRequestHeader("Cookie", cookie);
             }
+            if (referer != null && !referer.trim().isEmpty()) {
+                request.addRequestHeader("Referer", referer);
+            }
 
             DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
             long id = manager.enqueue(request);
-            downloads.add(0, DownloadItem.forDownloadManager(id, fileName, mimeType));
+            downloads.add(0, DownloadItem.forDownloadManager(id, fileName, resolvedMimeType));
             persistDownloads();
             showDownloadsPanel();
             Toast.makeText(this, R.string.download_started, Toast.LENGTH_SHORT).show();
@@ -7296,13 +7337,27 @@ public class MainActivity extends Activity {
     private void openDownload(DownloadItem item) {
         try {
             Uri uri = downloadUri(item);
-            if (uri == null) throw new ActivityNotFoundException();
+            if (uri == null || !uriExists(uri)) {
+                Toast.makeText(this, R.string.download_file_missing, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            uri = shareableDownloadUri(uri);
+            String type = resolvedMimeType(item.fileName, item.mimeType, uri);
+            boolean apk = "application/vnd.android.package-archive".equals(type)
+                    || item.fileName.toLowerCase(Locale.ROOT).endsWith(".apk");
 
             Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(uri, item.mimeType == null || item.mimeType.isEmpty() ? "*/*" : item.mimeType);
+            intent.setDataAndType(uri, type);
+            intent.setClipData(ClipData.newUri(getContentResolver(), item.fileName, uri));
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (apk) {
+                intent.putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true);
+                intent.putExtra(Intent.EXTRA_RETURN_RESULT, false);
+            }
             startActivity(intent);
+            Toast.makeText(this, R.string.opening_file, Toast.LENGTH_SHORT).show();
         } catch (Exception error) {
+            Log.w("GPTMiniDownload", "Unable to open downloaded file " + item.fileName, error);
             Toast.makeText(this, R.string.no_app_for_file, Toast.LENGTH_SHORT).show();
         }
     }
@@ -7310,9 +7365,13 @@ public class MainActivity extends Activity {
     private void shareDownload(DownloadItem item) {
         try {
             Uri uri = downloadUri(item);
-            if (uri == null) throw new ActivityNotFoundException();
+            if (uri == null || !uriExists(uri)) {
+                Toast.makeText(this, R.string.download_file_missing, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            uri = shareableDownloadUri(uri);
 
-            String type = item.mimeType == null || item.mimeType.isEmpty() ? "*/*" : item.mimeType;
+            String type = resolvedMimeType(item.fileName, item.mimeType, uri);
             Intent intent = new Intent(Intent.ACTION_SEND);
             intent.setType(type);
             intent.putExtra(Intent.EXTRA_STREAM, uri);
@@ -7325,13 +7384,99 @@ public class MainActivity extends Activity {
     }
 
     private Uri downloadUri(DownloadItem item) {
+        if (item == null) return null;
         Uri uri = item.manualUri;
-        if (uri == null) {
-            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            uri = manager == null ? null : manager.getUriForDownloadedFile(item.id);
+        if (uri != null && uriExists(uri)) return uri;
+
+        DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+        if (!item.manual && manager != null && item.id > 0) {
+            // COLUMN_LOCAL_URI is more reliable than getUriForDownloadedFile()
+            // on several OEM DownloadManager implementations. It also gives
+            // us a file:// fallback that can be converted through FileProvider.
+            uri = queryDownloadManagerLocalUri(manager, item);
+            if (uri != null && uriExists(uri)) {
+                persistDownloads();
+                return uri;
+            }
+            try {
+                uri = manager.getUriForDownloadedFile(item.id);
+                if (uri != null && uriExists(uri)) return uri;
+            } catch (Exception ignored) {
+            }
         }
-        if (uri == null && item.localUri != null) uri = Uri.parse(item.localUri);
-        return uri;
+        if (item.localUri != null && !item.localUri.trim().isEmpty()) {
+            try {
+                uri = Uri.parse(item.localUri);
+                if (uriExists(uri)) return uri;
+            } catch (Exception ignored) {
+            }
+        }
+
+        // Last-resort compatibility path for old DownloadManager records that
+        // lost both URI columns but still point to the standard Downloads file.
+        File fallback = new File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                item.fileName
+        );
+        return fallback.exists() ? Uri.fromFile(fallback) : null;
+    }
+
+    private Uri shareableDownloadUri(Uri uri) {
+        if (uri == null || !"file".equalsIgnoreCase(uri.getScheme())) return uri;
+        String path = uri.getPath();
+        if (path == null || path.trim().isEmpty()) return uri;
+        return FileProvider.getUriForFile(
+                this,
+                getPackageName() + ".fileprovider",
+                new File(path)
+        );
+    }
+
+    private String resolvedMimeType(String fileName, String declaredMimeType, Uri uri) {
+        String declared = normalizeMimeType(declaredMimeType);
+        String resolverType = "";
+        if (uri != null && "content".equalsIgnoreCase(uri.getScheme())) {
+            try {
+                resolverType = normalizeMimeType(getContentResolver().getType(uri));
+            } catch (Exception ignored) {
+            }
+        }
+
+        String inferred = "";
+        String safeName = fileName == null ? "" : fileName.trim();
+        int dot = safeName.lastIndexOf('.');
+        String extension = dot >= 0 && dot < safeName.length() - 1
+                ? safeName.substring(dot + 1).toLowerCase(Locale.ROOT)
+                : "";
+        if ("apk".equals(extension)) {
+            inferred = "application/vnd.android.package-archive";
+        } else if (!extension.isEmpty()) {
+            String mapped = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            if (mapped != null) inferred = normalizeMimeType(mapped);
+        }
+
+        if (isGenericMimeType(declared)) {
+            if (!inferred.isEmpty()) return inferred;
+            if (!isGenericMimeType(resolverType)) return resolverType;
+            return "*/*";
+        }
+        return declared;
+    }
+
+    private String normalizeMimeType(String mimeType) {
+        if (mimeType == null) return "";
+        String value = mimeType.trim().toLowerCase(Locale.ROOT);
+        int separator = value.indexOf(';');
+        if (separator >= 0) value = value.substring(0, separator).trim();
+        return value.contains("/") ? value : "";
+    }
+
+    private boolean isGenericMimeType(String mimeType) {
+        return mimeType == null
+                || mimeType.isEmpty()
+                || "*/*".equals(mimeType)
+                || "application/octet-stream".equals(mimeType)
+                || "binary/octet-stream".equals(mimeType);
     }
 
     private void deleteSelectedDownloads() {
@@ -8089,13 +8234,18 @@ public class MainActivity extends Activity {
                 ));
                 break;
             case "startDownload":
-                handler.post(() -> startHttpDownload(
-                        message.optString("url", ""),
-                        message.optString("userAgent", ""),
-                        contentDispositionForName(message.optString("fileName", "")),
-                        message.optString("mimeType", ""),
-                        message.optString("cookie", "")
-                ));
+                handler.post(() -> {
+                    String downloadUrl = message.optString("url", "");
+                    String cookie = message.optString("cookie", "");
+                    startHttpDownload(
+                            downloadUrl,
+                            message.optString("userAgent", ""),
+                            contentDispositionForName(message.optString("fileName", "")),
+                            message.optString("mimeType", ""),
+                            cookie.trim().isEmpty() ? cookiesForUrl(downloadUrl) : cookie,
+                            source == null ? "" : source.getUrl()
+                    );
+                });
                 break;
             case "toast":
                 handler.post(() -> Toast.makeText(
@@ -8275,7 +8425,8 @@ public class MainActivity extends Activity {
                         userAgent == null || userAgent.isEmpty() ? mainMobileUserAgent : userAgent,
                         contentDisposition,
                         mimeType == null ? "" : mimeType,
-                        ""
+                        cookiesForUrl(url),
+                        view == null ? "" : view.getUrl()
                 );
             }
 
@@ -8323,7 +8474,10 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(AIMiniBrowserView view, String url, boolean success) {
                 scheduleBrowserTransitionReveal(view, success);
-                if (success) applyBrowserViewport(view, externalDesktopMode);
+                if (success) {
+                    applyBrowserViewport(view, externalDesktopMode);
+                    installExternalDownloadHooks(view);
+                }
             }
 
             @Override
@@ -8340,7 +8494,8 @@ public class MainActivity extends Activity {
                         userAgent == null || userAgent.isEmpty() ? externalMobileUserAgent : userAgent,
                         contentDisposition,
                         mimeType == null ? "" : mimeType,
-                        ""
+                        cookiesForUrl(url),
+                        view == null ? "" : view.getUrl()
                 );
             }
 
@@ -8358,6 +8513,55 @@ public class MainActivity extends Activity {
                 return beginFileChooser(view, filePathCallback, fileChooserParams);
             }
         };
+    }
+
+    /**
+     * 普通网页不会注入 WebUI 的整套 page.js，但 blob:/data: 链接同样应进入
+     * App 下载管理。HTTP(S) 下载仍由 WebView DownloadListener 接管，并携带
+     * 当前 Cookie、Referer 和 User-Agent。
+     */
+    private void installExternalDownloadHooks(AIMiniBrowserView target) {
+        if (target == null) return;
+        String script = "(function(){try{"
+                + "if(window.__AIMiniExternalDownloadHooks==='1.1'){return true;}"
+                + "window.__AIMiniExternalDownloadHooks='1.1';"
+                + "var bytesToBase64=function(bytes){var out='',step=32768;"
+                + "for(var i=0;i<bytes.length;i+=step){"
+                + "var part=bytes.subarray(i,Math.min(bytes.length,i+step));"
+                + "out+=String.fromCharCode.apply(null,part);}return btoa(out);};"
+                + "var notify=function(name){try{CodexMiniNative.toast("
+                + "name&&name!=='download'?'已开始下载：'+name:'已开始下载');}catch(ignore){}};"
+                + "var sendBlob=async function(blob,name,type){"
+                + "name=String(name||'download');type=String(type||blob.type||'');notify(name);"
+                + "if(blob.size<=524288){var reader=new FileReader();reader.onload=function(){"
+                + "try{CodexMiniNative.saveDataUrlDownload(name,type,String(reader.result||''));}"
+                + "catch(ignore){}};reader.onerror=function(){try{CodexMiniNative.toast('下载失败');}"
+                + "catch(ignore){}};reader.readAsDataURL(blob);return;}"
+                + "var id='external-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);"
+                + "try{CodexMiniNative.beginBlobDownload(id,name,type,blob.size||0);"
+                + "var index=0,size=131072;for(var offset=0;offset<blob.size;offset+=size){"
+                + "var buffer=await blob.slice(offset,Math.min(blob.size,offset+size)).arrayBuffer();"
+                + "CodexMiniNative.appendBlobDownload("
+                + "id,index++,bytesToBase64(new Uint8Array(buffer)));}"
+                + "CodexMiniNative.finishBlobDownload(id);"
+                + "}catch(error){try{CodexMiniNative.cancelBlobDownload(id);"
+                + "CodexMiniNative.toast('下载失败');}catch(ignore){}}};"
+                + "var intercept=function(a){"
+                + "if(!a||!a.href||!a.hasAttribute('download'))return false;"
+                + "var href=String(a.href||'');"
+                + "if(href.indexOf('blob:')!==0&&href.indexOf('data:')!==0)return false;"
+                + "fetch(href).then(function(r){return r.blob();}).then(function(blob){"
+                + "sendBlob(blob,a.download||'download',a.type||blob.type||'');"
+                + "}).catch(function(){try{CodexMiniNative.toast('下载失败');}catch(ignore){}});"
+                + "return true;};"
+                + "var oldClick=HTMLAnchorElement.prototype.click;"
+                + "HTMLAnchorElement.prototype.click=function(){"
+                + "if(intercept(this))return;return oldClick.apply(this,arguments);};"
+                + "document.addEventListener('click',function(e){"
+                + "var a=e.target&&e.target.closest?e.target.closest('a[download]'):null;"
+                + "if(!intercept(a))return;e.preventDefault();e.stopImmediatePropagation();},true);"
+                + "return true;}catch(e){return false;}})();";
+        target.evaluateJavascript(script, null);
     }
 
     // WebView 下载由 DownloadListener / page.js blob 桥接处理。
